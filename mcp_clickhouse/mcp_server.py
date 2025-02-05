@@ -1,10 +1,10 @@
-from fastmcp import FastMCP
-from typing import Sequence
-from dotenv import load_dotenv
-import clickhouse_connect
-import os
 import logging
+import os
+from typing import Sequence
 
+import clickhouse_connect
+from dotenv import load_dotenv
+from fastmcp import FastMCP
 
 MCP_SERVER_NAME = "mcp-clickhouse"
 
