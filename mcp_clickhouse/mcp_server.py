@@ -81,12 +81,18 @@ def list_tables(database: str, like: str = None):
     return tables
 
 
+def str_to_bool(s):
+    return s.lower() == 'true'
+
+
 @mcp.tool()
 def run_select_query(query: str):
     logger.info(f"Executing SELECT query: {query}")
     client = create_clickhouse_client()
     try:
-        res = client.query(query, settings={"readonly": 1})
+        readonly = str_to_bool(os.getenv("CLICKHOUSE_READONLY", "true"))
+        settings = {"readonly": readonly} if readonly else {}
+        res = client.query(query, settings=settings)
         column_names = res.column_names
         rows = []
         for row in res.result_rows:
