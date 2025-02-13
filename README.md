@@ -23,29 +23,40 @@ An MCP server for ClickHouse.
 
 ## Configuration
 
-> **Note**: This is a temporary configuration process that will be significantly improved once the package is published.
-
-1. Run `uv sync` to install the dependencies. To install `uv` follow the instructions [here](https://docs.astral.sh/uv/). Then do `source .venv/bin/activate`.
-
-2. Setup the `.env.production` file with the ClickHouse credentials.
-
-```
-CLICKHOUSE_HOST=<CLICKHOUSE_HOST>
-CLICKHOUSE_PORT=<CLICKHOUSE_PORT>
-CLICKHOUSE_USER=<CLICKHOUSE_USER>
-CLICKHOUSE_PASSWORD=<CLICKHOUSE_PASSWORD>
-```
-
-3. Run `fastmcp install mcp_clickhouse/mcp_server.py -f .env.production` to install the server.
-
-4. Open the configuration file located at:
+1. Open the Claude Desktop' configuration file located at:
    - On macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
    - On Windows: `%APPDATA%/Claude/claude_desktop_config.json`
 
-   Locate the command entry for `uv` and replace it with the absolute path to the `uv` executable. This ensures that the correct version of `uv` is used when starting the server.
+2. Add the following:
 
-5. Restart Claude Desktop to apply the changes.
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp-clickhouse",
+        "--python",
+        "3.13",
+        "mcp-clickhouse"
+      ],
+      "env": {
+        "CLICKHOUSE_HOST": "sql-clickhouse.clickhouse.com",
+        "CLICKHOUSE_PORT": "8443",
+        "CLICKHOUSE_USER": "demo",
+        "CLICKHOUSE_PASSWORD": "",
+        "CLICKHOUSE_READONLY": "false"
+      }
+    }
+  }
+}
+```
 
+3. Locate the command entry for `uv` and replace it with the absolute path to the `uv` executable. This ensures that the correct version of `uv` is used when starting the server. Update the environment variables to point to your own ClickHouse service.
+
+4. Restart Claude Desktop to apply the changes.
 
 ## Development
 
