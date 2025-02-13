@@ -43,18 +43,45 @@ An MCP server for ClickHouse.
         "mcp-clickhouse"
       ],
       "env": {
-        "CLICKHOUSE_HOST": "sql-clickhouse.clickhouse.com",
-        "CLICKHOUSE_PORT": "8443",
-        "CLICKHOUSE_USER": "demo",
-        "CLICKHOUSE_PASSWORD": "",
-        "CLICKHOUSE_READONLY": "false"
+        "CLICKHOUSE_HOST": "<clickhouse-host>",
+        "CLICKHOUSE_PORT": "<clickhouse-port>",
+        "CLICKHOUSE_USER": "<clickhouse-user>",
+        "CLICKHOUSE_PASSWORD": "<clickhouse-password>"
       }
     }
   }
 }
 ```
 
-3. Locate the command entry for `uv` and replace it with the absolute path to the `uv` executable. This ensures that the correct version of `uv` is used when starting the server. Update the environment variables to point to your own ClickHouse service.
+Update the environment variables to point to your own ClickHouse service.
+Or, if you'd like to try it out with the ClickHouse SQL Playground, you can use the following config:
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp-clickhouse",
+        "--python",
+        "3.13",
+        "mcp-clickhouse"
+      ],
+      "env": {
+        "CLICKHOUSE_HOST": "sql-clickhouse.clickhouse.com",
+        "CLICKHOUSE_PORT": "8443",
+        "CLICKHOUSE_USER": "demo",
+        "CLICKHOUSE_PASSWORD": ""
+      }
+    }
+  }
+}
+```
+
+
+3. Locate the command entry for `uv` and replace it with the absolute path to the `uv` executable. This ensures that the correct version of `uv` is used when starting the server.
 
 4. Restart Claude Desktop to apply the changes.
 
