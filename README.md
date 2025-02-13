@@ -54,7 +54,8 @@ An MCP server for ClickHouse.
 ```
 
 Update the environment variables to point to your own ClickHouse service.
-Or, if you'd like to try it out with the ClickHouse SQL Playground, you can use the following config:
+
+Or, if you'd like to try it out with the [ClickHouse SQL Playground](https://sql.clickhouse.com/), you can use the following config:
 
 ```json
 {
