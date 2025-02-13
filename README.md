@@ -23,7 +23,7 @@ An MCP server for ClickHouse.
 
 ## Configuration
 
-1. Open the Claude Desktop' configuration file located at:
+1. Open the Claude Desktop configuration file located at:
    - On macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
    - On Windows: `%APPDATA%/Claude/claude_desktop_config.json`
 
