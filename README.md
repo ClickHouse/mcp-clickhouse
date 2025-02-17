@@ -82,7 +82,7 @@ Or, if you'd like to try it out with the [ClickHouse SQL Playground](https://sql
 ```
 
 
-3. Locate the command entry for `uv` and replace it with the absolute path to the `uv` executable. This ensures that the correct version of `uv` is used when starting the server.
+3. Locate the command entry for `uv` and replace it with the absolute path to the `uv` executable. This ensures that the correct version of `uv` is used when starting the server. On a mac, you can find this path using `which uv`.
 
 4. Restart Claude Desktop to apply the changes.
 
