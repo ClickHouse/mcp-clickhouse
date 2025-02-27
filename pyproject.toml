@@ -19,7 +19,7 @@ dependencies = [
 mcp-clickhouse = "mcp_clickhouse.main:main"
 
 [project.urls]
-Home = "https://github.com/iskakaushik/mcp-clickhouse"
+Home = "https://github.com/ClickHouse/mcp-clickhouse"
 
 [project.optional-dependencies]
 dev = [
