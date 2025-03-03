@@ -1,4 +1,5 @@
 version = 1
+revision = 1
 requires-python = ">=3.13"
 
 [[package]]
@@ -235,6 +236,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "uvicorn", specifier = ">=0.34.0" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "mdurl"

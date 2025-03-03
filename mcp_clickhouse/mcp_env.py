@@ -16,49 +16,44 @@ class ClickHouseConfig:
     This class handles all environment variable configuration with sensible defaults
     and type conversion. It provides typed methods for accessing each configuration value.
 
-    Required environment variables:
-        CLICKHOUSE_HOST: The hostname of the ClickHouse server
-        CLICKHOUSE_USER: The username for authentication
-        CLICKHOUSE_PASSWORD: The password for authentication
-
-    Optional environment variables (with defaults):
-        CLICKHOUSE_PORT: The port number (default: 8443 if secure=True, 8123 if secure=False)
-        CLICKHOUSE_SECURE: Enable HTTPS (default: true)
-        CLICKHOUSE_VERIFY: Verify SSL certificates (default: true)
-        CLICKHOUSE_CONNECT_TIMEOUT: Connection timeout in seconds (default: 30)
-        CLICKHOUSE_SEND_RECEIVE_TIMEOUT: Send/receive timeout in seconds (default: 300)
-        CLICKHOUSE_DATABASE: Default database to use (default: None)
+    Default values (if environment variables are not set):
+        CLICKHOUSE_HOST: "localhost"
+        CLICKHOUSE_USER: ""
+        CLICKHOUSE_PASSWORD: ""
+        CLICKHOUSE_PORT: 8123
+        CLICKHOUSE_SECURE: false
+        CLICKHOUSE_VERIFY: false
+        CLICKHOUSE_CONNECT_TIMEOUT: 5
+        CLICKHOUSE_SEND_RECEIVE_TIMEOUT: 300
+        CLICKHOUSE_DATABASE: None
     """
 
     def __init__(self):
         """Initialize the configuration from environment variables."""
-        self._validate_required_vars()
+        self._set_default_vars()
 
     @property
     def host(self) -> str:
         """Get the ClickHouse host."""
-        return os.environ["CLICKHOUSE_HOST"]
+        return os.environ.get("CLICKHOUSE_HOST", "localhost")
 
     @property
     def port(self) -> int:
         """Get the ClickHouse port.
 
-        Defaults to 8443 if secure=True, 8123 if secure=False.
-        Can be overridden by CLICKHOUSE_PORT environment variable.
+        Defaults to 8123 if not specified.
         """
-        if "CLICKHOUSE_PORT" in os.environ:
-            return int(os.environ["CLICKHOUSE_PORT"])
-        return 8443 if self.secure else 8123
+        return int(os.environ.get("CLICKHOUSE_PORT", "8123"))
 
     @property
     def username(self) -> str:
         """Get the ClickHouse username."""
-        return os.environ["CLICKHOUSE_USER"]
+        return os.environ.get("CLICKHOUSE_USER", "")
 
     @property
     def password(self) -> str:
         """Get the ClickHouse password."""
-        return os.environ["CLICKHOUSE_PASSWORD"]
+        return os.environ.get("CLICKHOUSE_PASSWORD", "")
 
     @property
     def database(self) -> Optional[str]:
@@ -69,25 +64,25 @@ class ClickHouseConfig:
     def secure(self) -> bool:
         """Get whether HTTPS is enabled.
 
-        Default: True
+        Default: False
         """
-        return os.getenv("CLICKHOUSE_SECURE", "true").lower() == "true"
+        return os.getenv("CLICKHOUSE_SECURE", "false").lower() == "true"
 
     @property
     def verify(self) -> bool:
         """Get whether SSL certificate verification is enabled.
 
-        Default: True
+        Default: False
         """
-        return os.getenv("CLICKHOUSE_VERIFY", "true").lower() == "true"
+        return os.getenv("CLICKHOUSE_VERIFY", "false").lower() == "true"
 
     @property
     def connect_timeout(self) -> int:
         """Get the connection timeout in seconds.
 
-        Default: 30
+        Default: 5
         """
-        return int(os.getenv("CLICKHOUSE_CONNECT_TIMEOUT", "30"))
+        return int(os.getenv("CLICKHOUSE_CONNECT_TIMEOUT", "5"))
 
     @property
     def send_receive_timeout(self) -> int:
@@ -120,21 +115,22 @@ class ClickHouseConfig:
 
         return config
 
-    def _validate_required_vars(self) -> None:
-        """Validate that all required environment variables are set.
+    def _set_default_vars(self) -> None:
+        """Set default values for environment variables if they are not already set."""
+        defaults = {
+            "CLICKHOUSE_HOST": "localhost",
+            "CLICKHOUSE_USER": "",
+            "CLICKHOUSE_PASSWORD": "",
+            "CLICKHOUSE_PORT": "8123",
+            "CLICKHOUSE_SECURE": "false",
+            "CLICKHOUSE_VERIFY": "false",
+            "CLICKHOUSE_CONNECT_TIMEOUT": "5",
+            "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "300",
+        }
 
-        Raises:
-            ValueError: If any required environment variable is missing.
-        """
-        missing_vars = []
-        for var in ["CLICKHOUSE_HOST", "CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD"]:
+        for var, default_value in defaults.items():
             if var not in os.environ:
-                missing_vars.append(var)
-
-        if missing_vars:
-            raise ValueError(
-                f"Missing required environment variables: {', '.join(missing_vars)}"
-            )
+                os.environ[var] = default_value
 
 
 # Global instance for easy access

@@ -1,5 +1,8 @@
 .envrc
 .ruff_cache/
+.specstory/
+.venv/
+.github/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -172,3 +175,5 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+.specstory/*
+.specstory/history/*
