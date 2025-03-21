@@ -36,6 +36,7 @@ mcp = FastMCP(MCP_SERVER_NAME, dependencies=deps)
 
 @mcp.tool()
 def list_databases():
+    """List available ClickHouse databases"""
     logger.info("Listing all databases")
     client = create_clickhouse_client()
     result = client.command("SHOW DATABASES")
@@ -45,6 +46,7 @@ def list_databases():
 
 @mcp.tool()
 def list_tables(database: str, like: str = None):
+    """List available ClickHouse tables in a database"""
     logger.info(f"Listing tables in database '{database}'")
     client = create_clickhouse_client()
     query = f"SHOW TABLES FROM {quote_identifier(database)}"
@@ -131,6 +133,7 @@ def execute_query(query: str):
 
 @mcp.tool()
 def run_select_query(query: str):
+    """Run a SELECT query in a ClickHouse database"""
     logger.info(f"Executing SELECT query: {query}")
     future = QUERY_EXECUTOR.submit(execute_query, query)
     try:
