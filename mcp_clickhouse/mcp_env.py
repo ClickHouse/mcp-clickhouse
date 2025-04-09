@@ -138,5 +138,17 @@ class ClickHouseConfig:
             )
 
 
-# Global instance for easy access
-config = ClickHouseConfig()
+# Global instance placeholder for the singleton pattern
+_CONFIG_INSTANCE = None
+
+
+def get_config():
+    """
+    Gets the singleton instance of ClickHouseConfig.
+    Instantiates it on the first call.
+    """
+    global _CONFIG_INSTANCE
+    if _CONFIG_INSTANCE is None:
+        # Instantiate the config object here, ensuring load_dotenv() has likely run
+        _CONFIG_INSTANCE = ClickHouseConfig()
+    return _CONFIG_INSTANCE
