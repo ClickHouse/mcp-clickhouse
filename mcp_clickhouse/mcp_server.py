@@ -56,7 +56,9 @@ def list_tables(database: str, like: str = None):
     result = client.command(query)
 
     # Get all table comments in one query
-    table_comments_query = f"SELECT name, comment FROM system.tables WHERE database = {format_query_value(database)}"
+    table_comments_query = (
+        f"SELECT name, comment FROM system.tables WHERE database = {format_query_value(database)}"
+    )
     table_comments_result = client.query(table_comments_query)
     table_comments = {row[0]: row[1] for row in table_comments_result.result_rows}
 
@@ -82,14 +84,16 @@ def list_tables(database: str, like: str = None):
             for i, col_name in enumerate(column_names):
                 column_dict[col_name] = row[i]
             # Add comment from our pre-fetched comments
-            if table in column_comments and column_dict['name'] in column_comments[table]:
-                column_dict['comment'] = column_comments[table][column_dict['name']]
+            if table in column_comments and column_dict["name"] in column_comments[table]:
+                column_dict["comment"] = column_comments[table][column_dict["name"]]
             else:
-                column_dict['comment'] = None
+                column_dict["comment"] = None
             columns.append(column_dict)
 
         # Get row count and column count from the table
-        row_count_query = f"SELECT count() FROM {quote_identifier(database)}.{quote_identifier(table)}"
+        row_count_query = (
+            f"SELECT count() FROM {quote_identifier(database)}.{quote_identifier(table)}"
+        )
         row_count_result = client.query(row_count_query)
         row_count = row_count_result.result_rows[0][0] if row_count_result.result_rows else 0
         column_count = len(columns)
@@ -125,7 +129,8 @@ def list_tables(database: str, like: str = None):
 def execute_query(query: str):
     client = create_clickhouse_client()
     try:
-        res = client.query(query, settings={"readonly": 1})
+        read_only = get_readonly_setting(client)
+        res = client.query(query, settings={"readonly": read_only})
         column_names = res.column_names
         rows = []
         for row in res.result_rows:
@@ -161,7 +166,10 @@ def run_select_query(query: str):
             logger.warning(f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds: {query}")
             future.cancel()
             # Return a properly structured response for timeout errors
-            return {"status": "error", "message": f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds"}
+            return {
+                "status": "error",
+                "message": f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds",
+            }
     except Exception as e:
         logger.error(f"Unexpected error in run_select_query: {str(e)}")
         # Catch all other exceptions and return them in a structured format
@@ -188,3 +196,33 @@ def create_clickhouse_client():
     except Exception as e:
         logger.error(f"Failed to connect to ClickHouse: {str(e)}")
         raise
+
+
+def get_readonly_setting(client) -> str:
+    """Get the appropriate readonly setting value to use for queries.
+
+    This function handles potential conflicts between server and client readonly settings:
+    - readonly=0: No read-only restrictions
+    - readonly=1: Only read queries allowed, settings cannot be changed
+    - readonly=2: Only read queries allowed, settings can be changed (except readonly itself)
+
+    If server has readonly=2 and client tries to set readonly=1, it would cause:
+    "Setting readonly is unknown or readonly" error
+
+    This function preserves the server's readonly setting unless it's 0, in which case
+    we enforce readonly=1 to ensure queries are read-only.
+
+    Args:
+        client: ClickHouse client connection
+
+    Returns:
+        String value of readonly setting to use
+    """
+    read_only = client.server_settings.get("readonly")
+    if read_only:
+        if read_only == "0":
+            return "1"  # Force read-only mode if server has it disabled
+        else:
+            return read_only.value  # Respect server's readonly setting (likely 2)
+    else:
+        return "1"  # Default to basic read-only mode if setting isn't present
