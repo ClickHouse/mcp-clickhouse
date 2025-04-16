@@ -133,9 +133,7 @@ class ClickHouseConfig:
                 missing_vars.append(var)
 
         if missing_vars:
-            raise ValueError(
-                f"Missing required environment variables: {', '.join(missing_vars)}"
-            )
+            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
 
 # Global instance placeholder for the singleton pattern

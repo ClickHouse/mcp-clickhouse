@@ -47,16 +47,25 @@ class TestClickhouseTools(unittest.TestCase):
     def test_list_tables_without_like(self):
         """Test listing tables without a 'LIKE' filter."""
         result = list_tables(self.test_db)
-        self.assertIsInstance(result, list)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["name"], self.test_table)
+        self.assertIsInstance(result, dict)
+        self.assertIn("tables", result)
+
+        tables = result["tables"]
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(tables[0]["name"], self.test_table)
+
+        # Since we only have one table, there should be no next page token
+        self.assertIsNone(result["next_page_token"])
 
     def test_list_tables_with_like(self):
         """Test listing tables with a 'LIKE' filter."""
         result = list_tables(self.test_db, like=f"{self.test_table}%")
-        self.assertIsInstance(result, list)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["name"], self.test_table)
+        self.assertIsInstance(result, dict)
+        self.assertIn("tables", result)
+
+        tables = result["tables"]
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(tables[0]["name"], self.test_table)
 
     def test_run_select_query_success(self):
         """Test running a SELECT query successfully."""
@@ -78,10 +87,13 @@ class TestClickhouseTools(unittest.TestCase):
     def test_table_and_column_comments(self):
         """Test that table and column comments are correctly retrieved."""
         result = list_tables(self.test_db)
-        self.assertIsInstance(result, list)
-        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result, dict)
+        self.assertIn("tables", result)
 
-        table_info = result[0]
+        tables = result["tables"]
+        self.assertEqual(len(tables), 1)
+
+        table_info = tables[0]
         # Verify table comment
         self.assertEqual(table_info["comment"], "Test table for unit testing")
 
