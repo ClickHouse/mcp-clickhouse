@@ -12,6 +12,7 @@ dependencies = [
      "uvicorn>=0.34.0",
      "clickhouse-connect>=0.8.16",
      "pip-system-certs>=4.0",
+     "cachetools>=5.5.2",
 ]
 
 [project.scripts]
