@@ -46,7 +46,8 @@ def list_databases():
 
 @mcp.tool()
 def list_tables(database: str, like: str = None):
-    """List available ClickHouse tables in a database"""
+    """List available ClickHouse tables in a database, including schema, comment,
+    row count, and column count."""
     logger.info(f"Listing tables in database '{database}'")
     client = create_clickhouse_client()
     query = f"SHOW TABLES FROM {quote_identifier(database)}"
@@ -87,6 +88,12 @@ def list_tables(database: str, like: str = None):
                 column_dict['comment'] = None
             columns.append(column_dict)
 
+        # Get row count and Column count from the table
+        row_count_query = f"SELECT count() FROM {quote_identifier(database)}.{quote_identifier(table)}"
+        row_count_result = client.query(row_count_query)
+        row_count = row_count_result.result_rows[0][0] if row_count_result.result_rows else 0
+        column_count = len(columns)
+
         create_table_query = f"SHOW CREATE TABLE {database}.`{table}`"
         create_table_result = client.command(create_table_query)
 
@@ -96,6 +103,8 @@ def list_tables(database: str, like: str = None):
             "comment": table_comments.get(table),
             "columns": columns,
             "create_table_query": create_table_result,
+            "row_count": row_count,
+            "column_count": column_count,
         }
 
     tables = []
