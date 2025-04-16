@@ -88,7 +88,7 @@ def list_tables(database: str, like: str = None):
                 column_dict['comment'] = None
             columns.append(column_dict)
 
-        # Get row count and Column count from the table
+        # Get row count and column count from the table
         row_count_query = f"SELECT count() FROM {quote_identifier(database)}.{quote_identifier(table)}"
         row_count_result = client.query(row_count_query)
         row_count = row_count_result.result_rows[0][0] if row_count_result.result_rows else 0
