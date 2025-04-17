@@ -100,6 +100,8 @@ Or, if you'd like to try it out with the [ClickHouse SQL Playground](https://sql
 
 2. Add the following variables to a `.env` file in the root of the repository.
 
+*Note: The use of the `default` user in this context is intended solely for local development purposes.*
+
 ```
 CLICKHOUSE_HOST=localhost
 CLICKHOUSE_PORT=8123
@@ -119,6 +121,9 @@ The following environment variables are used to configure the ClickHouse connect
 * `CLICKHOUSE_HOST`: The hostname of your ClickHouse server
 * `CLICKHOUSE_USER`: The username for authentication
 * `CLICKHOUSE_PASSWORD`: The password for authentication
+
+> [!CAUTION]  
+> It is important to treat your MCP database user as you would any external client connecting to your database, granting only the minimum necessary privileges required for its operation. The use of default or administrative users should be strictly avoided at all times.
 
 #### Optional Variables
 * `CLICKHOUSE_PORT`: The port number of your ClickHouse server
