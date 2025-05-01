@@ -1,77 +1,53 @@
-# Build stage
-FROM debian:bookworm-slim AS builder
+# Use a Python image with uv pre-installed
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS uv
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    wget \
-    gcc \
-    g++ \
-    make \
-    zlib1g-dev \
-    libffi-dev \
-    libssl-dev \
-    libbz2-dev \
-    liblzma-dev \
-    clang \
-    && rm -rf /var/lib/apt/lists/*
-
-# Download and install Python from source
-ENV PYTHON_VERSION=3.13.2
-RUN wget https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz \
-    && tar -xf Python-${PYTHON_VERSION}.tgz \
-    && cd Python-${PYTHON_VERSION} \
-    && ./configure --enable-optimizations \
-    && make -j$(nproc) \
-    && make install \
-    && cd .. \
-    && rm -rf Python-${PYTHON_VERSION} \
-    && rm Python-${PYTHON_VERSION}.tgz
-
-# Create and activate virtual environment
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Install UV package manager
-RUN pip install uv
-
-# Set working directory
+# Install the project into `/app`
 WORKDIR /app
 
-# Copy application files
-COPY . .
+# Enable bytecode compilation
+ENV UV_COMPILE_BYTECODE=1
 
-# Install dependencies
-RUN uv sync
+# Copy from the cache instead of linking since it's a mounted volume
+ENV UV_LINK_MODE=copy
 
-# Runtime stage
-FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential liblz4-dev libzstd-dev
+# Install the project's dependencies using the lockfile and settings
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --frozen --no-install-project --no-dev --no-editable
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    zlib1g \
-    libffi8 \
-    libssl3 \
-    libbz2-1.0 \
-    liblzma5 \
-    && rm -rf /var/lib/apt/lists/*
+# Then, add the rest of the project source code and install it
+# Installing separately from its dependencies allows optimal layer caching
+ADD . /app
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-editable
 
-# Install Python from builder
-COPY --from=builder /usr/local/bin /usr/local/bin
-COPY --from=builder /usr/local/lib /usr/local/lib
-COPY --from=builder /usr/local/include /usr/local/include
+FROM python:3.13-slim-bookworm
 
-# Copy virtual environment from builder
-COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Set working directory
 WORKDIR /app
+# Copy the virtual environment
+COPY --from=uv --chown=app:app /app/.venv /app/.venv
+# Copy the uv executable
+COPY --from=uv /usr/local/bin/uv /usr/local/bin/
+# Copy the project files
+COPY --from=uv /app /app
 
-# Copy application files
-COPY . .
+# Place executables in the environment at the front of the path
+ENV PATH="/app/.venv/bin:/usr/local/bin:$PATH"
 
-# Expose port
-EXPOSE 18123
+# Add ClickHouse environment variables
+ENV CLICKHOUSE_HOST=""
+ENV CLICKHOUSE_PORT="8443"
+ENV CLICKHOUSE_USER=""
+ENV CLICKHOUSE_PASSWORD=""
+ENV CLICKHOUSE_SECURE="true"
+ENV CLICKHOUSE_VERIFY="true"
+ENV CLICKHOUSE_CONNECT_TIMEOUT="30"
+ENV CLICKHOUSE_SEND_RECEIVE_TIMEOUT="300"
+ENV CLICKHOUSE_DATABASE=""
 
-# Run the application
-CMD ["python3", "server.py"]
+EXPOSE 28123
+# when running the container, add --db-path and a bind mount to the host's db file
+ENTRYPOINT ["uv", "run", "mcp-clickhouse-sse", "--directory", "/app"]

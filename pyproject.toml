@@ -17,7 +17,7 @@ dependencies = [
 
 [project.scripts]
 mcp-clickhouse = "mcp_clickhouse.main:main"
-
+mcp-clickhouse-sse = "mcp_clickhouse.main:main_sse"
 [project.urls]
 Home = "https://github.com/ClickHouse/mcp-clickhouse"
 

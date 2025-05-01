@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  mcp-clickhouse:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "28123:28123"
+    environment:
+      - CLICKHOUSE_HOST=sql-clickhouse.clickhouse.com
+      - CLICKHOUSE_PORT=8443
+      - CLICKHOUSE_USER=demo
+      - CLICKHOUSE_PASSWORD=
+      - CLICKHOUSE_SECURE=true
+      - CLICKHOUSE_VERIFY=true
+      - CLICKHOUSE_CONNECT_TIMEOUT=30
+      - CLICKHOUSE_SEND_RECEIVE_TIMEOUT=30

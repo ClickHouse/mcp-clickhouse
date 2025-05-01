@@ -210,6 +210,50 @@ You can set these variables in your environment, in a `.env` file, or in the Cla
 }
 ```
 
+## Running with Docker Compose
+
+You can run the MCP server using Docker Compose with SSE mode. Create a `docker-compose.yml` file with the following configuration:
+
+```yaml
+version: '3.8'
+services:
+  mcp-clickhouse:
+    build: .
+    environment:
+      - CLICKHOUSE_HOST=your-clickhouse-host
+      - CLICKHOUSE_PORT=8443
+      - CLICKHOUSE_USER=your-user
+      - CLICKHOUSE_PASSWORD=your-password
+      - CLICKHOUSE_DATABASE=your-database
+      - CLICKHOUSE_SECURE=true
+      - CLICKHOUSE_VERIFY=true
+    ports:
+      - "28123:28123"
+```
+
+Then run:
+```bash
+docker compose up -d
+```
+
+### MCP Configuration for Docker
+
+When running the MCP server in Docker in SSE, you'll need to configure your MCP client to use `host.docker.internal` when running on the same machine. Update your MCP configuration to use the following URI:
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "type": "sse",
+      "uri": "http://host.docker.internal:28123/sse",
+      "timeout": 60000
+    }
+  }
+}
+```
+
+If you're using Claude Desktop, add this configuration to your `claude_desktop_config.json` file along with the existing configuration.
+
 ### Running tests
 
 ```bash
