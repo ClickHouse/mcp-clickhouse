@@ -1,14 +1,49 @@
 import logging
-from typing import Sequence
+import json
+from typing import Optional, List, Any
 import concurrent.futures
 import atexit
 
 import clickhouse_connect
-from clickhouse_connect.driver.binding import quote_identifier, format_query_value
+from clickhouse_connect.driver.binding import format_query_value
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from dataclasses import dataclass, field, asdict, is_dataclass
 
 from mcp_clickhouse.mcp_env import get_config
+
+
+@dataclass
+class Column:
+    database: str
+    table: str
+    name: str
+    column_type: str
+    default_kind: Optional[str]
+    default_expression: Optional[str]
+    comment: Optional[str]
+
+
+@dataclass
+class Table:
+    database: str
+    name: str
+    engine: str
+    create_table_query: str
+    dependencies_database: str
+    dependencies_table: str
+    engine_full: str
+    sorting_key: str
+    primary_key: str
+    total_rows: int
+    total_bytes: int
+    total_bytes_uncompressed: int
+    parts: int
+    active_parts: int
+    total_marks: int
+    comment: Optional[str] = None
+    columns: List[Column] = field(default_factory=list)
+
 
 MCP_SERVER_NAME = "mcp-clickhouse"
 
@@ -34,6 +69,24 @@ deps = [
 mcp = FastMCP(MCP_SERVER_NAME, dependencies=deps)
 
 
+def result_to_table(query_columns, result) -> List[Table]:
+    return [Table(**dict(zip(query_columns, row))) for row in result]
+
+
+def result_to_column(query_columns, result) -> List[Column]:
+    return [Column(**dict(zip(query_columns, row))) for row in result]
+
+
+def to_json(obj: Any) -> str:
+    if is_dataclass(obj):
+        return json.dumps(asdict(obj), default=to_json)
+    elif isinstance(obj, list):
+        return [to_json(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {key: to_json(value) for key, value in obj.items()}
+    return obj
+
+
 @mcp.tool()
 def list_databases():
     """List available ClickHouse databases"""
@@ -45,85 +98,38 @@ def list_databases():
 
 
 @mcp.tool()
-def list_tables(database: str, like: str = None):
+def list_tables(
+    database: str, like: Optional[str] = None, not_like: Optional[str] = None
+):
     """List available ClickHouse tables in a database, including schema, comment,
     row count, and column count."""
     logger.info(f"Listing tables in database '{database}'")
     client = create_clickhouse_client()
-    query = f"SHOW TABLES FROM {quote_identifier(database)}"
+    query = f"SELECT database, name, engine, create_table_query, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, total_bytes_uncompressed, parts, active_parts, total_marks, comment FROM system.tables WHERE database = {format_query_value(database)}"
     if like:
-        query += f" LIKE {format_query_value(like)}"
-    result = client.command(query)
+        query += f" AND name LIKE {format_query_value(like)}"
 
-    # Get all table comments in one query
-    table_comments_query = (
-        f"SELECT name, comment FROM system.tables WHERE database = {format_query_value(database)}"
-    )
-    table_comments_result = client.query(table_comments_query)
-    table_comments = {row[0]: row[1] for row in table_comments_result.result_rows}
+    if not_like:
+        query += f" AND name NOT LIKE {format_query_value(not_like)}"
 
-    # Get all column comments in one query
-    column_comments_query = f"SELECT table, name, comment FROM system.columns WHERE database = {format_query_value(database)}"
-    column_comments_result = client.query(column_comments_query)
-    column_comments = {}
-    for row in column_comments_result.result_rows:
-        table, col_name, comment = row
-        if table not in column_comments:
-            column_comments[table] = {}
-        column_comments[table][col_name] = comment
+    result = client.query(query)
 
-    def get_table_info(table):
-        logger.info(f"Getting schema info for table {database}.{table}")
-        schema_query = f"DESCRIBE TABLE {quote_identifier(database)}.{quote_identifier(table)}"
-        schema_result = client.query(schema_query)
+    # Deserialize result as Table dataclass instances
+    tables = result_to_table(result.column_names, result.result_rows)
 
-        columns = []
-        column_names = schema_result.column_names
-        for row in schema_result.result_rows:
-            column_dict = {}
-            for i, col_name in enumerate(column_names):
-                column_dict[col_name] = row[i]
-            # Add comment from our pre-fetched comments
-            if table in column_comments and column_dict["name"] in column_comments[table]:
-                column_dict["comment"] = column_comments[table][column_dict["name"]]
-            else:
-                column_dict["comment"] = None
-            columns.append(column_dict)
-
-        # Get row count and column count from the table
-        row_count_query = (
-            f"SELECT count() FROM {quote_identifier(database)}.{quote_identifier(table)}"
-        )
-        row_count_result = client.query(row_count_query)
-        row_count = row_count_result.result_rows[0][0] if row_count_result.result_rows else 0
-        column_count = len(columns)
-
-        create_table_query = f"SHOW CREATE TABLE {database}.`{table}`"
-        create_table_result = client.command(create_table_query)
-
-        return {
-            "database": database,
-            "name": table,
-            "comment": table_comments.get(table),
-            "columns": columns,
-            "create_table_query": create_table_result,
-            "row_count": row_count,
-            "column_count": column_count,
-        }
-
-    tables = []
-    if isinstance(result, str):
-        # Single table result
-        for table in (t.strip() for t in result.split()):
-            if table:
-                tables.append(get_table_info(table))
-    elif isinstance(result, Sequence):
-        # Multiple table results
-        for table in result:
-            tables.append(get_table_info(table))
+    for table in tables:
+        column_data_query = f"SELECT database, table, name, type AS column_type, default_kind, default_expression, comment FROM system.columns WHERE database = {format_query_value(database)} AND table = {format_query_value(table.name)}"
+        column_data_query_result = client.query(column_data_query)
+        table.columns = [
+            c
+            for c in result_to_column(
+                column_data_query_result.column_names,
+                column_data_query_result.result_rows,
+            )
+        ]
 
     logger.info(f"Found {len(tables)} tables")
-    return tables
+    return [asdict(table) for table in tables]
 
 
 def execute_query(query: str):
@@ -160,10 +166,15 @@ def run_select_query(query: str):
                 logger.warning(f"Query failed: {result['error']}")
                 # MCP requires structured responses; string error messages can cause
                 # serialization issues leading to BrokenResourceError
-                return {"status": "error", "message": f"Query failed: {result['error']}"}
+                return {
+                    "status": "error",
+                    "message": f"Query failed: {result['error']}",
+                }
             return result
         except concurrent.futures.TimeoutError:
-            logger.warning(f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds: {query}")
+            logger.warning(
+                f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds: {query}"
+            )
             future.cancel()
             # Return a properly structured response for timeout errors
             return {
