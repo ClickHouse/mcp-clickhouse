@@ -1,6 +1,6 @@
 [project]
 name = "mcp-clickhouse"
-version = "0.1.7"
+version = "0.1.8"
 description = "An MCP server for ClickHouse."
 readme = "README.md"
 license = "Apache-2.0"
@@ -10,13 +10,14 @@ dependencies = [
      "mcp[cli]>=1.3.0",
      "python-dotenv>=1.0.1",
      "uvicorn>=0.34.0",
+     "uvicorn[standard]>=0.34.0",
      "clickhouse-connect>=0.8.16",
      "pip-system-certs>=4.0",
 ]
 
 [project.scripts]
 mcp-clickhouse = "mcp_clickhouse.main:main"
-
+mcp-clickhouse-sse = "mcp_clickhouse.main:main_sse"
 [project.urls]
 Home = "https://github.com/ClickHouse/mcp-clickhouse"
 

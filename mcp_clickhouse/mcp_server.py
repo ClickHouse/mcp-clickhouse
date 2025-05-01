@@ -46,6 +46,7 @@ class Table:
 
 
 MCP_SERVER_NAME = "mcp-clickhouse"
+SERVER_PORT = 28123
 
 # Configure logging
 logging.basicConfig(
@@ -66,7 +67,7 @@ deps = [
     "pip-system-certs",
 ]
 
-mcp = FastMCP(MCP_SERVER_NAME, dependencies=deps)
+mcp = FastMCP(MCP_SERVER_NAME, dependencies=deps, port=SERVER_PORT)
 
 
 def result_to_table(query_columns, result) -> List[Table]:
