@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/clickhouse-mcp-clickhouse-badge.png)](https://mseep.ai/app/clickhouse-mcp-clickhouse)
+
 # ClickHouse MCP Server
 
 [![PyPI - Version](https://img.shields.io/pypi/v/mcp-clickhouse)](https://pypi.org/project/mcp-clickhouse)
