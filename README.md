@@ -23,7 +23,7 @@ An MCP server for ClickHouse.
   * Input: `database` (string): The name of the database.
 
 ## Configuration
-
+### stdio mode
 1. Open the Claude Desktop configuration file located at:
    * On macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
    * On Windows: `%APPDATA%/Claude/claude_desktop_config.json`
@@ -93,6 +93,27 @@ Or, if you'd like to try it out with the [ClickHouse SQL Playground](https://sql
 3. Locate the command entry for `uv` and replace it with the absolute path to the `uv` executable. This ensures that the correct version of `uv` is used when starting the server. On a mac, you can find this path using `which uv`.
 
 4. Restart Claude Desktop to apply the changes.
+
+### sse mode
+```sh
+cp .env.example .env
+```
+you can change .env or set env in docker-compose.yml
+build docker image
+```sh
+make docker-build
+```
+run docker-compose
+```sh
+make docker-up
+```
+```json
+"mcpServers": {
+    "clickhouse-test": {
+      "url": "http://yourip:8000/sse",
+    },
+  }
+```
 
 ## Development
 
