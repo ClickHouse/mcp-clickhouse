@@ -1,4 +1,3 @@
-import logging
 import json
 from typing import Optional, List, Any, Dict
 import concurrent.futures
@@ -184,10 +183,10 @@ def list_databases(clickhouse_server: Optional[str] = None):
 
 
 def list_tables(
-    database: str,
-    like: Optional[str] = None,
-    not_like: Optional[str] = None,
-    clickhouse_server: Optional[str] = None
+        database: str,
+        like: Optional[str] = None,
+        not_like: Optional[str] = None,
+        clickhouse_server: Optional[str] = None
 ):
     """List available ClickHouse tables in a database, including schema, comment,
     row count, and column count.
@@ -523,3 +522,4 @@ def run_server():
 
     # Use streamable-http transport to listen for HTTP requests
     mcp.run(transport="streamable-http")
+
