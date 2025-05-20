@@ -67,7 +67,12 @@ deps = [
     "pip-system-certs",
 ]
 
-mcp = FastMCP(MCP_SERVER_NAME, dependencies=deps)
+# 从配置获取端口
+server_config = get_mcp_server_config()
+port = server_config.port
+
+# 创建FastMCP实例，直接传入端口配置
+mcp = FastMCP(MCP_SERVER_NAME, dependencies=deps, port=port, host="0.0.0.0")
 
 
 def result_to_table(query_columns, result) -> List[Table]:
@@ -277,8 +282,9 @@ def get_readonly_setting(client) -> str:
 
 def run_server():
     """启动MCP服务器"""
+    # 端口已在FastMCP初始化时设置，不需要重新配置
     server_config = get_mcp_server_config()
-    port = server_config.port
-
-    logger.info(f"Setting MCP server to run on port {port} (via environment variables)")
-    mcp.run()
+    logger.info(f"Starting MCP server on port {server_config.port} with streamable-http transport")
+    
+    # 指定使用streamable-http协议，这样服务器会监听HTTP请求
+    mcp.run(transport="streamable-http")
