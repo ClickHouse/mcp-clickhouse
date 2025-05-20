@@ -3,6 +3,7 @@ import json
 from typing import Optional, List, Any
 import concurrent.futures
 import atexit
+import os
 
 import clickhouse_connect
 from clickhouse_connect.driver.binding import format_query_value
@@ -98,7 +99,7 @@ def list_clickhouse_servers():
 @mcp.tool()
 def list_databases(clickhouse_server: Optional[str] = None):
     """List available ClickHouse databases
-    
+
     Args:
         clickhouse_server: 可选的ClickHouse服务器名称，不指定时使用默认配置
     """
@@ -111,14 +112,14 @@ def list_databases(clickhouse_server: Optional[str] = None):
 
 @mcp.tool()
 def list_tables(
-    database: str, 
-    like: Optional[str] = None, 
+    database: str,
+    like: Optional[str] = None,
     not_like: Optional[str] = None,
     clickhouse_server: Optional[str] = None
 ):
     """List available ClickHouse tables in a database, including schema, comment,
     row count, and column count.
-    
+
     Args:
         database: 数据库名称
         like: 可选的表名匹配模式
@@ -178,7 +179,7 @@ def execute_query(query: str, clickhouse_server: Optional[str] = None):
 @mcp.tool()
 def run_select_query(query: str, clickhouse_server: Optional[str] = None):
     """Run a SELECT query in a ClickHouse database
-    
+
     Args:
         query: SQL查询语句
         clickhouse_server: 可选的ClickHouse服务器名称，不指定时使用默认配置
@@ -217,10 +218,10 @@ def run_select_query(query: str, clickhouse_server: Optional[str] = None):
 
 def create_clickhouse_client(server_name: Optional[str] = None):
     """创建ClickHouse客户端连接
-    
+
     Args:
         server_name: 可选的服务器名称，如果未指定则使用默认配置
-        
+
     Returns:
         clickhouse_connect客户端实例
     """
@@ -277,5 +278,7 @@ def get_readonly_setting(client) -> str:
 def run_server():
     """启动MCP服务器"""
     server_config = get_mcp_server_config()
-    logger.info(f"Starting MCP server on {server_config.host}:{server_config.port}")
-    mcp.run(host=server_config.host, port=server_config.port)
+    port = server_config.port
+
+    logger.info(f"Setting MCP server to run on port {port} (via environment variables)")
+    mcp.run()
