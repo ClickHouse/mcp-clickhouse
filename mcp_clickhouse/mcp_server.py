@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from dataclasses import dataclass, field, asdict, is_dataclass
 
-from mcp_clickhouse.mcp_env import get_config
+from mcp_clickhouse.mcp_env import get_config, get_all_configs, get_mcp_server_config
 
 
 @dataclass
@@ -88,10 +88,22 @@ def to_json(obj: Any) -> str:
 
 
 @mcp.tool()
-def list_databases():
-    """List available ClickHouse databases"""
-    logger.info("Listing all databases")
-    client = create_clickhouse_client()
+def list_clickhouse_servers():
+    """列出所有可用的ClickHouse服务器配置"""
+    logger.info("列出所有配置的ClickHouse服务器")
+    servers = get_all_configs().get_available_servers()
+    return servers
+
+
+@mcp.tool()
+def list_databases(clickhouse_server: Optional[str] = None):
+    """List available ClickHouse databases
+    
+    Args:
+        clickhouse_server: 可选的ClickHouse服务器名称，不指定时使用默认配置
+    """
+    logger.info(f"Listing all databases from server: {clickhouse_server or 'default'}")
+    client = create_clickhouse_client(clickhouse_server)
     result = client.command("SHOW DATABASES")
     logger.info(f"Found {len(result) if isinstance(result, list) else 1} databases")
     return result
@@ -99,12 +111,22 @@ def list_databases():
 
 @mcp.tool()
 def list_tables(
-    database: str, like: Optional[str] = None, not_like: Optional[str] = None
+    database: str, 
+    like: Optional[str] = None, 
+    not_like: Optional[str] = None,
+    clickhouse_server: Optional[str] = None
 ):
     """List available ClickHouse tables in a database, including schema, comment,
-    row count, and column count."""
-    logger.info(f"Listing tables in database '{database}'")
-    client = create_clickhouse_client()
+    row count, and column count.
+    
+    Args:
+        database: 数据库名称
+        like: 可选的表名匹配模式
+        not_like: 可选的表名排除模式
+        clickhouse_server: 可选的ClickHouse服务器名称，不指定时使用默认配置
+    """
+    logger.info(f"Listing tables in database '{database}' from server: {clickhouse_server or 'default'}")
+    client = create_clickhouse_client(clickhouse_server)
     query = f"SELECT database, name, engine, create_table_query, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, total_bytes_uncompressed, parts, active_parts, total_marks, comment FROM system.tables WHERE database = {format_query_value(database)}"
     if like:
         query += f" AND name LIKE {format_query_value(like)}"
@@ -132,8 +154,8 @@ def list_tables(
     return [asdict(table) for table in tables]
 
 
-def execute_query(query: str):
-    client = create_clickhouse_client()
+def execute_query(query: str, clickhouse_server: Optional[str] = None):
+    client = create_clickhouse_client(clickhouse_server)
     try:
         read_only = get_readonly_setting(client)
         res = client.query(query, settings={"readonly": read_only})
@@ -154,11 +176,16 @@ def execute_query(query: str):
 
 
 @mcp.tool()
-def run_select_query(query: str):
-    """Run a SELECT query in a ClickHouse database"""
-    logger.info(f"Executing SELECT query: {query}")
+def run_select_query(query: str, clickhouse_server: Optional[str] = None):
+    """Run a SELECT query in a ClickHouse database
+    
+    Args:
+        query: SQL查询语句
+        clickhouse_server: 可选的ClickHouse服务器名称，不指定时使用默认配置
+    """
+    logger.info(f"Executing SELECT query on server '{clickhouse_server or 'default'}': {query}")
     try:
-        future = QUERY_EXECUTOR.submit(execute_query, query)
+        future = QUERY_EXECUTOR.submit(execute_query, query, clickhouse_server)
         try:
             result = future.result(timeout=SELECT_QUERY_TIMEOUT_SECS)
             # Check if we received an error structure from execute_query
@@ -188,8 +215,16 @@ def run_select_query(query: str):
         return {"status": "error", "message": f"Unexpected error: {str(e)}"}
 
 
-def create_clickhouse_client():
-    client_config = get_config().get_client_config()
+def create_clickhouse_client(server_name: Optional[str] = None):
+    """创建ClickHouse客户端连接
+    
+    Args:
+        server_name: 可选的服务器名称，如果未指定则使用默认配置
+        
+    Returns:
+        clickhouse_connect客户端实例
+    """
+    client_config = get_config(server_name).get_client_config()
     logger.info(
         f"Creating ClickHouse client connection to {client_config['host']}:{client_config['port']} "
         f"as {client_config['username']} "
@@ -237,3 +272,10 @@ def get_readonly_setting(client) -> str:
             return read_only.value  # Respect server's readonly setting (likely 2)
     else:
         return "1"  # Default to basic read-only mode if setting isn't present
+
+
+def run_server():
+    """启动MCP服务器"""
+    server_config = get_mcp_server_config()
+    logger.info(f"Starting MCP server on {server_config.host}:{server_config.port}")
+    mcp.run(host=server_config.host, port=server_config.port)
