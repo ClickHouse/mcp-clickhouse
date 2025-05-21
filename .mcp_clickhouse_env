@@ -1,11 +1,11 @@
-# MCP服务器配置
-export MCP_SERVER_PORT=3000  # 设置端口为3000
-export MCP_SERVER_HOST=0.0.0.0  # 允许所有网络接口访问
+# MCP Server Configuration
+export MCP_SERVER_PORT=3000  # Set port to 3000
+export MCP_SERVER_HOST=0.0.0.0  # Allow connections from all network interfaces
 
-# 定义要连接的ClickHouse服务器列表
+# Define list of ClickHouse servers to connect to
 export CLICKHOUSE_SERVERS=prod,test,dev
 
-# 默认ClickHouse连接
+# Default ClickHouse connection
 export CLICKHOUSE_HOST=default-clickhouse-host.example.com
 export CLICKHOUSE_USER=default_user
 export CLICKHOUSE_PASSWORD=default_password
@@ -13,7 +13,7 @@ export CLICKHOUSE_DATABASE=default_db
 export CLICKHOUSE_PORT=8443
 export CLICKHOUSE_SECURE=true
 
-# 生产环境ClickHouse
+# Production ClickHouse
 export CLICKHOUSE_PROD_HOST=prod-clickhouse.example.com
 export CLICKHOUSE_PROD_USER=prod_user
 export CLICKHOUSE_PROD_PASSWORD=prod_password
@@ -21,7 +21,7 @@ export CLICKHOUSE_PROD_DATABASE=analytics
 export CLICKHOUSE_PROD_PORT=8443
 export CLICKHOUSE_PROD_SECURE=true
 
-# 测试环境ClickHouse
+# Test ClickHouse
 export CLICKHOUSE_TEST_HOST=test-clickhouse.example.com
 export CLICKHOUSE_TEST_USER=test_user
 export CLICKHOUSE_TEST_PASSWORD=test_password
@@ -29,7 +29,7 @@ export CLICKHOUSE_TEST_DATABASE=test_db
 export CLICKHOUSE_TEST_PORT=8443
 export CLICKHOUSE_TEST_SECURE=true
 
-# 开发环境ClickHouse
+# Development ClickHouse
 export CLICKHOUSE_DEV_HOST=dev-clickhouse.example.com
 export CLICKHOUSE_DEV_USER=dev_user
 export CLICKHOUSE_DEV_PASSWORD=dev_password

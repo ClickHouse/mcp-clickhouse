@@ -322,3 +322,4 @@ def get_chdb_config() -> ChDBConfig:
     if _CHDB_CONFIG_INSTANCE is None:
         _CHDB_CONFIG_INSTANCE = ChDBConfig()
     return _CHDB_CONFIG_INSTANCE
+

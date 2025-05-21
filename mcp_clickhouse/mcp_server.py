@@ -1,4 +1,4 @@
-# mcp_serverimport logging
+import logging
 import json
 from typing import Optional, List, Any, Dict
 import concurrent.futures
@@ -161,7 +161,6 @@ def list_databases(clickhouse_server: Optional[str] = None):
     """
     logger.info(f"Listing all databases from server: {clickhouse_server or 'default'}")
     try:
-        # 确保有一个有效的服务器配置
         if not clickhouse_server:
             available_servers = get_all_configs().get_available_servers()
             if not available_servers:
