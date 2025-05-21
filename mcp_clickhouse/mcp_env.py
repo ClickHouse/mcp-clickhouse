@@ -30,7 +30,7 @@ class ClickHouseConfig:
         CLICKHOUSE_DATABASE: Default database to use (default: None)
     """
 
-    name: str = "default"  # 添加名称标识符
+    name: str = "default"  # Name identifier
     host: str = None
     port: Optional[int] = None
     username: str = None
@@ -51,12 +51,12 @@ class ClickHouseConfig:
         self.name = name
         prefix = f"{env_prefix}_" if name == "default" else f"{env_prefix}_{name.upper()}_"
         
-        # 设置必选参数
+        # Set required parameters
         self.host = os.environ.get(f"{prefix}HOST")
         self.username = os.environ.get(f"{prefix}USER")
         self.password = os.environ.get(f"{prefix}PASSWORD")
         
-        # 设置可选参数
+        # Set optional parameters
         port_env = os.environ.get(f"{prefix}PORT")
         if port_env:
             self.port = int(port_env)
@@ -71,7 +71,7 @@ class ClickHouseConfig:
             self.port = 8443 if self.secure else 8123
 
     def validate(self) -> bool:
-        """验证配置是否有效"""
+        """Validate if the configuration is valid."""
         return bool(self.host and self.username and self.password)
 
     def get_client_config(self) -> dict:
@@ -101,20 +101,29 @@ class ClickHouseConfig:
 
 @dataclass
 class MultiClickHouseConfig:
-    """管理多个ClickHouse连接配置"""
+    """Manage multiple ClickHouse connection configurations."""
     
     configs: Dict[str, ClickHouseConfig] = field(default_factory=dict)
     default_config_name: str = "default"
     
-    def __init__(self):
-        """从环境变量初始化所有ClickHouse连接配置"""
-        # 始终尝试加载默认配置
+    def __init__(self, allow_empty: bool = False):
+        """Initialize all ClickHouse connection configurations from environment variables.
+        
+        Args:
+            allow_empty: If True, don't raise an error when no valid configurations are found.
+                         This is useful for testing.
+        """
+        # Initialize configs dictionary
+        self.configs = {}
+        self.default_config_name = "default"
+        
+        # Always try to load the default configuration
         default_config = ClickHouseConfig(name="default")
         if default_config.validate():
             self.configs["default"] = default_config
             self.default_config_name = "default"
         
-        # 查找以CLICKHOUSE_SERVERS定义的其他服务器
+        # Look for additional servers defined by CLICKHOUSE_SERVERS
         servers_str = os.environ.get("CLICKHOUSE_SERVERS", "")
         if servers_str:
             server_names = [name.strip() for name in servers_str.split(",")]
@@ -123,70 +132,97 @@ class MultiClickHouseConfig:
                     config = ClickHouseConfig(name=name)
                     if config.validate():
                         self.configs[name] = config
-                        # 如果没有有效的默认配置，则使用第一个有效配置作为默认值
+                        # If no valid default configuration, use the first valid one
                         if "default" not in self.configs:
                             self.default_config_name = name
         
-        if not self.configs:
-            raise ValueError("未找到有效的ClickHouse配置。请至少设置一个有效的ClickHouse连接。")
+        if not self.configs and not allow_empty:
+            raise ValueError("No valid ClickHouse configuration found. Please configure at least one valid ClickHouse connection.")
             
     def get_config(self, name: Optional[str] = None) -> ClickHouseConfig:
-        """获取指定名称的配置，如果未指定或不存在则返回默认配置"""
+        """Get a configuration by name, or return the default if not specified or not found.
+        
+        Args:
+            name: Server configuration name
+            
+        Returns:
+            ClickHouse configuration object
+        """
         if name and name in self.configs:
             return self.configs[name]
-        return self.configs[self.default_config_name]
+            
+        if self.default_config_name in self.configs:
+            return self.configs[self.default_config_name]
+            
+        raise ValueError("No valid ClickHouse configuration found.")
     
     def get_available_servers(self) -> List[str]:
-        """获取所有可用的ClickHouse服务器名称列表"""
+        """Get a list of all available ClickHouse server names.
+        
+        Returns:
+            List of server names
+        """
         return list(self.configs.keys())
 
 
 @dataclass
 class MCPServerConfig:
-    """MCP服务器配置"""
+    """MCP server configuration."""
     
     port: int = 8080
     host: str = "0.0.0.0"
     
     def __init__(self):
-        """从环境变量初始化MCP服务器配置"""
+        """Initialize MCP server configuration from environment variables."""
         if "MCP_SERVER_PORT" in os.environ:
             self.port = int(os.environ["MCP_SERVER_PORT"])
         if "MCP_SERVER_HOST" in os.environ:
             self.host = os.environ["MCP_SERVER_HOST"]
 
 
-# 全局单例
+# Global singletons
 _MULTI_CONFIG_INSTANCE = None
 _MCP_SERVER_CONFIG = None
 
 
-def get_config(name: Optional[str] = None) -> ClickHouseConfig:
+def get_config(name: Optional[str] = None, allow_empty: bool = False) -> ClickHouseConfig:
     """
-    获取ClickHouse配置实例
+    Get a ClickHouse configuration instance.
     
     Args:
-        name: 可选的配置名称，如果未指定则使用默认配置
+        name: Optional configuration name, uses default if not specified
+        allow_empty: If True, don't raise an error when no valid configurations are found
         
     Returns:
-        指定名称的ClickHouse配置实例
+        ClickHouse configuration instance with the specified name
     """
     global _MULTI_CONFIG_INSTANCE
     if _MULTI_CONFIG_INSTANCE is None:
-        _MULTI_CONFIG_INSTANCE = MultiClickHouseConfig()
+        _MULTI_CONFIG_INSTANCE = MultiClickHouseConfig(allow_empty=allow_empty)
     return _MULTI_CONFIG_INSTANCE.get_config(name)
 
 
-def get_all_configs() -> MultiClickHouseConfig:
-    """获取多ClickHouse配置管理实例"""
+def get_all_configs(allow_empty: bool = False) -> MultiClickHouseConfig:
+    """Get the multi-ClickHouse configuration management instance.
+    
+    Args:
+        allow_empty: If True, don't raise an error when no valid configurations are found
+    
+    Returns:
+        MultiClickHouseConfig instance
+    """
     global _MULTI_CONFIG_INSTANCE
     if _MULTI_CONFIG_INSTANCE is None:
-        _MULTI_CONFIG_INSTANCE = MultiClickHouseConfig()
+        _MULTI_CONFIG_INSTANCE = MultiClickHouseConfig(allow_empty=allow_empty)
     return _MULTI_CONFIG_INSTANCE
 
 
 def get_mcp_server_config() -> MCPServerConfig:
-    """获取MCP服务器配置实例"""
+    """Get the MCP server configuration instance.
+    
+    Returns:
+        MCPServerConfig instance
+    """
     global _MCP_SERVER_CONFIG
     if _MCP_SERVER_CONFIG is None:
         _MCP_SERVER_CONFIG = MCPServerConfig()
