@@ -1,8 +1,8 @@
-from .mcp_server import mcp
+from .mcp_server import run_server
 
 
 def main():
-    mcp.run()
+    run_server()
 
 
 if __name__ == "__main__":
