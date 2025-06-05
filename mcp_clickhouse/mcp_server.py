@@ -8,6 +8,9 @@ import clickhouse_connect
 from clickhouse_connect.driver.binding import format_query_value
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from mcp.server.session import ServerSession
+from mcp.server.stdio import stdio_server
+from mcp.types import ServerCapabilities
 from dataclasses import dataclass, field, asdict, is_dataclass
 
 from mcp_clickhouse.mcp_env import get_config
@@ -67,6 +70,12 @@ deps = [
 ]
 
 mcp = FastMCP(MCP_SERVER_NAME, dependencies=deps)
+
+# Add streaming capabilities
+mcp.server_capabilities = ServerCapabilities(
+    tools={"list_tools": True},
+    resources={"subscribe": True, "list_changed": True}
+)
 
 
 def result_to_table(query_columns, result) -> List[Table]:
@@ -237,3 +246,19 @@ def get_readonly_setting(client) -> str:
             return read_only.value  # Respect server's readonly setting (likely 2)
     else:
         return "1"  # Default to basic read-only mode if setting isn't present
+
+
+async def run_server():
+    """Run the MCP server with streaming support."""
+    logger.info("Starting MCP ClickHouse server with streaming support")
+    
+    # Create server session with streaming capabilities
+    async with stdio_server() as (read_stream, write_stream):
+        session = ServerSession(
+            server=mcp,
+            read_stream=read_stream,
+            write_stream=write_stream
+        )
+        
+        logger.info("Server session initialized, waiting for client connection...")
+        await session.run()

@@ -28,6 +28,11 @@ class ClickHouseConfig:
         CLICKHOUSE_CONNECT_TIMEOUT: Connection timeout in seconds (default: 30)
         CLICKHOUSE_SEND_RECEIVE_TIMEOUT: Send/receive timeout in seconds (default: 300)
         CLICKHOUSE_DATABASE: Default database to use (default: None)
+        
+    Server configuration environment variables:
+        MCP_SERVER_MODE: Server mode - 'http' (default) or 'stream'/'streaming'
+        MCP_SERVER_HOST: Server host (default: 0.0.0.0)
+        MCP_SERVER_PORT: Server port (default: 8213)
     """
 
     def __init__(self):
