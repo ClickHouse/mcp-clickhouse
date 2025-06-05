@@ -115,15 +115,10 @@ class MultiClickHouseConfig:
         """
         # Initialize configs dictionary
         self.configs = {}
-        self.default_config_name = "default"
+        self.default_config_name = None
         
-        # Always try to load the default configuration
-        default_config = ClickHouseConfig(name="default")
-        if default_config.validate():
-            self.configs["default"] = default_config
-            self.default_config_name = "default"
-        
-        # Look for additional servers defined by CLICKHOUSE_SERVERS
+        # First, look for additional servers defined by CLICKHOUSE_SERVERS
+        valid_additional_configs = False
         servers_str = os.environ.get("CLICKHOUSE_SERVERS", "")
         if servers_str:
             server_names = [name.strip() for name in servers_str.split(",")]
@@ -132,9 +127,18 @@ class MultiClickHouseConfig:
                     config = ClickHouseConfig(name=name)
                     if config.validate():
                         self.configs[name] = config
-                        # If no valid default configuration, use the first valid one
-                        if "default" not in self.configs:
+                        # Set the first valid additional config as default
+                        if self.default_config_name is None:
                             self.default_config_name = name
+                            valid_additional_configs = True
+        
+        # Only try to load default configuration if no valid additional configs were found
+        # or if CLICKHOUSE_SERVERS is not defined
+        if not valid_additional_configs:
+            default_config = ClickHouseConfig(name="default")
+            if default_config.validate():
+                self.configs["default"] = default_config
+                self.default_config_name = "default"
         
         if not self.configs and not allow_empty:
             raise ValueError("No valid ClickHouse configuration found. Please configure at least one valid ClickHouse connection.")
@@ -151,7 +155,7 @@ class MultiClickHouseConfig:
         if name and name in self.configs:
             return self.configs[name]
             
-        if self.default_config_name in self.configs:
+        if self.default_config_name and self.default_config_name in self.configs:
             return self.configs[self.default_config_name]
             
         raise ValueError("No valid ClickHouse configuration found.")

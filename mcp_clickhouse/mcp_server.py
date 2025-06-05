@@ -1,8 +1,8 @@
 """MCP server for ClickHouse integration.
 
-This module provides an MCP (Machine Communication Protocol) server that integrates 
-with ClickHouse, allowing AI agents to query and interact with ClickHouse 
-databases. It supports multiple server connections and provides tools for 
+This module provides an MCP (Machine Communication Protocol) server that integrates
+with ClickHouse, allowing AI agents to query and interact with ClickHouse
+databases. It supports multiple server connections and provides tools for
 listing databases, tables, and executing read-only queries.
 """
 
@@ -90,11 +90,11 @@ mcp = FastMCP(MCP_SERVER_NAME, dependencies=deps, port=port, host=host)
 
 def result_to_table(query_columns, result) -> List[Table]:
     """Convert query result to Table objects.
-    
+
     Args:
         query_columns: Column names from the query
         result: Query result rows
-        
+
     Returns:
         List of Table objects
     """
@@ -103,11 +103,11 @@ def result_to_table(query_columns, result) -> List[Table]:
 
 def result_to_column(query_columns, result) -> List[Column]:
     """Convert query result to Column objects.
-    
+
     Args:
         query_columns: Column names from the query
         result: Query result rows
-        
+
     Returns:
         List of Column objects
     """
@@ -116,10 +116,10 @@ def result_to_column(query_columns, result) -> List[Column]:
 
 def to_json(obj: Any) -> Any:
     """Convert dataclasses to JSON-serializable objects.
-    
+
     Args:
         obj: Object to convert
-        
+
     Returns:
         JSON-serializable version of the object
     """
@@ -153,6 +153,12 @@ def list_databases(clickhouse_server: Optional[str] = None):
     """
     logger.info(f"Listing all databases from server: {clickhouse_server or 'default'}")
     try:
+        # 确保有一个有效的服务器配置
+        if not clickhouse_server:
+            available_servers = get_all_configs().get_available_servers()
+            if not available_servers:
+                return {"error": "No valid ClickHouse configurations available"}
+
         client = create_clickhouse_client(clickhouse_server)
         result = client.command("SHOW DATABASES")
         logger.info(f"Found {len(result) if isinstance(result, list) else 1} databases")
@@ -213,25 +219,66 @@ def list_tables(
 
 def execute_query(query: str, clickhouse_server: Optional[str] = None):
     """Execute a query on the ClickHouse server.
-    
+
     Args:
         query: SQL query to execute
         clickhouse_server: Optional server name
-        
+
     Returns:
         Query results or error dictionary
     """
     try:
+        query_upper = query.upper().strip()
+
+        allowed_prefixes = [
+            "SELECT ",
+            "SHOW ",
+            "DESCRIBE ",
+            "DESC ",
+            "EXISTS ",
+            "EXPLAIN "
+        ]
+
+        forbidden_keywords = [
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "DROP",
+            "CREATE",
+            "ALTER",
+            "RENAME",
+            "TRUNCATE",
+            "OPTIMIZE",
+            "KILL",
+            "ATTACH",
+            "DETACH",
+            "SYSTEM",
+            "GRANT",
+            "REVOKE",
+            "SET "
+        ]
+
+        is_allowed = any(query_upper.startswith(prefix) for prefix in allowed_prefixes)
+
+        contains_forbidden = any(f" {keyword} " in f" {query_upper} " or query_upper.startswith(keyword) for keyword in forbidden_keywords)
+
+        if not is_allowed or contains_forbidden:
+            logger.warning(f"Rejected non-read-only query: {query}")
+            return {
+                "error": "Only read-only queries (SELECT, SHOW, DESCRIBE, etc.) are allowed for security reasons."
+            }
+
         client = create_clickhouse_client(clickhouse_server)
-        
+
         # Check for server name prefix in query and clean it
         if clickhouse_server and f"{clickhouse_server}." in query:
             query = query.replace(f"{clickhouse_server}.", "")
             logger.info(f"Removed server name prefix from query")
-            
+
         try:
-            read_only = get_readonly_setting(client)
-            res = client.query(query, settings={"readonly": read_only})
+            # Force readonly mode regardless of server setting
+            # Setting readonly=1 ensures only read queries are allowed
+            res = client.query(query, settings={"readonly": "1"})
             column_names = res.column_names
             rows = []
             for row in res.result_rows:
@@ -269,7 +316,7 @@ def run_select_query(query: str, clickhouse_server: Optional[str] = None):
         if clickhouse_server and f"{clickhouse_server}." in query:
             query = query.replace(f"{clickhouse_server}.", "")
             logger.info(f"Modified query to remove server prefix")
-            
+
         future = QUERY_EXECUTOR.submit(execute_query, query, clickhouse_server)
         try:
             result = future.result(timeout=SELECT_QUERY_TIMEOUT_SECS)
@@ -282,7 +329,7 @@ def run_select_query(query: str, clickhouse_server: Optional[str] = None):
                     "status": "error",
                     "message": f"Query failed: {result['error']}",
                 }
-            
+
             # Ensure result is serializable
             try:
                 json.dumps(result)
@@ -292,7 +339,7 @@ def run_select_query(query: str, clickhouse_server: Optional[str] = None):
                     "status": "error",
                     "message": f"Result format error: {e}",
                 }
-                
+
             return result
         except concurrent.futures.TimeoutError:
             logger.warning(
@@ -340,45 +387,15 @@ def create_clickhouse_client(server_name: Optional[str] = None):
         raise
 
 
-def get_readonly_setting(client) -> str:
-    """Get the appropriate readonly setting value to use for queries.
-
-    This function handles potential conflicts between server and client readonly settings:
-    - readonly=0: No read-only restrictions
-    - readonly=1: Only read queries allowed, settings cannot be changed
-    - readonly=2: Only read queries allowed, settings can be changed (except readonly itself)
-
-    If server has readonly=2 and client tries to set readonly=1, it would cause:
-    "Setting readonly is unknown or readonly" error
-
-    This function preserves the server's readonly setting unless it's 0, in which case
-    we enforce readonly=1 to ensure queries are read-only.
-
-    Args:
-        client: ClickHouse client connection
-
-    Returns:
-        String value of readonly setting to use
-    """
-    read_only = client.server_settings.get("readonly")
-    if read_only:
-        if read_only == "0":
-            return "1"  # Force read-only mode if server has it disabled
-        else:
-            return read_only.value  # Respect server's readonly setting (likely 2)
-    else:
-        return "1"  # Default to basic read-only mode if setting isn't present
-
-
 @mcp.tool()
 def diagnose_connection(clickhouse_server: Optional[str] = None):
     """Diagnose ClickHouse connection issues.
-    
+
     This tool runs a series of checks to identify connection or permission issues.
-    
+
     Args:
         clickhouse_server: Optional ClickHouse server name to diagnose
-        
+
     Returns:
         Diagnostic information dictionary
     """
@@ -392,20 +409,20 @@ def diagnose_connection(clickhouse_server: Optional[str] = None):
             "secure": client_config["secure"],
             "database": client_config.get("database", "Not specified"),
         }
-        
+
         # Try connecting
         try:
             client = create_clickhouse_client(clickhouse_server)
             version = client.server_version
-            
+
             # Try simple query
             try:
                 result = client.command("SELECT 1")
-                
+
                 # Check system tables access
                 try:
                     tables_result = client.command("SELECT count() FROM system.tables")
-                    
+
                     return {
                         "status": "success",
                         "message": "All checks passed",
@@ -420,7 +437,7 @@ def diagnose_connection(clickhouse_server: Optional[str] = None):
                         "connection": connection_info,
                         "version": version
                     }
-                
+
             except Exception as e:
                 return {
                     "status": "error",
@@ -428,14 +445,14 @@ def diagnose_connection(clickhouse_server: Optional[str] = None):
                     "connection": connection_info,
                     "version": version,
                 }
-                
+
         except Exception as e:
             return {
                 "status": "error",
                 "message": f"Cannot connect to server: {str(e)}",
                 "connection": connection_info,
             }
-            
+
     except Exception as e:
         return {
             "status": "error",
@@ -447,6 +464,6 @@ def run_server():
     """Start the MCP server with the configured transport and port settings."""
     server_config = get_mcp_server_config()
     logger.info(f"Starting MCP server on {server_config.host}:{server_config.port} with streamable-http transport")
-    
+
     # Use streamable-http transport to listen for HTTP requests
     mcp.run(transport="streamable-http")
