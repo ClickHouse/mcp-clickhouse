@@ -1,18 +1,18 @@
-# Build stage
-FROM debian:bookworm-slim AS builder
+FROM debian:bookworm-slim
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y \
-    wget \
-    gcc \
-    g++ \
-    make \
-    zlib1g-dev \
-    libffi-dev \
-    libssl-dev \
-    libbz2-dev \
-    liblzma-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     clang \
+    g++ \
+    gcc \
+    libbz2-dev \
+    libffi-dev \
+    liblzma-dev \
+    libssl-dev \
+    make \
+    wget \
+    ca-certificates \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and install Python from source
@@ -27,15 +27,14 @@ RUN wget https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VER
     && rm -rf Python-${PYTHON_VERSION} \
     && rm Python-${PYTHON_VERSION}.tgz
 
-# Create and activate virtual environment
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+RUN wget https://bootstrap.pypa.io/get-pip.py -O get-pip.py \
+    && python3 get-pip.py \
+    && rm get-pip.py
+
+WORKDIR /app
 
 # Install UV package manager
-RUN pip install uv
-
-# Set working directory
-WORKDIR /app
+RUN pip install --no-cache-dir uv
 
 # Copy application files
 COPY . .
@@ -43,35 +42,13 @@ COPY . .
 # Install dependencies
 RUN uv sync
 
-# Runtime stage
-FROM debian:bookworm-slim
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    zlib1g \
-    libffi8 \
-    libssl3 \
-    libbz2-1.0 \
-    liblzma5 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Python from builder
-COPY --from=builder /usr/local/bin /usr/local/bin
-COPY --from=builder /usr/local/lib /usr/local/lib
-COPY --from=builder /usr/local/include /usr/local/include
-
-# Copy virtual environment from builder
-COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Set working directory
-WORKDIR /app
-
-# Copy application files
-COPY . .
-
 # Expose port
-EXPOSE 18123
+EXPOSE 8213
+
+# Environment variables for server configuration
+ENV MCP_SERVER_MODE=http
+ENV MCP_SERVER_HOST=0.0.0.0
+ENV MCP_SERVER_PORT=8213
 
 # Run the application
-CMD ["python3", "server.py"]
+CMD ["uv", "run", "server.py"]
