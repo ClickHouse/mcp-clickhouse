@@ -5,12 +5,15 @@ import concurrent.futures
 import atexit
 
 import clickhouse_connect
+import chdb.session as chs
 from clickhouse_connect.driver.binding import format_query_value
 from dotenv import load_dotenv
 from fastmcp import FastMCP
+from fastmcp.prompts import Prompt
 from dataclasses import dataclass, field, asdict, is_dataclass
 
-from mcp_clickhouse.mcp_env import get_config
+from mcp_clickhouse.mcp_env import get_config, get_chdb_config
+from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 
 
 @dataclass
@@ -65,6 +68,7 @@ mcp = FastMCP(
         "clickhouse-connect",
         "python-dotenv",
         "pip-system-certs",
+        "chdb",
     ],
 )
 
@@ -87,7 +91,6 @@ def to_json(obj: Any) -> str:
     return obj
 
 
-@mcp.tool()
 def list_databases():
     """List available ClickHouse databases"""
     logger.info("Listing all databases")
@@ -104,7 +107,6 @@ def list_databases():
     return json.dumps(databases)
 
 
-@mcp.tool()
 def list_tables(database: str, like: Optional[str] = None, not_like: Optional[str] = None):
     """List available ClickHouse tables in a database, including schema, comment,
     row count, and column count."""
@@ -151,7 +153,6 @@ def execute_query(query: str):
         return {"error": str(err)}
 
 
-@mcp.tool()
 def run_select_query(query: str):
     """Run a SELECT query in a ClickHouse database"""
     logger.info(f"Executing SELECT query: {query}")
@@ -233,3 +234,107 @@ def get_readonly_setting(client) -> str:
             return read_only.value  # Respect server's readonly setting (likely 2)
     else:
         return "1"  # Default to basic read-only mode if setting isn't present
+
+
+def create_chdb_client():
+    """Create a chDB client connection."""
+    if not get_chdb_config().enabled:
+        raise ValueError("chDB is not enabled. Set CHDB_ENABLED=true to enable it.")
+    return _chdb_client
+
+
+def execute_chdb_query(query: str):
+    """Execute a query using chDB client."""
+    client = create_chdb_client()
+    try:
+        res = client.query(query, 'JSON')
+        if res.has_error():
+            error_msg = res.error_message()
+            logger.error(f"Error executing chDB query: {error_msg}")
+            return {"error": error_msg}
+
+        result_data = res.data()
+        if not result_data:
+            return []
+
+        result_json = json.loads(result_data)
+
+        return result_json.get("data", [])
+
+    except Exception as err:
+        logger.error(f"Error executing chDB query: {err}")
+        return {"error": str(err)}
+
+
+def run_chdb_select_query(query: str):
+    """Run a SELECT query in chDB"""
+    logger.info(f"Executing chDB SELECT query: {query}")
+    try:
+        future = QUERY_EXECUTOR.submit(execute_chdb_query, query)
+        try:
+            result = future.result(timeout=SELECT_QUERY_TIMEOUT_SECS)
+            # Check if we received an error structure from execute_chdb_query
+            if isinstance(result, dict) and "error" in result:
+                logger.warning(f"chDB query failed: {result['error']}")
+                return {
+                    "status": "error",
+                    "message": f"chDB query failed: {result['error']}",
+                }
+            return result
+        except concurrent.futures.TimeoutError:
+            logger.warning(
+                f"chDB query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds: {query}"
+            )
+            future.cancel()
+            return {
+                "status": "error",
+                "message": f"chDB query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds",
+            }
+    except Exception as e:
+        logger.error(f"Unexpected error in run_chdb_select_query: {str(e)}")
+        return {"status": "error", "message": f"Unexpected error: {str(e)}"}
+
+
+def chdb_initial_prompt() -> str:
+    """This prompt helps users understand how to interact and perform common operations in chDB"""
+    return CHDB_PROMPT
+
+
+def _init_chdb_client():
+    """Initialize the global chDB client instance."""
+    try:
+        if not get_chdb_config().enabled:
+            logger.info("chDB is disabled, skipping client initialization")
+            return None
+
+        client_config = get_chdb_config().get_client_config()
+        data_path = client_config['data_path']
+        logger.info(f"Creating chDB client with data_path={data_path}")
+        client = chs.Session(path=data_path)
+        logger.info(f"Successfully connected to chDB with data_path={data_path}")
+        return client
+    except Exception as e:
+        logger.error(f"Failed to initialize chDB client: {e}")
+        return None
+
+
+# Register tools based on configuration
+if get_config().enabled:
+    mcp.add_tool(list_databases)
+    mcp.add_tool(list_tables)
+    mcp.add_tool(run_select_query)
+    logger.info("ClickHouse tools registered")
+
+
+if get_chdb_config().enabled:
+    _chdb_client = _init_chdb_client()
+    atexit.register(lambda: _chdb_client.close() if _chdb_client is not None else None)
+
+    mcp.add_tool(run_chdb_select_query)
+    chdb_prompt = Prompt.from_function(
+        chdb_initial_prompt,
+        name="chdb_initial_prompt",
+        description="This prompt helps users understand how to interact and perform common operations in chDB"
+    )
+    mcp.add_prompt(chdb_prompt)
+    logger.info("chDB tools and prompts registered")

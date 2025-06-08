@@ -30,11 +30,21 @@ class ClickHouseConfig:
         CLICKHOUSE_DATABASE: Default database to use (default: None)
         CLICKHOUSE_PROXY_PATH: Path to be added to the host URL. For instance, for servers behind an HTTP proxy (default: None)
         CLICKHOUSE_MCP_SERVER_TRANSPORT: MCP server transport method - "stdio", "http", or "sse" (default: stdio)
+        CLICKHOUSE_ENABLED: Enable ClickHouse server (default: true)
     """
 
     def __init__(self):
         """Initialize the configuration from environment variables."""
-        self._validate_required_vars()
+        if self.enabled:
+            self._validate_required_vars()
+
+    @property
+    def enabled(self) -> bool:
+        """Get whether ClickHouse server is enabled.
+
+        Default: True
+        """
+        return os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true"
 
     @property
     def host(self) -> str:
@@ -160,8 +170,58 @@ class ClickHouseConfig:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
 
-# Global instance placeholder for the singleton pattern
+@dataclass
+class ChDBConfig:
+    """Configuration for chDB connection settings.
+
+    This class handles all environment variable configuration with sensible defaults
+    and type conversion. It provides typed methods for accessing each configuration value.
+
+    Required environment variables:
+        CHDB_DATA_PATH: The path to the chDB data directory (only required if CHDB_ENABLED=true)
+    """
+
+    def __init__(self):
+        """Initialize the configuration from environment variables."""
+        if self.enabled:
+            self._validate_required_vars()
+
+    @property
+    def enabled(self) -> bool:
+        """Get whether chDB is enabled.
+
+        Default: False
+        """
+        return os.getenv("CHDB_ENABLED", "false").lower() == "true"
+
+    @property
+    def data_path(self) -> str:
+        """Get the chDB data path."""
+        return os.environ["CHDB_DATA_PATH"]
+
+    def get_client_config(self) -> dict:
+        """Get the configuration dictionary for chDB client.
+
+        Returns:
+            dict: Configuration ready to be passed to chDB client
+        """
+        return {
+            "data_path": self.data_path,
+        }
+
+    def _validate_required_vars(self) -> None:
+        """Validate that all required environment variables are set.
+
+        Raises:
+            ValueError: If any required environment variable is missing.
+        """
+        if self.enabled and "CHDB_DATA_PATH" not in os.environ:
+            raise ValueError("Missing required environment variable: CHDB_DATA_PATH")
+
+
+# Global instance placeholders for the singleton pattern
 _CONFIG_INSTANCE = None
+_CHDB_CONFIG_INSTANCE = None
 
 
 def get_config():
@@ -174,3 +234,17 @@ def get_config():
         # Instantiate the config object here, ensuring load_dotenv() has likely run
         _CONFIG_INSTANCE = ClickHouseConfig()
     return _CONFIG_INSTANCE
+
+
+def get_chdb_config() -> ChDBConfig:
+    """
+    Gets the singleton instance of ChDBConfig.
+    Instantiates it on the first call.
+    
+    Returns:
+        ChDBConfig: The chDB configuration instance
+    """
+    global _CHDB_CONFIG_INSTANCE
+    if _CHDB_CONFIG_INSTANCE is None:
+        _CHDB_CONFIG_INSTANCE = ChDBConfig()
+    return _CHDB_CONFIG_INSTANCE
