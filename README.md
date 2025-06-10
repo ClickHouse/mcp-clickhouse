@@ -316,6 +316,7 @@ uv sync --all-extras --dev # install dev dependencies
 uv run ruff check . # run linting
 
 docker compose up -d test_services # start ClickHouse
+uv run pytest tests
 uv run pytest tests/test_tool.py # ClickHouse only
 uv run pytest tests/test_chdb_tool.py # chDB only
 ```

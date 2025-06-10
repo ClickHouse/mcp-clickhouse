@@ -30,15 +30,7 @@ jobs:
       - name: Install Project
         run: uv sync --all-extras --dev
 
-      - name: Run chDB tests
-        env:
-          CHDB_ENABLED: "true"
-          CLICKHOUSE_ENABLED: "false"
-          CHDB_DATA_PATH: ":memory:"
-        run: |
-          uv run pytest tests/test_chdb_tool.py
-
-      - name: Run ClickHouse tests
+      - name: Run tests 
         env:
           CLICKHOUSE_HOST: "localhost"
           CLICKHOUSE_PORT: "8123"
@@ -46,8 +38,10 @@ jobs:
           CLICKHOUSE_PASSWORD: ""
           CLICKHOUSE_SECURE: "false"
           CLICKHOUSE_VERIFY: "false"
+          CHDB_ENABLED: "true"
+          CHDB_DATA_PATH: ":memory:"
         run: |
-          uv run pytest tests/test_tool.py
+          uv run pytest tests 
 
       - name: Lint with Ruff
         run: uv run ruff check .
