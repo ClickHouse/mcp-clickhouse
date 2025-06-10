@@ -183,22 +183,9 @@ CLICKHOUSE_PASSWORD=clickhouse
 
 The following environment variables are used to configure the ClickHouse and chDB connections:
 
-#### chDB Variables
-
-* `CHDB_ENABLED`: Enable/disable chDB functionality
-  * Default: `"false"`
-  * Set to `"true"` to enable chDB tools
-* `CHDB_DATA_PATH`: The path to the chDB data directory
-  * Required when `CHDB_ENABLED=true`
-  * Use `:memory:` for in-memory database (recommended for testing)
-  * Use a file path for persistent storage (e.g., `/path/to/chdb/data`)
-* `CLICKHOUSE_ENABLED`: Enable/disable ClickHouse functionality
-  * Default: `"true"`
-  * Set to `"false"` to disable ClickHouse tools when using chDB only
-
 #### ClickHouse Variables
 
-#### Required Variables
+##### Required Variables
 
 * `CLICKHOUSE_HOST`: The hostname of your ClickHouse server
 * `CLICKHOUSE_USER`: The username for authentication
@@ -207,7 +194,7 @@ The following environment variables are used to configure the ClickHouse and chD
 > [!CAUTION]
 > It is important to treat your MCP database user as you would any external client connecting to your database, granting only the minimum necessary privileges required for its operation. The use of default or administrative users should be strictly avoided at all times.
 
-#### Optional Variables
+##### Optional Variables
 
 * `CLICKHOUSE_PORT`: The port number of your ClickHouse server
   * Default: `8443` if HTTPS is enabled, `8123` if disabled
@@ -230,6 +217,19 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_MCP_SERVER_TRANSPORT`: Sets the transport method for the MCP server.
   * Default: `"stdio"`
   * Valid options: `"stdio"`, `"http"`, `"streamable-http"`, `"sse"`. This is useful for local development with tools like MCP Inspector.
+* `CLICKHOUSE_ENABLED`: Enable/disable ClickHouse functionality
+  * Default: `"true"`
+  * Set to `"false"` to disable ClickHouse tools when using chDB only
+
+#### chDB Variables
+
+* `CHDB_ENABLED`: Enable/disable chDB functionality
+  * Default: `"false"`
+  * Set to `"true"` to enable chDB tools
+* `CHDB_DATA_PATH`: The path to the chDB data directory
+  * Required when `CHDB_ENABLED=true`
+  * Use `:memory:` for in-memory database (recommended for testing)
+  * Use a file path for persistent storage (e.g., `/path/to/chdb/data`)
 
 #### Example Configurations
 
@@ -320,6 +320,8 @@ uv run ruff check . # run linting
 
 docker compose up -d test_services # start ClickHouse
 uv run pytest -v tests
+uv run pytest -v tests/test_tool.py # ClickHouse only
+uv run pytest -v tests/test_chdb_tool.py # chDB only
 ```
 
 ## YouTube Overview
