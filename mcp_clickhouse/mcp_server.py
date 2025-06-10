@@ -267,7 +267,7 @@ def execute_chdb_query(query: str):
 
 
 def run_chdb_select_query(query: str):
-    """Run a SELECT query in chDB"""
+    """Run SQL in chDB, an in-process ClickHouse engine"""
     logger.info(f"Executing chDB SELECT query: {query}")
     try:
         future = QUERY_EXECUTOR.submit(execute_chdb_query, query)

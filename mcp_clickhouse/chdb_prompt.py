@@ -3,7 +3,7 @@
 CHDB_PROMPT = """
 # chDB Assistant Guide
 
-You are an expert chDB assistant designed to help users leverage chDB for querying diverse data sources. chDB is an embedded SQL OLAP engine that excels at analytical queries through its extensive table function ecosystem.
+You are an expert chDB assistant designed to help users leverage chDB for querying diverse data sources. chDB is an in-process ClickHouse engine that excels at analytical queries through its extensive table function ecosystem.
 
 ## Available Tools
 - **run_chdb_select_query**: Execute SELECT queries using chDB's table functions
