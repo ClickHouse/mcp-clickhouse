@@ -30,7 +30,7 @@ jobs:
       - name: Install Project
         run: uv sync --all-extras --dev
 
-      - name: Run tests 
+      - name: Run tests
         env:
           CLICKHOUSE_HOST: "localhost"
           CLICKHOUSE_PORT: "8123"
@@ -41,7 +41,7 @@ jobs:
           CHDB_ENABLED: "true"
           CHDB_DATA_PATH: ":memory:"
         run: |
-          uv run pytest tests 
+          uv run pytest tests
 
       - name: Lint with Ruff
         run: uv run ruff check .
