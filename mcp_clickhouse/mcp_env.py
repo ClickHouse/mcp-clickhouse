@@ -28,6 +28,7 @@ class ClickHouseConfig:
         CLICKHOUSE_CONNECT_TIMEOUT: Connection timeout in seconds (default: 30)
         CLICKHOUSE_SEND_RECEIVE_TIMEOUT: Send/receive timeout in seconds (default: 300)
         CLICKHOUSE_DATABASE: Default database to use (default: None)
+        CLICKHOUSE_PROXY_PATH: Path to be added to the host URL. For instance, for servers behind an HTTP proxy (default: None)
     """
 
     def __init__(self):
