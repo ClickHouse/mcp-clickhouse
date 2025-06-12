@@ -216,8 +216,8 @@ You can set these variables in your environment, in a `.env` file, or in the Cla
 uv sync --all-extras --dev # install dev dependencies
 uv run ruff check . # run linting
 
-docker compose up -d test_services # start ClickHouse
-uv run pytest tests
+docker compose up -d clickhouse # start ClickHouse
+env $(cat tests/test.env | xargs) uv run pytest tests # one-liner to run tests with default env vars
 ```
 
 ## YouTube Overview
