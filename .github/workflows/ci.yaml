@@ -59,11 +59,12 @@ jobs:
         with:
           context: .
           push: false
+          load: true
           tags: mcp-clickhouse:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Test Docker image
+      - name: Test Docker image import
         run: |
           docker run --rm mcp-clickhouse:test python -c "import mcp_clickhouse; print('✅ MCP ClickHouse Docker image works!')"
           
