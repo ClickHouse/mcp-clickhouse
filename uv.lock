@@ -1,5 +1,4 @@
 version = 1
-revision = 1
 requires-python = ">=3.13"
 
 [[package]]
@@ -210,7 +209,7 @@ cli = [
 
 [[package]]
 name = "mcp-clickhouse"
-version = "0.1.6"
+version = "0.1.7"
 source = { editable = "." }
 dependencies = [
     { name = "clickhouse-connect" },
@@ -236,7 +235,6 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "uvicorn", specifier = ">=0.34.0" },
 ]
-provides-extras = ["dev"]
 
 [[package]]
 name = "mdurl"

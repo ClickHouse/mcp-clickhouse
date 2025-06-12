@@ -43,3 +43,30 @@ jobs:
 
       - name: Lint with Ruff
         run: uv run ruff check .
+
+  docker-build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: mcp-clickhouse:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test Docker image
+        run: |
+          docker run --rm mcp-clickhouse:test python -c "import mcp_clickhouse; print('✅ MCP ClickHouse Docker image works!')"
+          
+      - name: Test Docker image default command
+        run: |
+          timeout 10s docker run --rm mcp-clickhouse:test || [ $? = 124 ] && echo "✅ Docker container starts successfully"
