@@ -8,7 +8,7 @@ An MCP server for ClickHouse.
 
 ## Features
 
-### Tools
+### ClickHouse Tools
 
 * `run_select_query`
   * Execute SQL queries on your ClickHouse cluster.
@@ -22,7 +22,16 @@ An MCP server for ClickHouse.
   * List all tables in a database.
   * Input: `database` (string): The name of the database.
 
+### chDB Tools
+
+* `run_chdb_select_query`
+  * Execute SQL queries using chDB's embedded OLAP engine.
+  * Input: `sql` (string): The SQL query to execute.
+  * Query data directly from various sources (files, URLs, databases) without ETL processes.
+
 ## Configuration
+
+This MCP server supports both ClickHouse and chDB. You can enable either or both depending on your needs.
 
 1. Open the Claude Desktop configuration file located at:
    * On macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -90,6 +99,63 @@ Or, if you'd like to try it out with the [ClickHouse SQL Playground](https://sql
 }
 ```
 
+For chDB (embedded OLAP engine), add the following configuration:
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp-clickhouse",
+        "--python",
+        "3.13",
+        "mcp-clickhouse"
+      ],
+      "env": {
+        "CHDB_ENABLED": "true",
+        "CLICKHOUSE_ENABLED": "false",
+        "CHDB_DATA_PATH": "/path/to/chdb/data"
+      }
+    }
+  }
+}
+```
+
+You can also enable both ClickHouse and chDB simultaneously:
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp-clickhouse",
+        "--python",
+        "3.13",
+        "mcp-clickhouse"
+      ],
+      "env": {
+        "CLICKHOUSE_HOST": "<clickhouse-host>",
+        "CLICKHOUSE_PORT": "<clickhouse-port>",
+        "CLICKHOUSE_USER": "<clickhouse-user>",
+        "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "CLICKHOUSE_SECURE": "true",
+        "CLICKHOUSE_VERIFY": "true",
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
+        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30",
+        "CHDB_ENABLED": "true",
+        "CHDB_DATA_PATH": "/path/to/chdb/data"
+      }
+    }
+  }
+}
+```
+
 3. Locate the command entry for `uv` and replace it with the absolute path to the `uv` executable. This ensures that the correct version of `uv` is used when starting the server. On a mac, you can find this path using `which uv`.
 
 4. Restart Claude Desktop to apply the changes.
@@ -115,9 +181,11 @@ CLICKHOUSE_PASSWORD=clickhouse
 
 ### Environment Variables
 
-The following environment variables are used to configure the ClickHouse connection:
+The following environment variables are used to configure the ClickHouse and chDB connections:
 
-#### Required Variables
+#### ClickHouse Variables
+
+##### Required Variables
 
 * `CLICKHOUSE_HOST`: The hostname of your ClickHouse server
 * `CLICKHOUSE_USER`: The username for authentication
@@ -126,7 +194,7 @@ The following environment variables are used to configure the ClickHouse connect
 > [!CAUTION]
 > It is important to treat your MCP database user as you would any external client connecting to your database, granting only the minimum necessary privileges required for its operation. The use of default or administrative users should be strictly avoided at all times.
 
-#### Optional Variables
+##### Optional Variables
 
 * `CLICKHOUSE_PORT`: The port number of your ClickHouse server
   * Default: `8443` if HTTPS is enabled, `8123` if disabled
@@ -146,6 +214,19 @@ The following environment variables are used to configure the ClickHouse connect
 * `CLICKHOUSE_DATABASE`: Default database to use
   * Default: None (uses server default)
   * Set this to automatically connect to a specific database
+* `CLICKHOUSE_ENABLED`: Enable/disable ClickHouse functionality
+  * Default: `"true"`
+  * Set to `"false"` to disable ClickHouse tools when using chDB only
+
+#### chDB Variables
+
+* `CHDB_ENABLED`: Enable/disable chDB functionality
+  * Default: `"false"`
+  * Set to `"true"` to enable chDB tools
+* `CHDB_DATA_PATH`: The path to the chDB data directory
+  * Required when `CHDB_ENABLED=true`
+  * Use `:memory:` for in-memory database (recommended for testing)
+  * Use a file path for persistent storage (e.g., `/path/to/chdb/data`)
 
 #### Example Configurations
 
@@ -184,6 +265,24 @@ CLICKHOUSE_PASSWORD=
 # Uses secure defaults (HTTPS on port 8443)
 ```
 
+For chDB only (in-memory):
+
+```env
+# chDB configuration
+CHDB_ENABLED=true
+CLICKHOUSE_ENABLED=false
+CHDB_DATA_PATH=:memory:
+```
+
+For chDB with persistent storage:
+
+```env
+# chDB configuration
+CHDB_ENABLED=true
+CLICKHOUSE_ENABLED=false
+CHDB_DATA_PATH=/path/to/chdb/data
+```
+
 You can set these variables in your environment, in a `.env` file, or in the Claude Desktop configuration:
 
 ```json
@@ -218,6 +317,8 @@ uv run ruff check . # run linting
 
 docker compose up -d test_services # start ClickHouse
 uv run pytest tests
+uv run pytest tests/test_tool.py # ClickHouse only
+uv run pytest tests/test_chdb_tool.py # chDB only
 ```
 
 ## YouTube Overview
