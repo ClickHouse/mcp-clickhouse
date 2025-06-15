@@ -137,15 +137,8 @@ def execute_query(query: str):
     try:
         read_only = get_readonly_setting(client)
         res = client.query(query, settings={"readonly": read_only})
-        column_names = res.column_names
-        rows = []
-        for row in res.result_rows:
-            row_dict = {}
-            for i, col_name in enumerate(column_names):
-                row_dict[col_name] = row[i]
-            rows.append(row_dict)
-        logger.info(f"Query returned {len(rows)} rows")
-        return rows
+        logger.info(f"Query returned {len(res.result_rows)} rows")
+        return {"columns": res.column_names, "rows": res.result_rows}
     except Exception as err:
         logger.error(f"Error executing query: {err}")
         # Return a structured dictionary rather than a string to ensure proper serialization
