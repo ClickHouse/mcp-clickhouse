@@ -209,7 +209,7 @@ cli = [
 
 [[package]]
 name = "mcp-clickhouse"
-version = "0.1.7"
+version = "0.1.8"
 source = { editable = "." }
 dependencies = [
     { name = "clickhouse-connect" },
