@@ -1,6 +1,6 @@
 [project]
 name = "mcp-clickhouse"
-version = "0.1.7"
+version = "0.1.8"
 description = "An MCP server for ClickHouse."
 readme = "README.md"
 license = "Apache-2.0"
