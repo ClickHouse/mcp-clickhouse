@@ -147,6 +147,13 @@ The following environment variables are used to configure the ClickHouse connect
   * Default: None (uses server default)
   * Set this to automatically connect to a specific database
 
+#### MCP Server Configuration
+This project uses the official [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk), which
+allows for configuring your MCP server through FASTMCP_* environment variables
+* `FASTMCP_HOST`: The host the mcp server should bind to, relevant for non stdio transports
+  * Default: 127.0.0.1
+  * Set this to 0.0.0.0 if you intend on running the mcp server as a container
+
 #### Example Configurations
 
 For local development with Docker:

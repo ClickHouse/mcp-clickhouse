@@ -29,11 +29,19 @@ class ClickHouseConfig:
         CLICKHOUSE_SEND_RECEIVE_TIMEOUT: Send/receive timeout in seconds (default: 300)
         CLICKHOUSE_DATABASE: Default database to use (default: None)
         CLICKHOUSE_PROXY_PATH: Path to be added to the host URL. For instance, for servers behind an HTTP proxy (default: None)
+        CLICKHOUSE_MCP_TRANSPORT: Transport method for mcp server, either "sse", "streamable-http", or "stdio" (default: "stdio")
     """
 
     def __init__(self):
         """Initialize the configuration from environment variables."""
         self._validate_required_vars()
+
+    @property
+    def transport(self) -> str:
+        """Get the transport for the MCP server to use"""
+        if "CLICKHOUSE_MCP_TRANSPORT" in os.environ:
+            return os.environ["CLICKHOUSE_MCP_TRANSPORT"]
+        return "stdio"
 
     @property
     def host(self) -> str:
@@ -97,7 +105,7 @@ class ClickHouseConfig:
         Default: 300 (ClickHouse default)
         """
         return int(os.getenv("CLICKHOUSE_SEND_RECEIVE_TIMEOUT", "300"))
-    
+
     @property
     def proxy_path(self) -> str:
         return os.getenv("CLICKHOUSE_PROXY_PATH")
@@ -123,7 +131,7 @@ class ClickHouseConfig:
         # Add optional database if set
         if self.database:
             config["database"] = self.database
-        
+
         if self.proxy_path:
             config["proxy_path"] = self.proxy_path
 

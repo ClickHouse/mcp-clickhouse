@@ -11,5 +11,21 @@ services:
       - CLICKHOUSE_PASSWORD=clickhouse
       - CLICKHOUSE_DB=default
 
+#  Alternatively, run mcp server w compose, and spawn inspector via `npx @modelcontextprotocol/inspector`
+#  mcp-clickhouse:
+#    build: ../
+#    ports:
+#      - "8000:8000"
+#    environment:
+#      - CLICKHOUSE_USER=default
+#      - CLICKHOUSE_PASSWORD=clickhouse
+#      - CLICKHOUSE_DB=default
+#      - CLICKHOUSE_HOST=clickhouse
+#      - CLICKHOUSE_PORT=8123
+#      - CLICKHOUSE_SECURE=false
+#      - CLICKHOUSE_VERIFY=false
+#      - CLICKHOUSE_MCP_TRANSPORT=streamable-http
+#      - FASTMCP_HOST=0.0.0.0
+
 volumes:
   clickhouse-data:
