@@ -62,10 +62,10 @@ class TestClickhouseTools(unittest.TestCase):
         """Test running a SELECT query successfully."""
         query = f"SELECT * FROM {self.test_db}.{self.test_table}"
         result = run_select_query(query)
-        self.assertIsInstance(result, list)
+        self.assertIsInstance(result, dict)
         self.assertEqual(len(result), 2)
-        self.assertEqual(result[0]["id"], 1)
-        self.assertEqual(result[0]["name"], "Alice")
+        self.assertEqual(result["rows"][0][0], 1)
+        self.assertEqual(result["rows"][0][1], "Alice")
 
     def test_run_select_query_failure(self):
         """Test running a SELECT query with an error."""
