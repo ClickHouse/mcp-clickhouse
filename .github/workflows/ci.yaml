@@ -39,7 +39,6 @@ jobs:
           CLICKHOUSE_SECURE: "false"
           CLICKHOUSE_VERIFY: "false"
           CHDB_ENABLED: "true"
-          CHDB_DATA_PATH: ":memory:"
         run: |
           uv run pytest tests
 

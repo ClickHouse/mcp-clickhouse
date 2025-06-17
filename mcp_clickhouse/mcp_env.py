@@ -197,7 +197,7 @@ class ChDBConfig:
     @property
     def data_path(self) -> str:
         """Get the chDB data path."""
-        return os.environ["CHDB_DATA_PATH"]
+        return os.getenv("CHDB_DATA_PATH", ":memory:")
 
     def get_client_config(self) -> dict:
         """Get the configuration dictionary for chDB client.
@@ -215,8 +215,7 @@ class ChDBConfig:
         Raises:
             ValueError: If any required environment variable is missing.
         """
-        if self.enabled and "CHDB_DATA_PATH" not in os.environ:
-            raise ValueError("Missing required environment variable: CHDB_DATA_PATH")
+        pass
 
 
 # Global instance placeholders for the singleton pattern

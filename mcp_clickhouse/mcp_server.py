@@ -328,7 +328,8 @@ if get_config().enabled:
 
 if get_chdb_config().enabled:
     _chdb_client = _init_chdb_client()
-    atexit.register(lambda: _chdb_client.close() if _chdb_client is not None else None)
+    if _chdb_client:
+        atexit.register(lambda: _chdb_client.close())
 
     mcp.add_tool(run_chdb_select_query)
     chdb_prompt = Prompt.from_function(

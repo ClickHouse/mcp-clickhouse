@@ -227,8 +227,8 @@ The following environment variables are used to configure the ClickHouse and chD
   * Default: `"false"`
   * Set to `"true"` to enable chDB tools
 * `CHDB_DATA_PATH`: The path to the chDB data directory
-  * Required when `CHDB_ENABLED=true`
-  * Use `:memory:` for in-memory database (recommended for testing)
+  * Default: `":memory:"` (in-memory database) 
+  * Use `:memory:` for in-memory database
   * Use a file path for persistent storage (e.g., `/path/to/chdb/data`)
 
 #### Example Configurations
@@ -274,7 +274,7 @@ For chDB only (in-memory):
 # chDB configuration
 CHDB_ENABLED=true
 CLICKHOUSE_ENABLED=false
-CHDB_DATA_PATH=:memory:
+# CHDB_DATA_PATH defaults to :memory:
 ```
 
 For chDB with persistent storage:
