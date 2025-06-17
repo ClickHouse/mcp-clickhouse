@@ -291,8 +291,8 @@ def run_chdb_select_query(query: str):
                 "message": f"chDB query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds",
             }
     except Exception as e:
-        logger.error(f"Unexpected error in run_chdb_select_query: {str(e)}")
-        return {"status": "error", "message": f"Unexpected error: {str(e)}"}
+        logger.error(f"Unexpected error in run_chdb_select_query: {e}")
+        return {"status": "error", "message": f"Unexpected error: {e}"}
 
 
 def chdb_initial_prompt() -> str:
