@@ -1,5 +1,5 @@
 # Build stage - Use a Python image with uv pre-installed
-FROM ghcr.io/astral-sh/uv:python3.13-alpine AS builder
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm AS builder
 
 # Install the project into `/app`
 WORKDIR /app
@@ -11,8 +11,8 @@ ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 
 # Install git and build dependencies for ClickHouse client
-RUN --mount=type=cache,target=/var/cache/apk \
-    apk add git build-base
+RUN --mount=type=cache,target=/var/cache/apt \
+    apt-get update && apt-get install -y git build-essential
 
 # Install the project's dependencies using the lockfile and settings
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -28,7 +28,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable
 
 # Production stage - Use minimal Python image
-FROM python:3.13-alpine
+FROM python:3.13-bookworm
 
 # Set the working directory
 WORKDIR /app

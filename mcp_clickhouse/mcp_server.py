@@ -3,6 +3,7 @@ import json
 from typing import Optional, List, Any
 import concurrent.futures
 import atexit
+import os
 
 import clickhouse_connect
 import chdb.session as chs
@@ -319,14 +320,14 @@ def _init_chdb_client():
 
 
 # Register tools based on configuration
-if get_config().enabled:
+if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
     mcp.add_tool(list_databases)
     mcp.add_tool(list_tables)
     mcp.add_tool(run_select_query)
     logger.info("ClickHouse tools registered")
 
 
-if get_chdb_config().enabled:
+if os.getenv("CHDB_ENABLED", "false").lower() == "true":
     _chdb_client = _init_chdb_client()
     if _chdb_client:
         atexit.register(lambda: _chdb_client.close())
