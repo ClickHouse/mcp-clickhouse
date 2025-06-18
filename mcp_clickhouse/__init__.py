@@ -3,6 +3,9 @@ from .mcp_server import (
     list_databases,
     list_tables,
     run_select_query,
+    create_chdb_client,
+    run_chdb_select_query,
+    chdb_initial_prompt,
 )
 
 __all__ = [
@@ -10,4 +13,7 @@ __all__ = [
     "list_tables",
     "run_select_query",
     "create_clickhouse_client",
+    "create_chdb_client",
+    "run_chdb_select_query",
+    "chdb_initial_prompt",
 ]
