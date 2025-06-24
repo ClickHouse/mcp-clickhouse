@@ -111,7 +111,7 @@ class ClickHouseConfig:
         Default: "stdio"
         """
         transport = os.getenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "stdio").lower()
-        valid_transports = ["stdio", "http", "streamable-http", "sse"]
+        valid_transports = "stdio", "http", "streamable-http", "sse"
         if transport not in valid_transports:
             raise ValueError(
                 f"Invalid transport '{transport}'. Valid options: {', '.join(valid_transports)}"
