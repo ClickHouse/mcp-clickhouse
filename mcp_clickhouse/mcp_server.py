@@ -7,7 +7,7 @@ import atexit
 import clickhouse_connect
 from clickhouse_connect.driver.binding import format_query_value
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 from dataclasses import dataclass, field, asdict, is_dataclass
 
 from mcp_clickhouse.mcp_env import get_config
@@ -59,14 +59,14 @@ SELECT_QUERY_TIMEOUT_SECS = 30
 
 load_dotenv()
 
-deps = [
-    "clickhouse-connect",
-    "python-dotenv",
-    "uvicorn",
-    "pip-system-certs",
-]
-
-mcp = FastMCP(MCP_SERVER_NAME, dependencies=deps)
+mcp = FastMCP(
+    name=MCP_SERVER_NAME,
+    dependencies=[
+        "clickhouse-connect",
+        "python-dotenv",
+        "pip-system-certs",
+    ],
+)
 
 
 def result_to_table(query_columns, result) -> List[Table]:
@@ -93,14 +93,19 @@ def list_databases():
     logger.info("Listing all databases")
     client = create_clickhouse_client()
     result = client.command("SHOW DATABASES")
-    logger.info(f"Found {len(result) if isinstance(result, list) else 1} databases")
-    return result
+
+    # Convert newline-separated string to list and trim whitespace
+    if isinstance(result, str):
+        databases = [db.strip() for db in result.strip().split("\n")]
+    else:
+        databases = [result]
+
+    logger.info(f"Found {len(databases)} databases")
+    return json.dumps(databases)
 
 
 @mcp.tool()
-def list_tables(
-    database: str, like: Optional[str] = None, not_like: Optional[str] = None
-):
+def list_tables(database: str, like: Optional[str] = None, not_like: Optional[str] = None):
     """List available ClickHouse tables in a database, including schema, comment,
     row count, and column count."""
     logger.info(f"Listing tables in database '{database}'")
@@ -165,9 +170,7 @@ def run_select_query(query: str):
                 }
             return result
         except concurrent.futures.TimeoutError:
-            logger.warning(
-                f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds: {query}"
-            )
+            logger.warning(f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds: {query}")
             future.cancel()
             # Return a properly structured response for timeout errors
             return {
