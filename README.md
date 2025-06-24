@@ -111,7 +111,7 @@ CLICKHOUSE_PASSWORD=clickhouse
 
 3. Run `uv sync` to install the dependencies. To install `uv` follow the instructions [here](https://docs.astral.sh/uv/). Then do `source .venv/bin/activate`.
 
-4. For easy testing, you can run `mcp dev mcp_clickhouse/mcp_server.py` to start the MCP server.
+4. For easy testing with the MCP Inspector, run `fastmcp dev mcp_clickhouse/mcp_server.py` to start the MCP server.
 
 ### Environment Variables
 
@@ -146,6 +146,9 @@ The following environment variables are used to configure the ClickHouse connect
 * `CLICKHOUSE_DATABASE`: Default database to use
   * Default: None (uses server default)
   * Set this to automatically connect to a specific database
+* `CLICKHOUSE_MCP_SERVER_TRANSPORT`: Sets the transport method for the MCP server.
+  * Default: `"stdio"`
+  * Valid options: `"stdio"`, `"http"`, `"streamable-http"`, `"sse"`. This is useful for local development with tools like MCP Inspector.
 
 #### Example Configurations
 
@@ -217,7 +220,7 @@ uv sync --all-extras --dev # install dev dependencies
 uv run ruff check . # run linting
 
 docker compose up -d test_services # start ClickHouse
-uv run pytest tests
+uv run pytest -v tests
 ```
 
 ## YouTube Overview
