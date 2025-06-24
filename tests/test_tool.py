@@ -42,7 +42,6 @@ class TestClickhouseTools(unittest.TestCase):
 
     def test_list_databases(self):
         """Test listing databases."""
-        # Access the underlying function through .fn attribute
         result = list_databases.fn()
         # Parse JSON response
         databases = json.loads(result)
@@ -50,7 +49,6 @@ class TestClickhouseTools(unittest.TestCase):
 
     def test_list_tables_without_like(self):
         """Test listing tables without a 'LIKE' filter."""
-        # Access the underlying function through .fn attribute
         result = list_tables.fn(self.test_db)
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
@@ -58,7 +56,6 @@ class TestClickhouseTools(unittest.TestCase):
 
     def test_list_tables_with_like(self):
         """Test listing tables with a 'LIKE' filter."""
-        # Access the underlying function through .fn attribute
         result = list_tables.fn(self.test_db, like=f"{self.test_table}%")
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
@@ -67,7 +64,6 @@ class TestClickhouseTools(unittest.TestCase):
     def test_run_select_query_success(self):
         """Test running a SELECT query successfully."""
         query = f"SELECT * FROM {self.test_db}.{self.test_table}"
-        # Access the underlying function through .fn attribute
         result = run_select_query.fn(query)
         self.assertIsInstance(result, dict)
         self.assertEqual(len(result["rows"]), 2)
@@ -77,7 +73,6 @@ class TestClickhouseTools(unittest.TestCase):
     def test_run_select_query_failure(self):
         """Test running a SELECT query with an error."""
         query = f"SELECT * FROM {self.test_db}.non_existent_table"
-        # Access the underlying function through .fn attribute
         result = run_select_query.fn(query)
         self.assertIsInstance(result, dict)
         self.assertEqual(result["status"], "error")
@@ -85,7 +80,6 @@ class TestClickhouseTools(unittest.TestCase):
 
     def test_table_and_column_comments(self):
         """Test that table and column comments are correctly retrieved."""
-        # Access the underlying function through .fn attribute
         result = list_tables.fn(self.test_db)
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
