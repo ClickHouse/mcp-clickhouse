@@ -391,7 +391,7 @@ wheels = [
 
 [[package]]
 name = "mcp-clickhouse"
-version = "0.1.8"
+version = "0.1.9"
 source = { editable = "." }
 dependencies = [
     { name = "clickhouse-connect" },
