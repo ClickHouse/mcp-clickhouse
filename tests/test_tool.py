@@ -1,4 +1,5 @@
 import unittest
+import json
 
 from dotenv import load_dotenv
 
@@ -41,19 +42,24 @@ class TestClickhouseTools(unittest.TestCase):
 
     def test_list_databases(self):
         """Test listing databases."""
-        result = list_databases()
-        self.assertIn(self.test_db, result)
+        # Access the underlying function through .fn attribute
+        result = list_databases.fn()
+        # Parse JSON response
+        databases = json.loads(result)
+        self.assertIn(self.test_db, databases)
 
     def test_list_tables_without_like(self):
         """Test listing tables without a 'LIKE' filter."""
-        result = list_tables(self.test_db)
+        # Access the underlying function through .fn attribute
+        result = list_tables.fn(self.test_db)
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["name"], self.test_table)
 
     def test_list_tables_with_like(self):
         """Test listing tables with a 'LIKE' filter."""
-        result = list_tables(self.test_db, like=f"{self.test_table}%")
+        # Access the underlying function through .fn attribute
+        result = list_tables.fn(self.test_db, like=f"{self.test_table}%")
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["name"], self.test_table)
@@ -61,23 +67,26 @@ class TestClickhouseTools(unittest.TestCase):
     def test_run_select_query_success(self):
         """Test running a SELECT query successfully."""
         query = f"SELECT * FROM {self.test_db}.{self.test_table}"
-        result = run_select_query(query)
+        # Access the underlying function through .fn attribute
+        result = run_select_query.fn(query)
         self.assertIsInstance(result, dict)
-        self.assertEqual(len(result), 2)
+        self.assertEqual(len(result["rows"]), 2)
         self.assertEqual(result["rows"][0][0], 1)
         self.assertEqual(result["rows"][0][1], "Alice")
 
     def test_run_select_query_failure(self):
         """Test running a SELECT query with an error."""
         query = f"SELECT * FROM {self.test_db}.non_existent_table"
-        result = run_select_query(query)
+        # Access the underlying function through .fn attribute
+        result = run_select_query.fn(query)
         self.assertIsInstance(result, dict)
         self.assertEqual(result["status"], "error")
         self.assertIn("Query failed", result["message"])
 
     def test_table_and_column_comments(self):
         """Test that table and column comments are correctly retrieved."""
-        result = list_tables(self.test_db)
+        # Access the underlying function through .fn attribute
+        result = list_tables.fn(self.test_db)
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
 
