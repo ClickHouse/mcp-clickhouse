@@ -46,7 +46,7 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -67,7 +67,11 @@ jobs:
       - name: Test Docker image import
         run: |
           docker run --rm mcp-clickhouse:test python -c "import mcp_clickhouse; print('✅ MCP ClickHouse Docker image works!')"
-          
+
       - name: Test Docker image default command
         run: |
-          timeout 10s docker run --rm mcp-clickhouse:test || [ $? = 124 ] && echo "✅ Docker container starts successfully"
+          timeout 10s docker run --rm \
+            -e CLICKHOUSE_HOST=localhost \
+            -e CLICKHOUSE_USER=default \
+            -e CLICKHOUSE_PASSWORD="" \
+            mcp-clickhouse:test || [ $? = 124 ] && echo "✅ Docker container starts successfully"
