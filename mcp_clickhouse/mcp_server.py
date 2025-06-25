@@ -10,6 +10,7 @@ import chdb.session as chs
 from clickhouse_connect.driver.binding import format_query_value
 from dotenv import load_dotenv
 from fastmcp import FastMCP
+from fastmcp.tools import Tool
 from fastmcp.prompts import Prompt
 from dataclasses import dataclass, field, asdict, is_dataclass
 
@@ -321,9 +322,9 @@ def _init_chdb_client():
 
 # Register tools based on configuration
 if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
-    mcp.add_tool(list_databases)
-    mcp.add_tool(list_tables)
-    mcp.add_tool(run_select_query)
+    mcp.add_tool(Tool.from_function(list_databases))
+    mcp.add_tool(Tool.from_function(list_tables))
+    mcp.add_tool(Tool.from_function(run_select_query))
     logger.info("ClickHouse tools registered")
 
 
@@ -332,7 +333,7 @@ if os.getenv("CHDB_ENABLED", "false").lower() == "true":
     if _chdb_client:
         atexit.register(lambda: _chdb_client.close())
 
-    mcp.add_tool(run_chdb_select_query)
+    mcp.add_tool(Tool.from_function(run_chdb_select_query))
     chdb_prompt = Prompt.from_function(
         chdb_initial_prompt,
         name="chdb_initial_prompt",
