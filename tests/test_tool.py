@@ -2,6 +2,7 @@ import unittest
 import json
 
 from dotenv import load_dotenv
+from fastmcp.exceptions import ToolError
 
 from mcp_clickhouse import create_clickhouse_client, list_databases, list_tables, run_select_query
 
@@ -73,10 +74,12 @@ class TestClickhouseTools(unittest.TestCase):
     def test_run_select_query_failure(self):
         """Test running a SELECT query with an error."""
         query = f"SELECT * FROM {self.test_db}.non_existent_table"
-        result = run_select_query(query)
-        self.assertIsInstance(result, dict)
-        self.assertEqual(result["status"], "error")
-        self.assertIn("Query failed", result["message"])
+
+        # Should raise ToolError
+        with self.assertRaises(ToolError) as context:
+            run_select_query(query)
+
+        self.assertIn("Query execution failed", str(context.exception))
 
     def test_table_and_column_comments(self):
         """Test that table and column comments are correctly retrieved."""

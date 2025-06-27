@@ -1,6 +1,7 @@
 import pytest
 import pytest_asyncio
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 import asyncio
 from mcp_clickhouse.mcp_server import mcp, create_clickhouse_client
 from dotenv import load_dotenv
@@ -256,15 +257,12 @@ async def test_run_select_query_error(mcp_server, setup_test_database):
     async with Client(mcp_server) as client:
         # Query non-existent table
         query = f"SELECT * FROM {test_db}.non_existent_table"
-        result = await client.call_tool("run_select_query", {"query": query})
 
-        query_result = json.loads(result[0].text)
+        # Should raise ToolError
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool("run_select_query", {"query": query})
 
-        # Should return error structure
-        assert "status" in query_result
-        assert query_result["status"] == "error"
-        assert "message" in query_result
-        assert "Query failed" in query_result["message"]
+        assert "Query execution failed" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -273,13 +271,12 @@ async def test_run_select_query_syntax_error(mcp_server):
     async with Client(mcp_server) as client:
         # Invalid SQL syntax
         query = "SELECT FROM WHERE"
-        result = await client.call_tool("run_select_query", {"query": query})
 
-        query_result = json.loads(result[0].text)
+        # Should raise ToolError
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool("run_select_query", {"query": query})
 
-        # Should return error structure
-        assert query_result["status"] == "error"
-        assert "Query failed" in query_result["message"]
+        assert "Query execution failed" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
