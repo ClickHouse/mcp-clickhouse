@@ -12,7 +12,10 @@ from dotenv import load_dotenv
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
 from fastmcp.prompts import Prompt
+from fastmcp.exceptions import ToolError
 from dataclasses import dataclass, field, asdict, is_dataclass
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
 
 from mcp_clickhouse.mcp_env import get_config, get_chdb_config
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
@@ -73,6 +76,22 @@ mcp = FastMCP(
         "chdb",
     ],
 )
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request: Request) -> PlainTextResponse:
+    """Health check endpoint for monitoring server status.
+
+    Returns OK if the server is running and can connect to ClickHouse.
+    """
+    try:
+        # Try to create a client connection to verify ClickHouse connectivity
+        client = create_clickhouse_client()
+        version = client.server_version
+        return PlainTextResponse(f"OK - Connected to ClickHouse {version}")
+    except Exception as e:
+        # Return 503 Service Unavailable if we can't connect to ClickHouse
+        return PlainTextResponse(f"ERROR - Cannot connect to ClickHouse: {str(e)}", status_code=503)
 
 
 def result_to_table(query_columns, result) -> List[Table]:
@@ -150,9 +169,7 @@ def execute_query(query: str):
         return {"columns": res.column_names, "rows": res.result_rows}
     except Exception as err:
         logger.error(f"Error executing query: {err}")
-        # Return a structured dictionary rather than a string to ensure proper serialization
-        # by the MCP protocol. String responses for errors can cause BrokenResourceError.
-        return {"error": str(err)}
+        raise ToolError(f"Query execution failed: {str(err)}")
 
 
 def run_select_query(query: str):
@@ -175,16 +192,12 @@ def run_select_query(query: str):
         except concurrent.futures.TimeoutError:
             logger.warning(f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds: {query}")
             future.cancel()
-            # Return a properly structured response for timeout errors
-            return {
-                "status": "error",
-                "message": f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds",
-            }
+            raise ToolError(f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds")
+    except ToolError:
+        raise
     except Exception as e:
         logger.error(f"Unexpected error in run_select_query: {str(e)}")
-        # Catch all other exceptions and return them in a structured format
-        # to prevent MCP serialization failures
-        return {"status": "error", "message": f"Unexpected error: {str(e)}"}
+        raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
 
 
 def create_clickhouse_client():
@@ -249,7 +262,7 @@ def execute_chdb_query(query: str):
     """Execute a query using chDB client."""
     client = create_chdb_client()
     try:
-        res = client.query(query, 'JSON')
+        res = client.query(query, "JSON")
         if res.has_error():
             error_msg = res.error_message()
             logger.error(f"Error executing chDB query: {error_msg}")
@@ -310,7 +323,7 @@ def _init_chdb_client():
             return None
 
         client_config = get_chdb_config().get_client_config()
-        data_path = client_config['data_path']
+        data_path = client_config["data_path"]
         logger.info(f"Creating chDB client with data_path={data_path}")
         client = chs.Session(path=data_path)
         logger.info(f"Successfully connected to chDB with data_path={data_path}")
@@ -337,7 +350,7 @@ if os.getenv("CHDB_ENABLED", "false").lower() == "true":
     chdb_prompt = Prompt.from_function(
         chdb_initial_prompt,
         name="chdb_initial_prompt",
-        description="This prompt helps users understand how to interact and perform common operations in chDB"
+        description="This prompt helps users understand how to interact and perform common operations in chDB",
     )
     mcp.add_prompt(chdb_prompt)
     logger.info("chDB tools and prompts registered")

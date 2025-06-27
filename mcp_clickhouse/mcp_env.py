@@ -7,6 +7,20 @@ and type conversion.
 from dataclasses import dataclass
 import os
 from typing import Optional
+from enum import Enum
+
+
+class TransportType(str, Enum):
+    """Supported MCP server transport types."""
+
+    STDIO = "stdio"
+    HTTP = "http"
+    SSE = "sse"
+
+    @classmethod
+    def values(cls) -> list[str]:
+        """Get all valid transport values."""
+        return [transport.value for transport in cls]
 
 
 @dataclass
@@ -30,6 +44,8 @@ class ClickHouseConfig:
         CLICKHOUSE_DATABASE: Default database to use (default: None)
         CLICKHOUSE_PROXY_PATH: Path to be added to the host URL. For instance, for servers behind an HTTP proxy (default: None)
         CLICKHOUSE_MCP_SERVER_TRANSPORT: MCP server transport method - "stdio", "http", or "sse" (default: stdio)
+        CLICKHOUSE_MCP_BIND_HOST: Host to bind the MCP server to when using HTTP or SSE transport (default: 127.0.0.1)
+        CLICKHOUSE_MCP_BIND_PORT: Port to bind the MCP server to when using HTTP or SSE transport (default: 8000)
         CLICKHOUSE_ENABLED: Enable ClickHouse server (default: true)
     """
 
@@ -120,13 +136,31 @@ class ClickHouseConfig:
         Valid options: "stdio", "http", "sse"
         Default: "stdio"
         """
-        transport = os.getenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "stdio").lower()
-        valid_transports = "stdio", "http", "streamable-http", "sse"
-        if transport not in valid_transports:
-            raise ValueError(
-                f"Invalid transport '{transport}'. Valid options: {', '.join(valid_transports)}"
-            )
+        transport = os.getenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", TransportType.STDIO.value).lower()
+
+        # Validate transport type
+        if transport not in TransportType.values():
+            valid_options = ", ".join(f'"{t}"' for t in TransportType.values())
+            raise ValueError(f"Invalid transport '{transport}'. Valid options: {valid_options}")
         return transport
+
+    @property
+    def mcp_bind_host(self) -> str:
+        """Get the host to bind the MCP server to.
+
+        Only used when transport is "http" or "sse".
+        Default: "127.0.0.1"
+        """
+        return os.getenv("CLICKHOUSE_MCP_BIND_HOST", "127.0.0.1")
+
+    @property
+    def mcp_bind_port(self) -> int:
+        """Get the port to bind the MCP server to.
+
+        Only used when transport is "http" or "sse".
+        Default: 8000
+        """
+        return int(os.getenv("CLICKHOUSE_MCP_BIND_PORT", "8000"))
 
     def get_client_config(self) -> dict:
         """Get the configuration dictionary for clickhouse_connect client.
@@ -239,7 +273,7 @@ def get_chdb_config() -> ChDBConfig:
     """
     Gets the singleton instance of ChDBConfig.
     Instantiates it on the first call.
-    
+
     Returns:
         ChDBConfig: The chDB configuration instance
     """

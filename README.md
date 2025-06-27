@@ -29,6 +29,18 @@ An MCP server for ClickHouse.
   * Input: `sql` (string): The SQL query to execute.
   * Query data directly from various sources (files, URLs, databases) without ETL processes.
 
+### Health Check Endpoint
+
+When running with HTTP or SSE transport, a health check endpoint is available at `/health`. This endpoint:
+- Returns `200 OK` with the ClickHouse version if the server is healthy and can connect to ClickHouse
+- Returns `503 Service Unavailable` if the server cannot connect to ClickHouse
+
+Example:
+```bash
+curl http://localhost:8000/health
+# Response: OK - Connected to ClickHouse 24.3.1
+```
+
 ## Configuration
 
 This MCP server supports both ClickHouse and chDB. You can enable either or both depending on your needs.
@@ -179,6 +191,18 @@ CLICKHOUSE_PASSWORD=clickhouse
 
 4. For easy testing with the MCP Inspector, run `fastmcp dev mcp_clickhouse/mcp_server.py` to start the MCP server.
 
+5. To test with HTTP transport and the health check endpoint:
+   ```bash
+   # Using default port 8000
+   CLICKHOUSE_MCP_SERVER_TRANSPORT=http python -m mcp_clickhouse.main
+
+   # Or with a custom port
+   CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_BIND_PORT=4200 python -m mcp_clickhouse.main
+
+   # Then in another terminal:
+   curl http://localhost:8000/health  # or http://localhost:4200/health for custom port
+   ```
+
 ### Environment Variables
 
 The following environment variables are used to configure the ClickHouse and chDB connections:
@@ -216,7 +240,14 @@ The following environment variables are used to configure the ClickHouse and chD
   * Set this to automatically connect to a specific database
 * `CLICKHOUSE_MCP_SERVER_TRANSPORT`: Sets the transport method for the MCP server.
   * Default: `"stdio"`
-  * Valid options: `"stdio"`, `"http"`, `"streamable-http"`, `"sse"`. This is useful for local development with tools like MCP Inspector.
+  * Valid options: `"stdio"`, `"http"`, `"sse"`. This is useful for local development with tools like MCP Inspector.
+* `CLICKHOUSE_MCP_BIND_HOST`: Host to bind the MCP server to when using HTTP or SSE transport
+  * Default: `"127.0.0.1"`
+  * Set to `"0.0.0.0"` to bind to all network interfaces (useful for Docker or remote access)
+  * Only used when transport is `"http"` or `"sse"`
+* `CLICKHOUSE_MCP_BIND_PORT`: Port to bind the MCP server to when using HTTP or SSE transport
+  * Default: `"8000"`
+  * Only used when transport is `"http"` or `"sse"`
 * `CLICKHOUSE_ENABLED`: Enable/disable ClickHouse functionality
   * Default: `"true"`
   * Set to `"false"` to disable ClickHouse tools when using chDB only
@@ -227,7 +258,7 @@ The following environment variables are used to configure the ClickHouse and chD
   * Default: `"false"`
   * Set to `"true"` to enable chDB tools
 * `CHDB_DATA_PATH`: The path to the chDB data directory
-  * Default: `":memory:"` (in-memory database) 
+  * Default: `":memory:"` (in-memory database)
   * Use `:memory:` for in-memory database
   * Use a file path for persistent storage (e.g., `/path/to/chdb/data`)
 
@@ -286,6 +317,21 @@ CLICKHOUSE_ENABLED=false
 CHDB_DATA_PATH=/path/to/chdb/data
 ```
 
+For MCP Inspector or remote access with HTTP transport:
+
+```env
+CLICKHOUSE_HOST=localhost
+CLICKHOUSE_USER=default
+CLICKHOUSE_PASSWORD=clickhouse
+CLICKHOUSE_MCP_SERVER_TRANSPORT=http
+CLICKHOUSE_MCP_BIND_HOST=0.0.0.0  # Bind to all interfaces
+CLICKHOUSE_MCP_BIND_PORT=4200  # Custom port (default: 8000)
+```
+
+When using HTTP transport, the server will run on the configured port (default 8000). For example, with the above configuration:
+- MCP endpoint: `http://localhost:4200/mcp`
+- Health check: `http://localhost:4200/health`
+
 You can set these variables in your environment, in a `.env` file, or in the Claude Desktop configuration:
 
 ```json
@@ -305,12 +351,17 @@ You can set these variables in your environment, in a `.env` file, or in the Cla
         "CLICKHOUSE_HOST": "<clickhouse-host>",
         "CLICKHOUSE_USER": "<clickhouse-user>",
         "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
-        "CLICKHOUSE_DATABASE": "<optional-database>"
+        "CLICKHOUSE_DATABASE": "<optional-database>",
+        "CLICKHOUSE_MCP_SERVER_TRANSPORT": "stdio",
+        "CLICKHOUSE_MCP_BIND_HOST": "127.0.0.1",
+        "CLICKHOUSE_MCP_BIND_PORT": "8000"
       }
     }
   }
 }
 ```
+
+Note: The bind host and port settings are only used when transport is set to "http" or "sse".
 
 ### Running tests
 
