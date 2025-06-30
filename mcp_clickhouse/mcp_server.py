@@ -18,7 +18,55 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
 from mcp_clickhouse.mcp_env import get_config, get_all_configs, get_mcp_server_config, get_chdb_config
-from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
+
+# chDB prompt content
+CHDB_PROMPT = """
+chDB is an in-process SQL OLAP Engine powered by ClickHouse.
+
+Features:
+- Fast columnar data processing
+- Standard SQL support
+- No need for a separate server
+- Supports various data formats (CSV, JSON, Parquet, etc.)
+- Can work with local files and remote data sources
+
+Common usage patterns:
+
+1. Basic query:
+   SELECT * FROM table LIMIT 10
+
+2. Working with CSV data:
+   SELECT * FROM file('data.csv', 'CSV', 'col1 String, col2 Int32')
+
+3. Aggregations:
+   SELECT count(), avg(column_name) FROM table
+
+4. Data analysis:
+   SELECT 
+     column1,
+     count() as count,
+     sum(column2) as total
+   FROM table
+   GROUP BY column1
+   ORDER BY count DESC
+
+5. Time series analysis:
+   SELECT 
+     toDate(timestamp) as date,
+     count() as events
+   FROM table
+   GROUP BY date
+   ORDER BY date
+
+Tips:
+- Use LIMIT for large datasets to avoid overwhelming output
+- Leverage ClickHouse's built-in functions for data processing
+- chDB supports most ClickHouse SQL features
+- Data types are automatically inferred when possible
+- Use proper column types for better performance
+
+For more complex queries, refer to ClickHouse documentation as chDB is compatible with ClickHouse SQL syntax.
+"""
 
 
 @dataclass
