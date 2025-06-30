@@ -61,7 +61,7 @@ This MCP server supports both ClickHouse and chDB. You can enable either or both
         "--with",
         "mcp-clickhouse",
         "--python",
-        "3.13",
+        "3.10",
         "mcp-clickhouse"
       ],
       "env": {
@@ -93,7 +93,7 @@ Or, if you'd like to try it out with the [ClickHouse SQL Playground](https://sql
         "--with",
         "mcp-clickhouse",
         "--python",
-        "3.13",
+        "3.10",
         "mcp-clickhouse"
       ],
       "env": {
@@ -123,7 +123,7 @@ For chDB (embedded OLAP engine), add the following configuration:
         "--with",
         "mcp-clickhouse",
         "--python",
-        "3.13",
+        "3.10",
         "mcp-clickhouse"
       ],
       "env": {
@@ -148,7 +148,7 @@ You can also enable both ClickHouse and chDB simultaneously:
         "--with",
         "mcp-clickhouse",
         "--python",
-        "3.13",
+        "3.10",
         "mcp-clickhouse"
       ],
       "env": {
@@ -171,6 +171,72 @@ You can also enable both ClickHouse and chDB simultaneously:
 3. Locate the command entry for `uv` and replace it with the absolute path to the `uv` executable. This ensures that the correct version of `uv` is used when starting the server. On a mac, you can find this path using `which uv`.
 
 4. Restart Claude Desktop to apply the changes.
+
+### Running Without uv (Using System Python)
+
+If you prefer to use the system Python installation instead of uv, you can install the package from PyPI and run it directly:
+
+1. Install the package using pip:
+   ```bash
+   python3 -m pip install mcp-clickhouse
+   ```
+
+   To upgrade to the latest version:
+   ```bash
+   python3 -m pip install --upgrade mcp-clickhouse
+   ```
+
+2. Update your Claude Desktop configuration to use Python directly:
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "python3",
+      "args": [
+        "-m",
+        "mcp_clickhouse.main"
+      ],
+      "env": {
+        "CLICKHOUSE_HOST": "<clickhouse-host>",
+        "CLICKHOUSE_PORT": "<clickhouse-port>",
+        "CLICKHOUSE_USER": "<clickhouse-user>",
+        "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "CLICKHOUSE_SECURE": "true",
+        "CLICKHOUSE_VERIFY": "true",
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
+        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30"
+      }
+    }
+  }
+}
+```
+
+Alternatively, you can use the installed script directly:
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "mcp-clickhouse",
+      "env": {
+        "CLICKHOUSE_HOST": "<clickhouse-host>",
+        "CLICKHOUSE_PORT": "<clickhouse-port>",
+        "CLICKHOUSE_USER": "<clickhouse-user>",
+        "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "CLICKHOUSE_SECURE": "true",
+        "CLICKHOUSE_VERIFY": "true",
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
+        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30"
+      }
+    }
+  }
+}
+```
+
+Note: Make sure to use the full path to the Python executable or the `mcp-clickhouse` script if they are not in your system PATH. You can find the paths using:
+- `which python3` for the Python executable
+- `which mcp-clickhouse` for the installed script
 
 ## Development
 
@@ -344,7 +410,7 @@ You can set these variables in your environment, in a `.env` file, or in the Cla
         "--with",
         "mcp-clickhouse",
         "--python",
-        "3.13",
+        "3.10",
         "mcp-clickhouse"
       ],
       "env": {
