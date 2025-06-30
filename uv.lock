@@ -433,7 +433,7 @@ wheels = [
 
 [[package]]
 name = "mcp-clickhouse"
-version = "0.1.10"
+version = "0.1.11"
 source = { editable = "." }
 dependencies = [
     { name = "chdb" },
