@@ -25,7 +25,7 @@ An MCP server for ClickHouse.
 ### chDB Tools
 
 * `run_chdb_select_query`
-  * Execute SQL queries using chDB's embedded ClickHouse engine.
+  * Execute SQL queries using [chDB](https://github.com/chdb-io/chdb)'s embedded ClickHouse engine.
   * Input: `sql` (string): The SQL query to execute.
   * Query data directly from various sources (files, URLs, databases) without ETL processes.
 
