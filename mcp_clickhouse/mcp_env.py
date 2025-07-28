@@ -30,7 +30,7 @@ class ClickHouseConfig:
     This class handles all environment variable configuration with sensible defaults
     and type conversion. It provides typed methods for accessing each configuration value.
 
-    Required environment variables:
+    Required environment variables (only when CLICKHOUSE_ENABLED=true):
         CLICKHOUSE_HOST: The hostname of the ClickHouse server
         CLICKHOUSE_USER: The username for authentication
         CLICKHOUSE_PASSWORD: The password for authentication

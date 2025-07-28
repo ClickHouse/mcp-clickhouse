@@ -85,6 +85,22 @@ async def health_check(request: Request) -> PlainTextResponse:
     Returns OK if the server is running and can connect to ClickHouse.
     """
     try:
+        # Check if ClickHouse is enabled by trying to create config
+        # If ClickHouse is disabled, this will succeed but connection will fail
+        clickhouse_enabled = os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true"
+
+        if not clickhouse_enabled:
+            # If ClickHouse is disabled, check chDB status
+            chdb_config = get_chdb_config()
+            if chdb_config.enabled:
+                return PlainTextResponse("OK - MCP server running with chDB enabled")
+            else:
+                # Both ClickHouse and chDB are disabled - this is an error
+                return PlainTextResponse(
+                    "ERROR - Both ClickHouse and chDB are disabled. At least one must be enabled.",
+                    status_code=503,
+                )
+
         # Try to create a client connection to verify ClickHouse connectivity
         client = create_clickhouse_client()
         version = client.server_version
