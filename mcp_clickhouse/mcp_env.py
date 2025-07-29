@@ -162,6 +162,16 @@ class ClickHouseConfig:
         """
         return int(os.getenv("CLICKHOUSE_MCP_BIND_PORT", "8000"))
 
+    @property
+    def thread_pool_size(self) -> int:
+        """Get the thread pool size for concurrent query execution.
+        
+        This controls how many database operations can run concurrently.
+        Higher values allow more concurrent clients but use more resources.
+        Default: 30
+        """
+        return int(os.getenv("CLICKHOUSE_THREAD_POOL_SIZE", "30"))
+
     def get_client_config(self) -> dict:
         """Get the configuration dictionary for clickhouse_connect client.
 

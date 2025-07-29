@@ -57,11 +57,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(MCP_SERVER_NAME)
 
-QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+# 在加载配置后设置线程池大小
+load_dotenv()
+config = get_config()
+thread_pool_size = config.thread_pool_size if config.enabled else 10
+
+QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=thread_pool_size)
 atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
 SELECT_QUERY_TIMEOUT_SECS = 30
 
-load_dotenv()
+logger.info(f"Initialized thread pool with {thread_pool_size} workers")
 
 mcp = FastMCP(
     name=MCP_SERVER_NAME,
@@ -74,6 +79,22 @@ mcp = FastMCP(
 )
 
 
+def health_check_sync():
+    """Synchronous health check for use in thread pool."""
+    # Try to create a client connection to verify ClickHouse connectivity
+    client = create_clickhouse_client()
+    try:
+        version = client.server_version
+        return f"OK - Connected to ClickHouse {version}"
+    finally:
+        # 确保连接被正确关闭
+        if client and hasattr(client, 'close'):
+            try:
+                client.close()
+            except Exception as e:
+                logger.warning(f"Error closing ClickHouse client in health check: {e}")
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request) -> PlainTextResponse:
     """Health check endpoint for monitoring server status.
@@ -81,10 +102,14 @@ async def health_check(request: Request) -> PlainTextResponse:
     Returns OK if the server is running and can connect to ClickHouse.
     """
     try:
-        # Try to create a client connection to verify ClickHouse connectivity
-        client = create_clickhouse_client()
-        version = client.server_version
-        return PlainTextResponse(f"OK - Connected to ClickHouse {version}")
+        # 使用线程池异步执行健康检查，避免阻塞主线程
+        future = QUERY_EXECUTOR.submit(health_check_sync)
+        try:
+            result = future.result(timeout=10)  # 10秒超时
+            return PlainTextResponse(result)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            return PlainTextResponse("ERROR - Health check timed out", status_code=503)
     except Exception as e:
         # Return 503 Service Unavailable if we can't connect to ClickHouse
         return PlainTextResponse(f"ERROR - Cannot connect to ClickHouse: {str(e)}", status_code=503)
@@ -108,76 +133,142 @@ def to_json(obj: Any) -> str:
     return obj
 
 
-def list_databases():
-    """List available ClickHouse databases"""
+def list_databases_sync():
+    """Synchronous implementation of list_databases for use in thread pool."""
     logger.info("Listing all databases")
     client = create_clickhouse_client()
-    result = client.command("SHOW DATABASES")
+    try:
+        result = client.command("SHOW DATABASES")
 
-    # Convert newline-separated string to list and trim whitespace
-    if isinstance(result, str):
-        databases = [db.strip() for db in result.strip().split("\n")]
-    else:
-        databases = [result]
+        # Convert newline-separated string to list and trim whitespace
+        if isinstance(result, str):
+            databases = [db.strip() for db in result.strip().split("\n")]
+        else:
+            databases = [result]
 
-    logger.info(f"Found {len(databases)} databases")
-    return json.dumps(databases)
+        logger.info(f"Found {len(databases)} databases")
+        return json.dumps(databases)
+    except Exception as e:
+        logger.error(f"Error listing databases: {e}")
+        raise ToolError(f"Failed to list databases: {str(e)}")
+    finally:
+        # 确保连接被正确关闭
+        if client and hasattr(client, 'close'):
+            try:
+                client.close()
+            except Exception as e:
+                logger.warning(f"Error closing ClickHouse client: {e}")
+
+
+def list_databases():
+    """List available ClickHouse databases"""
+    logger.info("Submitting list_databases request to thread pool")
+    try:
+        # 使用线程池异步执行，避免阻塞主线程
+        future = QUERY_EXECUTOR.submit(list_databases_sync)
+        try:
+            result = future.result(timeout=SELECT_QUERY_TIMEOUT_SECS)
+            logger.info("list_databases completed successfully")
+            return result
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"list_databases timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds")
+            future.cancel()
+            raise ToolError(f"List databases operation timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds")
+    except ToolError:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in list_databases: {str(e)}")
+        raise RuntimeError(f"Unexpected error during list databases operation: {str(e)}")
+
+
+def list_tables_sync(database: str, like: Optional[str] = None, not_like: Optional[str] = None):
+    """Synchronous implementation of list_tables for use in thread pool."""
+    logger.info(f"Listing tables in database '{database}'")
+    client = create_clickhouse_client()
+    try:
+        query = f"SELECT database, name, engine, create_table_query, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, comment FROM system.tables WHERE database = {format_query_value(database)}"
+        if like:
+            query += f" AND name LIKE {format_query_value(like)}"
+
+        if not_like:
+            query += f" AND name NOT LIKE {format_query_value(not_like)}"
+
+        # 第一次查询：获取所有表的基本信息
+        result = client.query(query)
+
+        # Deserialize result as Table dataclass instances
+        tables = result_to_table(result.column_names, result.result_rows)
+
+        if not tables:
+            logger.info("No tables found")
+            return []
+
+        logger.info(f"Found {len(tables)} tables, fetching column information...")
+
+        # 第二次查询：批量获取所有表的列信息（关键优化！）
+        table_names = [table.name for table in tables]
+        table_names_str = ','.join(format_query_value(name) for name in table_names)
+        
+        batch_column_query = f"""
+        SELECT database, table, name, type AS column_type, default_kind, default_expression, comment 
+        FROM system.columns 
+        WHERE database = {format_query_value(database)} 
+        AND table IN ({table_names_str})
+        ORDER BY database, table, position
+        """
+        
+        logger.info(f"Executing batch column query for {len(tables)} tables")
+        column_result = client.query(batch_column_query)
+        all_columns = result_to_column(column_result.column_names, column_result.result_rows)
+        
+        # 将列信息按表名分组
+        columns_by_table = {}
+        for column in all_columns:
+            table_name = column.table
+            if table_name not in columns_by_table:
+                columns_by_table[table_name] = []
+            columns_by_table[table_name].append(column)
+        
+        # 为每个表分配其对应的列信息
+        for table in tables:
+            table.columns = columns_by_table.get(table.name, [])
+
+        logger.info(f"Successfully processed {len(tables)} tables with {len(all_columns)} total columns")
+        return [asdict(table) for table in tables]
+    except Exception as e:
+        logger.error(f"Error listing tables in database '{database}': {e}")
+        raise ToolError(f"Failed to list tables: {str(e)}")
+    finally:
+        # 确保连接被正确关闭
+        if client and hasattr(client, 'close'):
+            try:
+                client.close()
+            except Exception as e:
+                logger.warning(f"Error closing ClickHouse client: {e}")
 
 
 def list_tables(database: str, like: Optional[str] = None, not_like: Optional[str] = None):
     """List available ClickHouse tables in a database, including schema, comment,
     row count, and column count."""
-    logger.info(f"Listing tables in database '{database}'")
-    client = create_clickhouse_client()
-    query = f"SELECT database, name, engine, create_table_query, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, comment FROM system.tables WHERE database = {format_query_value(database)}"
-    if like:
-        query += f" AND name LIKE {format_query_value(like)}"
-
-    if not_like:
-        query += f" AND name NOT LIKE {format_query_value(not_like)}"
-
-    # 第一次查询：获取所有表的基本信息
-    result = client.query(query)
-
-    # Deserialize result as Table dataclass instances
-    tables = result_to_table(result.column_names, result.result_rows)
-
-    if not tables:
-        logger.info("No tables found")
-        return []
-
-    logger.info(f"Found {len(tables)} tables, fetching column information...")
-
-    # 第二次查询：批量获取所有表的列信息（关键优化！）
-    table_names = [table.name for table in tables]
-    table_names_str = ','.join(format_query_value(name) for name in table_names)
-    
-    batch_column_query = f"""
-    SELECT database, table, name, type AS column_type, default_kind, default_expression, comment 
-    FROM system.columns 
-    WHERE database = {format_query_value(database)} 
-    AND table IN ({table_names_str})
-    ORDER BY database, table, position
-    """
-    
-    logger.info(f"Executing batch column query for {len(tables)} tables")
-    column_result = client.query(batch_column_query)
-    all_columns = result_to_column(column_result.column_names, column_result.result_rows)
-    
-    # 将列信息按表名分组
-    columns_by_table = {}
-    for column in all_columns:
-        table_name = column.table
-        if table_name not in columns_by_table:
-            columns_by_table[table_name] = []
-        columns_by_table[table_name].append(column)
-    
-    # 为每个表分配其对应的列信息
-    for table in tables:
-        table.columns = columns_by_table.get(table.name, [])
-
-    logger.info(f"Successfully processed {len(tables)} tables with {len(all_columns)} total columns")
-    return [asdict(table) for table in tables]
+    logger.info(f"Submitting list_tables request for database '{database}' to thread pool")
+    try:
+        # 使用线程池异步执行，避免阻塞主线程
+        future = QUERY_EXECUTOR.submit(list_tables_sync, database, like, not_like)
+        try:
+            # 设置更长的超时时间，因为 list_tables 操作比普通查询更复杂
+            LIST_TABLES_TIMEOUT_SECS = 120  # 2分钟超时
+            result = future.result(timeout=LIST_TABLES_TIMEOUT_SECS)
+            logger.info(f"list_tables completed successfully for database '{database}'")
+            return result
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"list_tables timed out after {LIST_TABLES_TIMEOUT_SECS} seconds for database '{database}'")
+            future.cancel()
+            raise ToolError(f"List tables operation timed out after {LIST_TABLES_TIMEOUT_SECS} seconds")
+    except ToolError:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in list_tables: {str(e)}")
+        raise RuntimeError(f"Unexpected error during list tables operation: {str(e)}")
 
 
 def execute_query(query: str):
@@ -190,6 +281,13 @@ def execute_query(query: str):
     except Exception as err:
         logger.error(f"Error executing query: {err}")
         raise ToolError(f"Query execution failed: {str(err)}")
+    finally:
+        # 确保连接被正确关闭
+        if client and hasattr(client, 'close'):
+            try:
+                client.close()
+            except Exception as e:
+                logger.warning(f"Error closing ClickHouse client: {e}")
 
 
 def run_select_query(query: str):
