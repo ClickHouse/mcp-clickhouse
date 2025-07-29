@@ -136,23 +136,47 @@ def list_tables(database: str, like: Optional[str] = None, not_like: Optional[st
     if not_like:
         query += f" AND name NOT LIKE {format_query_value(not_like)}"
 
+    # 第一次查询：获取所有表的基本信息
     result = client.query(query)
 
     # Deserialize result as Table dataclass instances
     tables = result_to_table(result.column_names, result.result_rows)
 
-    for table in tables:
-        column_data_query = f"SELECT database, table, name, type AS column_type, default_kind, default_expression, comment FROM system.columns WHERE database = {format_query_value(database)} AND table = {format_query_value(table.name)}"
-        column_data_query_result = client.query(column_data_query)
-        table.columns = [
-            c
-            for c in result_to_column(
-                column_data_query_result.column_names,
-                column_data_query_result.result_rows,
-            )
-        ]
+    if not tables:
+        logger.info("No tables found")
+        return []
 
-    logger.info(f"Found {len(tables)} tables")
+    logger.info(f"Found {len(tables)} tables, fetching column information...")
+
+    # 第二次查询：批量获取所有表的列信息（关键优化！）
+    table_names = [table.name for table in tables]
+    table_names_str = ','.join(format_query_value(name) for name in table_names)
+    
+    batch_column_query = f"""
+    SELECT database, table, name, type AS column_type, default_kind, default_expression, comment 
+    FROM system.columns 
+    WHERE database = {format_query_value(database)} 
+    AND table IN ({table_names_str})
+    ORDER BY database, table, position
+    """
+    
+    logger.info(f"Executing batch column query for {len(tables)} tables")
+    column_result = client.query(batch_column_query)
+    all_columns = result_to_column(column_result.column_names, column_result.result_rows)
+    
+    # 将列信息按表名分组
+    columns_by_table = {}
+    for column in all_columns:
+        table_name = column.table
+        if table_name not in columns_by_table:
+            columns_by_table[table_name] = []
+        columns_by_table[table_name].append(column)
+    
+    # 为每个表分配其对应的列信息
+    for table in tables:
+        table.columns = columns_by_table.get(table.name, [])
+
+    logger.info(f"Successfully processed {len(tables)} tables with {len(all_columns)} total columns")
     return [asdict(table) for table in tables]
 
 
