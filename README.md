@@ -2,6 +2,8 @@
 
 [![PyPI - Version](https://img.shields.io/pypi/v/mcp-clickhouse)](https://pypi.org/project/mcp-clickhouse)
 
+[![Trust Score](https://archestra.ai/mcp-catalog/api/badge/quality/ClickHouse/mcp-clickhouse)](https://archestra.ai/mcp-catalog/clickhouse__mcp-clickhouse)
+
 An MCP server for ClickHouse.
 
 <a href="https://glama.ai/mcp/servers/yvjy4csvo1"><img width="380" height="200" src="https://glama.ai/mcp/servers/yvjy4csvo1/badge" alt="mcp-clickhouse MCP server" /></a>
