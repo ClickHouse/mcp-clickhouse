@@ -302,6 +302,12 @@ def get_chdb_config(tenant: str = "default") -> ChDBConfig:
         raise ValueError(f"No ChDB config found for tenant '{tenant}'")
     return _CHDB_TENANTS[tenant]
 
-def list_tenants() -> List[str]:
-    """Get list of all tenant names."""
+def list_clickhouse_tenants() -> List[str]:
+    """Get list of all clickhouse tenant names."""
+    global _CLICKHOUSE_TENANTS
     return [tenant for tenant in _CLICKHOUSE_TENANTS.keys()]
+
+def list_chdb_tenants() -> List[str]:
+    """Get list of all chdb tenant names."""
+    global _CHDB_TENANTS
+    return [tenant for tenant in _CHDB_TENANTS.keys()]

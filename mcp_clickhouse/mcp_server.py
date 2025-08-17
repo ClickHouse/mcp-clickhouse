@@ -17,7 +17,7 @@ from dataclasses import dataclass, field, asdict, is_dataclass
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from mcp_clickhouse.mcp_env import load_clickhouse_configs, load_chdb_configs, list_tenants, get_config, get_chdb_config
+from mcp_clickhouse.mcp_env import load_clickhouse_configs, load_chdb_configs, list_clickhouse_tenants, list_chdb_tenants, get_config, get_chdb_config
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 
 
@@ -61,24 +61,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(MCP_SERVER_NAME)
 
-# List of Tenants
-TENANTS = list_tenants()
-
-# Create a ThreadPoolExecutor per tenant
-QUERY_EXECUTOR = {
-    tenant: concurrent.futures.ThreadPoolExecutor(max_workers=10)
-    for tenant in TENANTS
-}
-
-# Ensure all executors are properly shutdown on exit
-atexit.register(lambda: [executor.shutdown(wait=True) for executor in QUERY_EXECUTOR.values()])
-
-# Default query timeout for selects
-SELECT_QUERY_TIMEOUT_SECS = 30
-
+# Load Configs
 load_dotenv()
 load_clickhouse_configs()
 load_chdb_configs()
+
+# List of Tenants
+CLICKHOUSE_TENANTS = list_clickhouse_tenants()
+CHDB_TENANTS = list_chdb_tenants()
+
+# Create ThreadPoolExecutors for each tenant
+CLICKHOUSE_QUERY_EXECUTOR = {
+    tenant: concurrent.futures.ThreadPoolExecutor(max_workers=10)
+    for tenant in CLICKHOUSE_TENANTS
+}
+
+CHDB_QUERY_EXECUTOR = {
+    tenant: concurrent.futures.ThreadPoolExecutor(max_workers=10)
+    for tenant in CHDB_TENANTS
+}
+
+# Ensure all executors are properly shutdown on exit
+atexit.register(lambda: [executor.shutdown(wait=True) for executor in CLICKHOUSE_QUERY_EXECUTOR.values()])
+atexit.register(lambda: [executor.shutdown(wait=True) for executor in CHDB_QUERY_EXECUTOR.values()])
+
+# Default query timeout for selects
+SELECT_QUERY_TIMEOUT_SECS = 30
 
 mcp = FastMCP(
     name=MCP_SERVER_NAME,
@@ -100,8 +108,8 @@ async def health_check(request: Request) -> PlainTextResponse:
     try:
         reports = []
 
-        for tenant in TENANTS:
-            tenant_report = f"Tenant '{tenant}': "
+        for tenant in CLICKHOUSE_TENANTS:
+            tenant_report = f"Tenant - '{tenant}': "
 
             # Check if ClickHouse is enabled by trying to create config 
             # If ClickHouse is disabled, this will succeed but connection will fail
@@ -151,10 +159,27 @@ def to_json(obj: Any) -> str:
         return {key: to_json(value) for key, value in obj.items()}
     return obj
 
+def clickhouse_tenant_available(tenant: str):
+    if tenant in CLICKHOUSE_TENANTS:
+        return True
+    return False
+
+def chdb_tenant_available(tenant: str):
+    if tenant in CHDB_TENANTS:
+        return True
+    return False
 
 def list_databases(tenant: str):
     """List available ClickHouse databases"""
     logger.info("Listing all databases")
+
+    if not clickhouse_tenant_available(tenant):
+        logger.warning(f"List databases not performed for non-existent tenant - '{tenant}'")
+        return {
+            "status": "error",
+            "message": f"List databases not performed for non-existent tenant - '{tenant}'"
+        }
+
     client = create_clickhouse_client(tenant)
     result = client.command("SHOW DATABASES")
 
@@ -164,14 +189,22 @@ def list_databases(tenant: str):
     else:
         databases = [result]
 
-    logger.info(f"Found {len(databases)} databases for tenant '{tenant}'")
+    logger.info(f"Found {len(databases)} databases for tenant - '{tenant}'")
     return json.dumps(databases)
 
 
 def list_tables(tenant: str, database: str, like: Optional[str] = None, not_like: Optional[str] = None):
     """List available ClickHouse tables in a database, including schema, comment,
     row count, and column count."""
-    logger.info(f"Listing tables for tenant '{tenant}' in database '{database}'")
+
+    if not clickhouse_tenant_available(tenant):
+        logger.warning(f"List tables not performed for non-existent tenant - '{tenant}'")
+        return {
+            "status": "error",
+            "message": f"List tables not performed for non-existent tenant - '{tenant}'"
+        }
+
+    logger.info(f"Listing tables for tenant - '{tenant}' in database '{database}'")
     client = create_clickhouse_client(tenant)
     query = f"SELECT database, name, engine, create_table_query, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, total_bytes_uncompressed, parts, active_parts, total_marks, comment FROM system.tables WHERE database = {format_query_value(database)}"
     if like:
@@ -196,12 +229,12 @@ def list_tables(tenant: str, database: str, like: Optional[str] = None, not_like
             )
         ]
 
-    logger.info(f"Found {len(tables)} tables for tenant '{tenant}'")
+    logger.info(f"Found {len(tables)} tables for tenant - '{tenant}'")
     return [asdict(table) for table in tables]
 
 
-def execute_query(query: str):
-    client = create_clickhouse_client()
+def execute_query(tenant: str, query: str):
+    client = create_clickhouse_client(tenant)
     try:
         read_only = get_readonly_setting(client)
         res = client.query(query, settings={"readonly": read_only})
@@ -214,40 +247,50 @@ def execute_query(query: str):
 
 def run_select_query(tenant: str, query: str):
     """Run a SELECT query in a ClickHouse database"""
-    logger.info(f"Executing SELECT query for tenant '{tenant}': {query}")
-
-    if tenant not in TENANTS:
-        tenant = "default" # TO-DO: Should return some error since tenant does not exist
+    if not clickhouse_tenant_available(tenant):
+        logger.warning(f"Query not performed for non-existent tenant - '{tenant}'")
+        return {
+            "status": "error",
+            "message": f"Query not performed for non-existent tenant - '{tenant}'"
+        }
         
+    logger.info(f"Executing SELECT query for tenant - '{tenant}': {query}")
     try:
-        future = QUERY_EXECUTOR[tenant].submit(execute_query, query)
+        future = CLICKHOUSE_QUERY_EXECUTOR[tenant].submit(execute_query, {"tenant": tenant, "query": query})
         try:
             result = future.result(timeout=SELECT_QUERY_TIMEOUT_SECS)
             # Check if we received an error structure from execute_query
             if isinstance(result, dict) and "error" in result:
-                logger.warning(f"Query failed for tenant '{tenant}': {result['error']}")
+                logger.warning(f"Query failed for tenant - '{tenant}': {result['error']}")
                 # MCP requires structured responses; string error messages can cause
                 # serialization issues leading to BrokenResourceError
                 return {
                     "status": "error",
-                    "message": f"Query failed for tenant '{tenant}': {result['error']}",
+                    "message": f"Query failed for tenant - '{tenant}': {result['error']}",
                 }
             return result
         except concurrent.futures.TimeoutError:
-            logger.warning(f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds for tenant '{tenant}': {query}")
+            logger.warning(f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds for tenant - '{tenant}': {query}")
             future.cancel()
-            raise ToolError(f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds for tenant '{tenant}'")
+            raise ToolError(f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds for tenant - '{tenant}'")
     except ToolError:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in run_select_query for tenant '{tenant}': {str(e)}")
-        raise RuntimeError(f"Unexpected error during query execution for tenant '{tenant}': {str(e)}")
+        logger.error(f"Unexpected error in run_select_query for tenant - '{tenant}': {str(e)}")
+        raise RuntimeError(f"Unexpected error during query execution for tenant - '{tenant}': {str(e)}")
 
 
 def create_clickhouse_client(tenant: str):
+    if not clickhouse_tenant_available(tenant):
+        logger.warning(f"Clickhouse client not created for non-existent tenant - '{tenant}'")
+        return {
+            "status": "error",
+            "message": f"Clickhouse client not created for non-existent tenant - '{tenant}'"
+        }
+    
     client_config = get_config(tenant).get_client_config()
     logger.info(
-        f"Creating ClickHouse client connection for tenant '{tenant}', to {client_config['host']}:{client_config['port']} "
+        f"Creating ClickHouse client connection for tenant - '{tenant}', to {client_config['host']}:{client_config['port']} "
         f"as {client_config['username']} "
         f"(secure={client_config['secure']}, verify={client_config['verify']}, "
         f"connect_timeout={client_config['connect_timeout']}s, "
@@ -258,10 +301,10 @@ def create_clickhouse_client(tenant: str):
         client = clickhouse_connect.get_client(**client_config)
         # Test the connection
         version = client.server_version
-        logger.info(f"Successfully connected to ClickHouse server version {version} for tenant '{tenant}'")
+        logger.info(f"Successfully connected to ClickHouse server version {version} for tenant - '{tenant}'")
         return client
     except Exception as e:
-        logger.error(f"Failed to connect to ClickHouse for tenant '{tenant}': {str(e)}")
+        logger.error(f"Failed to connect to ClickHouse for tenant - '{tenant}': {str(e)}")
         raise
 
 
@@ -297,14 +340,28 @@ def get_readonly_setting(client) -> str:
 
 def create_chdb_client(tenant: str):
     """Create a chDB client connection."""
-    if not get_chdb_config().enabled:
-        raise ValueError(f"chDB is not enabled for tenant '{tenant}'. Set CHDB_ENABLED=true to enable it.")
+    if not chdb_tenant_available(tenant):
+        logger.warning(f"chDB client not created for non-existent tenant - '{tenant}'")
+        return {
+            "status": "error",
+            "message": f"chDB client not created for non-existent tenant - '{tenant}'"
+        }
+    
+    if not get_chdb_config(tenant).enabled:
+        raise ValueError(f"chDB is not enabled for tenant - '{tenant}'. Set CHDB_ENABLED=true to enable it.")
     return _chdb_client
 
 
-def execute_chdb_query(query: str):
+def execute_chdb_query(tenant: str, query: str):
     """Execute a query using chDB client."""
-    client = create_chdb_client()
+    if not chdb_tenant_available(tenant):
+        logger.warning(f"chDB Query not performed for non-existent tenant - '{tenant}'")
+        return {
+            "status": "error",
+            "message": f"chDB Query not performed for non-existent tenant - '{tenant}'"
+        }
+
+    client = create_chdb_client(tenant)
     try:
         res = client.query(query, "JSON")
         if res.has_error():
@@ -327,35 +384,38 @@ def execute_chdb_query(query: str):
 
 def run_chdb_select_query(tenant: str, query: str):
     """Run SQL in chDB, an in-process ClickHouse engine"""
-    logger.info(f"Executing chDB SELECT query for tenant '{tenant}': {query}")
-
-    if tenant not in TENANTS:
-        tenant = "default" # TO-DO: Should return some error since tenant does not exist
+    if not chdb_tenant_available(tenant):
+        logger.warning(f"chDB query not performed for non-existent tenant - '{tenant}'")
+        return {
+            "status": "error",
+            "message": f"chDB query not performed for non-existent tenant - '{tenant}'"
+        }
         
+    logger.info(f"Executing chDB SELECT query for tenant - '{tenant}': {query}")
     try:
-        future = QUERY_EXECUTOR[tenant].submit(execute_chdb_query, query)
+        future = CHDB_QUERY_EXECUTOR[tenant].submit(execute_chdb_query, query)
         try:
             result = future.result(timeout=SELECT_QUERY_TIMEOUT_SECS)
             # Check if we received an error structure from execute_chdb_query
             if isinstance(result, dict) and "error" in result:
-                logger.warning(f"chDB query failed for tenant '{tenant}': {result['error']}")
+                logger.warning(f"chDB query failed for tenant - '{tenant}': {result['error']}")
                 return {
                     "status": "error",
-                    "message": f"chDB query failed for tenant '{tenant}': {result['error']}",
+                    "message": f"chDB query failed for tenant - '{tenant}': {result['error']}",
                 }
             return result
         except concurrent.futures.TimeoutError:
             logger.warning(
-                f"chDB query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds for tenant '{tenant}': {query}"
+                f"chDB query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds for tenant - '{tenant}': {query}"
             )
             future.cancel()
             return {
                 "status": "error",
-                "message": f"chDB query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds for tenant '{tenant}'",
+                "message": f"chDB query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds for tenant - '{tenant}'",
             }
     except Exception as e:
-        logger.error(f"Unexpected error in run_chdb_select_query for tenant '{tenant}': {e}")
-        return {"status": "error", "message": f"Unexpected error for tenant '{tenant}': {e}"}
+        logger.error(f"Unexpected error in run_chdb_select_query for tenant - '{tenant}': {e}")
+        return {"status": "error", "message": f"Unexpected error for tenant - '{tenant}': {e}"}
 
 
 def chdb_initial_prompt() -> str:
@@ -365,35 +425,45 @@ def chdb_initial_prompt() -> str:
 
 def _init_chdb_client(tenant: str):
     """Initialize the global chDB client instance."""
+    if not chdb_tenant_available(tenant):
+        logger.warning(f"chDB client not initialised for non-existent tenant - '{tenant}'")
+        return {
+            "status": "error",
+            "message": f"chDB client not initialised for non-existent tenant - '{tenant}'"
+        }
+    
     try:
         if not get_chdb_config(tenant).enabled:
-            logger.info("chDB is disabled for tenant '{tenant}', skipping client initialization")
+            logger.info("chDB is disabled for tenant - '{tenant}', skipping client initialization")
             return None
 
         client_config = get_chdb_config(tenant).get_client_config()
         data_path = client_config["data_path"]
-        logger.info(f"Creating chDB client with data_path={data_path} for tenant '{tenant}'")
+        logger.info(f"Creating chDB client with data_path={data_path} for tenant - '{tenant}'")
         client = chs.Session(path=data_path)
-        logger.info(f"Successfully connected to chDB with data_path={data_path} for tenant '{tenant}'")
+        logger.info(f"Successfully connected to chDB with data_path={data_path} for tenant - '{tenant}'")
         return client
     except Exception as e:
-        logger.error(f"Failed to initialize chDB client for tenant '{tenant}': {e}")
+        logger.error(f"Failed to initialize chDB client for tenant - '{tenant}': {e}")
         return None
 
 
-# Register tools based on configuration
-# For multi-tenancy, we will use global flags to bypass this
-if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
+# Register tools
+if not CLICKHOUSE_TENANTS:
+    logger.info("ClickHouse tools not registered")
+else:
     mcp.add_tool(Tool.from_function(list_databases))
     mcp.add_tool(Tool.from_function(list_tables))
     mcp.add_tool(Tool.from_function(run_select_query))
     logger.info("ClickHouse tools registered")
 
-
-if os.getenv("CHDB_ENABLED", "false").lower() == "true":
-    _chdb_client = _init_chdb_client()
-    if _chdb_client:
-        atexit.register(lambda: _chdb_client.close())
+if not CHDB_TENANTS:
+    logger.info("chDB tools and prompts not registered")
+else:
+    for tenant in CHDB_TENANTS:
+        _chdb_client = _init_chdb_client(tenant)
+        if _chdb_client:
+            atexit.register(lambda: _chdb_client.close())
 
     mcp.add_tool(Tool.from_function(run_chdb_select_query))
     chdb_prompt = Prompt.from_function(
