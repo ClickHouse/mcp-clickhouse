@@ -6,18 +6,22 @@ from mcp_clickhouse import create_chdb_client, run_chdb_select_query
 
 load_dotenv()
 
-## TO-DO
-"""
-- Set up multiple tenants
-- Test with wrong tenant -> Should we execute default or not execute?
-"""
-
 class TestChDBTools(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Set up the environment before chDB tests."""
         tenant = "example"
         cls.client = create_chdb_client(tenant)
+
+    def test_run_chdb_select_query_wrong_tenant(self):
+        """Test running a simple SELECT query in chDB with wrong tenant."""
+        tenant = "wrong_tenant"
+        query = "SELECT 1 as test_value"
+        result = run_chdb_select_query(tenant, query)
+        self.assertEqual(result, {
+            "status": "error",
+            "message": f"chDB query not performed for non-existent tenant - '{tenant}'"
+        })
 
     def test_run_chdb_select_query_simple(self):
         """Test running a simple SELECT query in chDB."""

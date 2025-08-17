@@ -8,12 +8,6 @@ from mcp_clickhouse import create_clickhouse_client, list_databases, list_tables
 
 load_dotenv()
 
-## TO-DO
-"""
-- Set up multiple tenants
-- Test with wrong tenant -> Should we execute default or not execute?
-"""
-
 class TestClickhouseTools(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -45,6 +39,30 @@ class TestClickhouseTools(unittest.TestCase):
     def tearDownClass(cls):
         """Clean up the environment after tests."""
         cls.client.command(f"DROP DATABASE IF EXISTS {cls.test_db}")
+
+    def test_list_databases_wrong_tenant(self):
+        """Test listing databases with wrong tenant."""
+        result = list_databases("wrong_tenant")
+        self.assertEqual(result, {
+            "status": "error",
+            "message": "List databases not performed for non-existent tenant - 'wrong_tenant'"
+        })
+
+    def test_list_tables_wrong_tenant(self):
+        """Test listing tables with wrong tenant."""
+        result = list_tables("wrong_tenant")
+        self.assertEqual(result, {
+            "status": "error",
+            "message": "List tables not performed for non-existent tenant - 'wrong_tenant'"
+        })
+
+    def test_run_select_query_wrong_tenant(self):
+        """Test run select query with wrong tenant."""
+        result = list_databases("wrong_tenant")
+        self.assertEqual(result, {
+            "status": "error",
+            "message": "Query not performed for non-existent tenant - 'wrong_tenant'"
+        })
 
     def test_list_databases(self):
         """Test listing databases."""

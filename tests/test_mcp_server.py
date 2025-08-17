@@ -17,12 +17,6 @@ def event_loop():
     yield loop
     loop.close()
 
-## TO-DO
-"""
-- Set up multiple tenants
-- Test with wrong tenant -> Should we execute default or not execute?
-"""
-
 @pytest_asyncio.fixture(scope="module")
 async def setup_test_database():
     """Set up test database and tables before running tests."""
@@ -95,6 +89,35 @@ def mcp_server():
 
 
 @pytest.mark.asyncio
+async def test_list_databases_wrong_tenant(mcp_server):
+    """Test the list_databases tool with wrong tenant."""
+    async with Client(mcp_server) as client:
+        result = await client.call_tool("list_databases", {"tenant": "wrong_tenant"})
+        assert result == {
+            "status": "error",
+            "message": "List databases not performed for non-existent tenant - 'wrong_tenant'"
+        }
+
+@pytest.mark.asyncio
+async def test_list_tables_wrong_tenant(mcp_server):
+    """Test the list_tables tool with wrong tenant."""
+    async with Client(mcp_server) as client:
+        result = await client.call_tool("list_databases", {"tenant": "wrong_tenant"})
+        assert result == {
+            "status": "error",
+            "message": "List tables not performed for non-existent tenant - 'wrong_tenant'"
+        }
+
+@pytest.mark.asyncio
+async def test_run_select_query_wrong_tenant(mcp_server):
+    """Test the run_select_query tool with wrong tenant."""
+    async with Client(mcp_server) as client:
+        result = await client.call_tool("list_databases", {"tenant": "wrong_tenant"})
+        assert result == {
+            "status": "error",
+            "message": "Query not performed for non-existent tenant - 'wrong_tenant'"
+        }
+
 async def test_list_databases(mcp_server, setup_test_database):
     """Test the list_databases tool."""
     test_tenant, test_db, _, _ = setup_test_database
