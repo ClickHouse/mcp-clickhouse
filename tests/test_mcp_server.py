@@ -9,7 +9,7 @@ import json
 
 # Load environment variables
 load_dotenv()
-
+tenant = "example"
 
 @pytest.fixture(scope="module")
 def event_loop():
@@ -22,7 +22,7 @@ def event_loop():
 @pytest_asyncio.fixture(scope="module")
 async def setup_test_database():
     """Set up test database and tables before running tests."""
-    client = create_clickhouse_client()
+    client = create_clickhouse_client(tenant)
 
     # Test database and table names
     test_db = "test_mcp_db"
@@ -93,7 +93,7 @@ async def test_list_databases(mcp_server, setup_test_database):
     test_db, _, _ = setup_test_database
 
     async with Client(mcp_server) as client:
-        result = await client.call_tool("list_databases", {})
+        result = await client.call_tool("list_databases", {"tenant": tenant})
 
         # The result should be a list containing at least one item
         assert len(result) >= 1
@@ -111,7 +111,7 @@ async def test_list_tables_basic(mcp_server, setup_test_database):
     test_db, test_table, test_table2 = setup_test_database
 
     async with Client(mcp_server) as client:
-        result = await client.call_tool("list_tables", {"database": test_db})
+        result = await client.call_tool("list_tables", {"tenant": tenant, "database": test_db})
 
         assert len(result) >= 1
         tables = json.loads(result[0].text)
@@ -147,7 +147,7 @@ async def test_list_tables_with_like_filter(mcp_server, setup_test_database):
 
     async with Client(mcp_server) as client:
         # Test with LIKE filter
-        result = await client.call_tool("list_tables", {"database": test_db, "like": "test_%"})
+        result = await client.call_tool("list_tables", {"tenant": tenant, "database": test_db, "like": "test_%"})
 
         tables_data = json.loads(result[0].text)
 
@@ -168,7 +168,7 @@ async def test_list_tables_with_not_like_filter(mcp_server, setup_test_database)
 
     async with Client(mcp_server) as client:
         # Test with NOT LIKE filter
-        result = await client.call_tool("list_tables", {"database": test_db, "not_like": "test_%"})
+        result = await client.call_tool("list_tables", {"tenant": tenant, "database": test_db, "not_like": "test_%"})
 
         tables_data = json.loads(result[0].text)
 
@@ -189,7 +189,7 @@ async def test_run_select_query_success(mcp_server, setup_test_database):
 
     async with Client(mcp_server) as client:
         query = f"SELECT id, name, age FROM {test_db}.{test_table} ORDER BY id"
-        result = await client.call_tool("run_select_query", {"query": query})
+        result = await client.call_tool("run_select_query", {"tenant": tenant, "query": query})
 
         query_result = json.loads(result[0].text)
 
@@ -215,7 +215,7 @@ async def test_run_select_query_with_aggregation(mcp_server, setup_test_database
 
     async with Client(mcp_server) as client:
         query = f"SELECT COUNT(*) as count, AVG(age) as avg_age FROM {test_db}.{test_table}"
-        result = await client.call_tool("run_select_query", {"query": query})
+        result = await client.call_tool("run_select_query", {"tenant": tenant, "query": query})
 
         query_result = json.loads(result[0].text)
 
@@ -232,7 +232,7 @@ async def test_run_select_query_with_join(mcp_server, setup_test_database):
 
     async with Client(mcp_server) as client:
         # Insert related data for join
-        client_direct = create_clickhouse_client()
+        client_direct = create_clickhouse_client(tenant)
         client_direct.command(f"""
             INSERT INTO {test_db}.{test_table2} (event_id, event_type, timestamp) VALUES
             (2001, 'purchase', '2024-01-01 14:00:00')
@@ -243,7 +243,7 @@ async def test_run_select_query_with_join(mcp_server, setup_test_database):
             COUNT(DISTINCT event_type) as event_types_count
         FROM {test_db}.{test_table2}
         """
-        result = await client.call_tool("run_select_query", {"query": query})
+        result = await client.call_tool("run_select_query", {"tenant": tenant, "query": query})
 
         query_result = json.loads(result[0].text)
         assert query_result["rows"][0][0] == 3  # login, logout, purchase
@@ -260,7 +260,7 @@ async def test_run_select_query_error(mcp_server, setup_test_database):
 
         # Should raise ToolError
         with pytest.raises(ToolError) as exc_info:
-            await client.call_tool("run_select_query", {"query": query})
+            await client.call_tool("run_select_query", {"tenant": tenant, "query": query})
 
         assert "Query execution failed" in str(exc_info.value)
 
@@ -274,7 +274,7 @@ async def test_run_select_query_syntax_error(mcp_server):
 
         # Should raise ToolError
         with pytest.raises(ToolError) as exc_info:
-            await client.call_tool("run_select_query", {"query": query})
+            await client.call_tool("run_select_query", {"tenant": tenant, "query": query})
 
         assert "Query execution failed" in str(exc_info.value)
 
@@ -285,7 +285,7 @@ async def test_table_metadata_details(mcp_server, setup_test_database):
     test_db, test_table, _ = setup_test_database
 
     async with Client(mcp_server) as client:
-        result = await client.call_tool("list_tables", {"database": test_db})
+        result = await client.call_tool("list_tables", {"tenant": tenant, "database": test_db})
         tables = json.loads(result[0].text)
 
         # Find our test table
@@ -323,7 +323,7 @@ async def test_system_database_access(mcp_server):
     """Test that we can access system databases."""
     async with Client(mcp_server) as client:
         # List tables in system database
-        result = await client.call_tool("list_tables", {"database": "system"})
+        result = await client.call_tool("list_tables", {"tenant": tenant, "database": "system"})
         tables = json.loads(result[0].text)
 
         # System database should have many tables
@@ -352,7 +352,7 @@ async def test_concurrent_queries(mcp_server, setup_test_database):
 
         # Execute all queries concurrently
         results = await asyncio.gather(
-            *[client.call_tool("run_select_query", {"query": query}) for query in queries]
+            *[client.call_tool("run_select_query", {"tenant": tenant, "query": query}) for query in queries]
         )
 
         # Verify all queries succeeded
