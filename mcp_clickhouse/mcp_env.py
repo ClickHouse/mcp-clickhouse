@@ -30,33 +30,33 @@ class ClickHouseConfig:
     This class handles all environment variable configuration with sensible defaults
     and type conversion. It provides typed methods for accessing each configuration value.
 
-    Required environment variables (only when CH_<tenant_prefix>_CLICKHOUSE_ENABLED=true):
-        CH_<tenant_prefix>_CLICKHOUSE_HOST: The hostname of the ClickHouse server
-        CH_<tenant_prefix>_CLICKHOUSE_USER: The username for authentication
-        CH_<tenant_prefix>_CLICKHOUSE_PASSWORD: The password for authentication
+    Required environment variables (only when CH_<tenant>_CLICKHOUSE_ENABLED=true):
+        CH_<tenant>_CLICKHOUSE_HOST: The hostname of the ClickHouse server
+        CH_<tenant>_CLICKHOUSE_USER: The username for authentication
+        CH_<tenant>_CLICKHOUSE_PASSWORD: The password for authentication
 
     Optional environment variables (with defaults):
-        CH_<tenant_prefix>_CLICKHOUSE_PORT: The port number (default: 8443 if secure=True, 8123 if secure=False)
-        CH_<tenant_prefix>_CLICKHOUSE_SECURE: Enable HTTPS (default: true)
-        CH_<tenant_prefix>_CLICKHOUSE_VERIFY: Verify SSL certificates (default: true)
-        CH_<tenant_prefix>_CLICKHOUSE_CONNECT_TIMEOUT: Connection timeout in seconds (default: 30)
-        CH_<tenant_prefix>_CLICKHOUSE_SEND_RECEIVE_TIMEOUT: Send/receive timeout in seconds (default: 300)
-        CH_<tenant_prefix>_CLICKHOUSE_DATABASE: Default database to use (default: None)
-        CH_<tenant_prefix>_CLICKHOUSE_PROXY_PATH: Path to be added to the host URL. For instance, for servers behind an HTTP proxy (default: None)
-        CH_<tenant_prefix>_CLICKHOUSE_MCP_SERVER_TRANSPORT: MCP server transport method - "stdio", "http", or "sse" (default: stdio)
-        CH_<tenant_prefix>_CLICKHOUSE_MCP_BIND_HOST: Host to bind the MCP server to when using HTTP or SSE transport (default: 127.0.0.1)
-        CH_<tenant_prefix>_CLICKHOUSE_MCP_BIND_PORT: Port to bind the MCP server to when using HTTP or SSE transport (default: 8000)
-        CH_<tenant_prefix>_CLICKHOUSE_ENABLED: Enable ClickHouse server (default: true)
+        CH_<tenant>_CLICKHOUSE_PORT: The port number (default: 8443 if secure=True, 8123 if secure=False)
+        CH_<tenant>_CLICKHOUSE_SECURE: Enable HTTPS (default: true)
+        CH_<tenant>_CLICKHOUSE_VERIFY: Verify SSL certificates (default: true)
+        CH_<tenant>_CLICKHOUSE_CONNECT_TIMEOUT: Connection timeout in seconds (default: 30)
+        CH_<tenant>_CLICKHOUSE_SEND_RECEIVE_TIMEOUT: Send/receive timeout in seconds (default: 300)
+        CH_<tenant>_CLICKHOUSE_DATABASE: Default database to use (default: None)
+        CH_<tenant>_CLICKHOUSE_PROXY_PATH: Path to be added to the host URL. For instance, for servers behind an HTTP proxy (default: None)
+        CH_<tenant>_CLICKHOUSE_MCP_SERVER_TRANSPORT: MCP server transport method - "stdio", "http", or "sse" (default: stdio)
+        CH_<tenant>_CLICKHOUSE_MCP_BIND_HOST: Host to bind the MCP server to when using HTTP or SSE transport (default: 127.0.0.1)
+        CH_<tenant>_CLICKHOUSE_MCP_BIND_PORT: Port to bind the MCP server to when using HTTP or SSE transport (default: 8000)
+        CH_<tenant>_CLICKHOUSE_ENABLED: Enable ClickHouse server (default: true)
     """
+    tenant: str
 
-    def __init__(self, tenant_prefix: str = ""):
+    def __init__(self):
         """Initialize the configuration from environment variables."""
-        self.tenant_prefix = tenant_prefix
         if self.enabled:
             self._validate_required_vars()
             
     def _getenv(self, key: str, default=None, cast=str):
-        prefixed_key = f"CH_{self.tenant_prefix}_{key}"
+        prefixed_key = f"CH_{self.tenant}_{key}"
         val = os.getenv(prefixed_key, os.getenv(key, default))
         if val is not None and cast is not str:
             try:
@@ -154,7 +154,7 @@ class ClickHouseConfig:
             "verify": self.verify,
             "connect_timeout": self.connect_timeout,
             "send_receive_timeout": self.send_receive_timeout,
-            "client_name": f"{self.tenant_prefix}mcp_clickhouse",
+            "client_name": f"{self.tenant}mcp_clickhouse",
         }
 
         # Add optional database if set
@@ -177,7 +177,7 @@ class ClickHouseConfig:
             if not self._getenv(var):
                 missing_vars.append(var)
         if missing_vars:
-            raise ValueError(f"Missing required environment variables for tenant '{self.tenant_prefix}': {', '.join(missing_vars)}")
+            raise ValueError(f"Missing required environment variables for tenant '{self.tenant}': {', '.join(missing_vars)}")
 
 
 @dataclass
@@ -190,15 +190,15 @@ class ChDBConfig:
     Required environment variables:
         CHDB_DATA_PATH: The path to the chDB data directory (only required if CHDB_ENABLED=true)
     """
+    tenant: str
 
-    def __init__(self, tenant_prefix: str = ""):
+    def __init__(self):
         """Initialize the configuration from environment variables."""
-        self.tenant_prefix = tenant_prefix
         if self.enabled:
             self._validate_required_vars()
 
     def _getenv(self, key: str, default=None, cast=str):
-        prefixed_key = f"CH_{self.tenant_prefix}_{key}"
+        prefixed_key = f"CH_{self.tenant}_{key}"
         val = os.getenv(prefixed_key, os.getenv(key, default))
         if val is not None and cast is not str:
             try:
@@ -264,11 +264,11 @@ def load_clickhouse_configs() -> Dict[str, ClickHouseConfig]:
     global _CLICKHOUSE_TENANTS
     for key in os.environ:
         if key.endswith("CLICKHOUSE_HOST") and key.startswith("CH_"):
-            # CH_<tenant_prefix>_CLICKHOUSE_HOST 
-            tenant_prefix = key[len("CH_"): -len("_CLICKHOUSE_HOST")]
-            _CLICKHOUSE_TENANTS[tenant_prefix] = ClickHouseConfig(tenant_prefix=tenant_prefix)
+            # CH_<tenant>_CLICKHOUSE_HOST 
+            tenant = key[len("CH_"): -len("_CLICKHOUSE_HOST")]
+            _CLICKHOUSE_TENANTS[tenant] = ClickHouseConfig(tenant=tenant)
     if not _CLICKHOUSE_TENANTS and "CLICKHOUSE_HOST" in os.environ:
-        _CLICKHOUSE_TENANTS["default"] = ClickHouseConfig(tenant_prefix="")
+        _CLICKHOUSE_TENANTS["default"] = ClickHouseConfig(tenant="")
     
     return _CLICKHOUSE_TENANTS
 
@@ -276,11 +276,11 @@ def load_chdb_configs() -> Dict[str, ChDBConfig]:
     global _CHDB_TENANTS
     for key in os.environ:
         if key.endswith("CHDB_DATA_PATH") and key.startswith("CH_"):
-            # CH_<tenant_prefix>_CLICKHOUSE_HOST 
-            tenant_prefix = key[len("CH_"): -len("_CHDB_DATA_PATH")]
-            _CHDB_TENANTS[tenant_prefix] = ChDBConfig(tenant_prefix=tenant_prefix)
+            # CH_<tenant>_CLICKHOUSE_HOST 
+            tenant = key[len("CH_"): -len("_CHDB_DATA_PATH")]
+            _CHDB_TENANTS[tenant] = ChDBConfig(tenant=tenant)
     if not _CHDB_TENANTS and "CHDB_DATA_PATH" in os.environ:
-        _CHDB_TENANTS["default"] = ChDBConfig(tenant_prefix="")
+        _CHDB_TENANTS["default"] = ChDBConfig(tenant="")
     return _CHDB_TENANTS
 
 def get_config(tenant: str = "default") -> ClickHouseConfig:
