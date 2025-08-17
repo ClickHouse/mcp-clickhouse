@@ -6,6 +6,12 @@ from mcp_clickhouse import create_chdb_client, run_chdb_select_query
 
 load_dotenv()
 
+## TO-DO
+"""
+- Set up multiple tenants
+- Test with wrong tenant -> Should we execute default or not execute?
+"""
+
 class TestChDBTools(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

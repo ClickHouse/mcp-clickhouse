@@ -17,6 +17,11 @@ def event_loop():
     yield loop
     loop.close()
 
+## TO-DO
+"""
+- Set up multiple tenants
+- Test with wrong tenant -> Should we execute default or not execute?
+"""
 
 @pytest_asyncio.fixture(scope="module")
 async def setup_test_database():

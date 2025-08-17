@@ -215,6 +215,10 @@ def execute_query(query: str):
 def run_select_query(tenant: str, query: str):
     """Run a SELECT query in a ClickHouse database"""
     logger.info(f"Executing SELECT query for tenant '{tenant}': {query}")
+
+    if tenant not in TENANTS:
+        tenant = "default" # TO-DO: Should return some error since tenant does not exist
+        
     try:
         future = QUERY_EXECUTOR[tenant].submit(execute_query, query)
         try:
@@ -324,6 +328,10 @@ def execute_chdb_query(query: str):
 def run_chdb_select_query(tenant: str, query: str):
     """Run SQL in chDB, an in-process ClickHouse engine"""
     logger.info(f"Executing chDB SELECT query for tenant '{tenant}': {query}")
+
+    if tenant not in TENANTS:
+        tenant = "default" # TO-DO: Should return some error since tenant does not exist
+        
     try:
         future = QUERY_EXECUTOR[tenant].submit(execute_chdb_query, query)
         try:
