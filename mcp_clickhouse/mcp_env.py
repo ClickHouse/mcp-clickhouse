@@ -242,7 +242,7 @@ def get_mcp_config() -> dict:
     """
     Get the MCP server configuration from environment variables.
     """
-    # Global MCP transport config (single for all tenants)
+    # Global MCP transport config
     MCP_TRANSPORT = os.getenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", TransportType.STDIO.value).lower()
     if MCP_TRANSPORT not in TransportType.values():
         raise ValueError(f"Invalid MCP transport '{MCP_TRANSPORT}'. Valid options: {TransportType.values()}")
