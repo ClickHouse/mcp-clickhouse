@@ -3,7 +3,6 @@ import json
 from typing import Optional, List, Any
 import concurrent.futures
 import atexit
-import os
 
 import clickhouse_connect
 import chdb.session as chs
