@@ -10,8 +10,7 @@ class TestChDBTools(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Set up the environment before chDB tests."""
-        tenant = "example"
-        cls.client = create_chdb_client(tenant)
+        cls.client = create_chdb_client(tenant="example")
 
     def test_run_chdb_select_query_wrong_tenant(self):
         """Test running a simple SELECT query in chDB with wrong tenant."""

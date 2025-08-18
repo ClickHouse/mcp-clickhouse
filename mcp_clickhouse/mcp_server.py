@@ -255,7 +255,7 @@ def run_select_query(tenant: str, query: str):
         
     logger.info(f"Executing SELECT query for tenant - '{tenant}': {query}")
     try:
-        future = CLICKHOUSE_QUERY_EXECUTOR[tenant].submit(execute_query, {"tenant": tenant, "query": query})
+        future = CLICKHOUSE_QUERY_EXECUTOR[tenant].submit(execute_query, tenant, query)
         try:
             result = future.result(timeout=SELECT_QUERY_TIMEOUT_SECS)
             # Check if we received an error structure from execute_query
@@ -392,7 +392,7 @@ def run_chdb_select_query(tenant: str, query: str):
         
     logger.info(f"Executing chDB SELECT query for tenant - '{tenant}': {query}")
     try:
-        future = CHDB_QUERY_EXECUTOR[tenant].submit(execute_chdb_query, query)
+        future = CHDB_QUERY_EXECUTOR[tenant].submit(execute_chdb_query, tenant, query)
         try:
             result = future.result(timeout=SELECT_QUERY_TIMEOUT_SECS)
             # Check if we received an error structure from execute_chdb_query
