@@ -50,7 +50,7 @@ class ClickHouseConfig:
     """
     tenant: str
 
-    def __init__(self):
+    def __post_init__(self):
         """Initialize the configuration from environment variables."""
         if self.enabled:
             self._validate_required_vars()
@@ -192,7 +192,7 @@ class ChDBConfig:
     """
     tenant: str
 
-    def __init__(self):
+    def __post_init__(self):
         """Initialize the configuration from environment variables."""
         if self.enabled:
             self._validate_required_vars()
