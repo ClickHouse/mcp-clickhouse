@@ -1,7 +1,7 @@
 import unittest
 
 from dotenv import load_dotenv
-
+from fastmcp.exceptions import ToolError
 from mcp_clickhouse import create_chdb_client, run_chdb_select_query
 
 load_dotenv()
@@ -16,11 +16,13 @@ class TestChDBTools(unittest.TestCase):
         """Test running a simple SELECT query in chDB with wrong tenant."""
         tenant = "wrong_tenant"
         query = "SELECT 1 as test_value"
-        result = run_chdb_select_query(tenant, query)
-        self.assertEqual(result, {
-            "status": "error",
-            "message": f"chDB query not performed for non-existent tenant - '{tenant}'"
-        })
+        with self.assertRaises(ToolError) as cm:
+            run_chdb_select_query(tenant, query)
+
+        self.assertIn(
+            f"chDB query not performed for invalid tenant - '{tenant}'",
+            str(cm.exception)
+        )
 
     def test_run_chdb_select_query_simple(self):
         """Test running a simple SELECT query in chDB."""

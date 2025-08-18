@@ -41,28 +41,38 @@ class TestClickhouseTools(unittest.TestCase):
         cls.client.command(f"DROP DATABASE IF EXISTS {cls.test_db}")
 
     def test_list_databases_wrong_tenant(self):
-        """Test listing databases with wrong tenant."""
-        result = list_databases("wrong_tenant")
-        self.assertEqual(result, {
-            "status": "error",
-            "message": "List databases not performed for non-existent tenant - 'wrong_tenant'"
-        })
+        """Test listing tables with wrong tenant."""
+        tenant = "wrong_tenant"
+        with self.assertRaises(ToolError) as cm:
+            list_databases(tenant)
+
+        self.assertIn(
+            f"List databases not performed for invalid tenant - '{tenant}'",
+            str(cm.exception)
+        )
 
     def test_list_tables_wrong_tenant(self):
         """Test listing tables with wrong tenant."""
-        result = list_tables("wrong_tenant")
-        self.assertEqual(result, {
-            "status": "error",
-            "message": "List tables not performed for non-existent tenant - 'wrong_tenant'"
-        })
+        tenant = "wrong_tenant"
+        with self.assertRaises(ToolError) as cm:
+            list_tables(tenant, self.test_db)
+
+        self.assertIn(
+            f"List tables not performed for invalid tenant - '{tenant}'",
+            str(cm.exception)
+        )
 
     def test_run_select_query_wrong_tenant(self):
         """Test run select query with wrong tenant."""
-        result = list_databases("wrong_tenant")
-        self.assertEqual(result, {
-            "status": "error",
-            "message": "Query not performed for non-existent tenant - 'wrong_tenant'"
-        })
+        tenant = "wrong_tenant"
+        query = f"SELECT * FROM {self.test_db}.{self.test_table}"
+        with self.assertRaises(ToolError) as cm:
+            run_select_query(tenant, query)
+
+        self.assertIn(
+            f"Query not performed for invalid tenant - '{tenant}'",
+            str(cm.exception)
+        )
 
     def test_list_databases(self):
         """Test listing databases."""

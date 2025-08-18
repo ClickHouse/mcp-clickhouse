@@ -170,15 +170,11 @@ def chdb_tenant_available(tenant: str):
 
 def list_databases(tenant: str):
     """List available ClickHouse databases"""
-    logger.info("Listing all databases")
-
     if not clickhouse_tenant_available(tenant):
-        logger.warning(f"List databases not performed for non-existent tenant - '{tenant}'")
-        return {
-            "status": "error",
-            "message": f"List databases not performed for non-existent tenant - '{tenant}'"
-        }
+        logger.warning(f"List databases not performed for invalid tenant - '{tenant}'")
+        raise ToolError(f"List databases not performed for invalid tenant - '{tenant}'")
 
+    logger.info("Listing all databases")
     client = create_clickhouse_client(tenant)
     result = client.command("SHOW DATABASES")
 
@@ -197,11 +193,8 @@ def list_tables(tenant: str, database: str, like: Optional[str] = None, not_like
     row count, and column count."""
 
     if not clickhouse_tenant_available(tenant):
-        logger.warning(f"List tables not performed for non-existent tenant - '{tenant}'")
-        return {
-            "status": "error",
-            "message": f"List tables not performed for non-existent tenant - '{tenant}'"
-        }
+        logger.warning(f"List tables not performed for invalid tenant - '{tenant}'")
+        raise ToolError(f"List tables not performed for invalid tenant - '{tenant}'")
 
     logger.info(f"Listing tables for tenant - '{tenant}' in database '{database}'")
     client = create_clickhouse_client(tenant)
@@ -233,6 +226,10 @@ def list_tables(tenant: str, database: str, like: Optional[str] = None, not_like
 
 
 def execute_query(tenant: str, query: str):
+    if not clickhouse_tenant_available(tenant):
+        logger.warning(f"Query not executed for invalid tenant - '{tenant}'")
+        raise ToolError(f"Query not executed for invalid tenant - '{tenant}'")
+    
     client = create_clickhouse_client(tenant)
     try:
         read_only = get_readonly_setting(client)
@@ -247,11 +244,8 @@ def execute_query(tenant: str, query: str):
 def run_select_query(tenant: str, query: str):
     """Run a SELECT query in a ClickHouse database"""
     if not clickhouse_tenant_available(tenant):
-        logger.warning(f"Query not performed for non-existent tenant - '{tenant}'")
-        return {
-            "status": "error",
-            "message": f"Query not performed for non-existent tenant - '{tenant}'"
-        }
+        logger.warning(f"Select Query not performed for invalid tenant - '{tenant}'")
+        raise ToolError(f"Select Query not performed for invalid tenant - '{tenant}'")
         
     logger.info(f"Executing SELECT query for tenant - '{tenant}': {query}")
     try:
@@ -281,11 +275,8 @@ def run_select_query(tenant: str, query: str):
 
 def create_clickhouse_client(tenant: str):
     if not clickhouse_tenant_available(tenant):
-        logger.warning(f"Clickhouse client not created for non-existent tenant - '{tenant}'")
-        return {
-            "status": "error",
-            "message": f"Clickhouse client not created for non-existent tenant - '{tenant}'"
-        }
+        logger.warning(f"Clickhouse client not created for invalid tenant - '{tenant}'")
+        raise ToolError(f"Clickhouse client not created for invalid tenant - '{tenant}'")
     
     client_config = get_config(tenant).get_client_config()
     logger.info(
@@ -340,11 +331,8 @@ def get_readonly_setting(client) -> str:
 def create_chdb_client(tenant: str):
     """Create a chDB client connection."""
     if not chdb_tenant_available(tenant):
-        logger.warning(f"chDB client not created for non-existent tenant - '{tenant}'")
-        return {
-            "status": "error",
-            "message": f"chDB client not created for non-existent tenant - '{tenant}'"
-        }
+        logger.warning(f"chDB client not created for invalid tenant - '{tenant}'")
+        raise ToolError(f"chDB client not created for invalid tenant - '{tenant}'")
     
     if not get_chdb_config(tenant).enabled:
         raise ValueError(f"chDB is not enabled for tenant - '{tenant}'. Set CHDB_ENABLED=true to enable it.")
@@ -354,11 +342,8 @@ def create_chdb_client(tenant: str):
 def execute_chdb_query(tenant: str, query: str):
     """Execute a query using chDB client."""
     if not chdb_tenant_available(tenant):
-        logger.warning(f"chDB Query not performed for non-existent tenant - '{tenant}'")
-        return {
-            "status": "error",
-            "message": f"chDB Query not performed for non-existent tenant - '{tenant}'"
-        }
+        logger.warning(f"chDB query not executed for invalid tenant - '{tenant}'")
+        raise ToolError(f"chDB query not executed for invalid tenant - '{tenant}'")
 
     client = create_chdb_client(tenant)
     try:
@@ -384,11 +369,8 @@ def execute_chdb_query(tenant: str, query: str):
 def run_chdb_select_query(tenant: str, query: str):
     """Run SQL in chDB, an in-process ClickHouse engine"""
     if not chdb_tenant_available(tenant):
-        logger.warning(f"chDB query not performed for non-existent tenant - '{tenant}'")
-        return {
-            "status": "error",
-            "message": f"chDB query not performed for non-existent tenant - '{tenant}'"
-        }
+        logger.warning(f"chDB query not performed for invalid tenant - '{tenant}'")
+        raise ToolError(f"chDB query not performed for invalid tenant - '{tenant}'")
         
     logger.info(f"Executing chDB SELECT query for tenant - '{tenant}': {query}")
     try:
@@ -425,11 +407,8 @@ def chdb_initial_prompt() -> str:
 def _init_chdb_client(tenant: str):
     """Initialize the global chDB client instance."""
     if not chdb_tenant_available(tenant):
-        logger.warning(f"chDB client not initialised for non-existent tenant - '{tenant}'")
-        return {
-            "status": "error",
-            "message": f"chDB client not initialised for non-existent tenant - '{tenant}'"
-        }
+        logger.warning(f"chDB client not initialised for invalid tenant - '{tenant}'")
+        raise ToolError(f"chDB client not initialised for invalid tenant - '{tenant}'")
     
     try:
         if not get_chdb_config(tenant).enabled:

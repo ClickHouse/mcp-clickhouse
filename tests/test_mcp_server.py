@@ -91,33 +91,35 @@ def mcp_server():
 @pytest.mark.asyncio
 async def test_list_databases_wrong_tenant(mcp_server):
     """Test the list_databases tool with wrong tenant."""
+    tenant = "wrong_tenant"
     async with Client(mcp_server) as client:
-        result = await client.call_tool("list_databases", {"tenant": "wrong_tenant"})
-        assert result == {
-            "status": "error",
-            "message": "List databases not performed for non-existent tenant - 'wrong_tenant'"
-        }
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool("list_databases", {"tenant": tenant})
+        
+        assert f"List databases not performed for invalid tenant - '{tenant}'" in str(exc_info.value)
 
 @pytest.mark.asyncio
-async def test_list_tables_wrong_tenant(mcp_server):
+async def test_list_tables_wrong_tenant(mcp_server, setup_test_database):
     """Test the list_tables tool with wrong tenant."""
+    _, test_db, test_table, _ = setup_test_database
+    tenant = "wrong_tenant"
     async with Client(mcp_server) as client:
-        result = await client.call_tool("list_databases", {"tenant": "wrong_tenant"})
-        assert result == {
-            "status": "error",
-            "message": "List tables not performed for non-existent tenant - 'wrong_tenant'"
-        }
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool("list_tables", {"tenant": tenant, "database": test_db})
+        assert f"List tables not performed for invalid tenant - '{tenant}'" in str(exc_info.value)
 
 @pytest.mark.asyncio
-async def test_run_select_query_wrong_tenant(mcp_server):
+async def test_run_select_query_wrong_tenant(mcp_server, setup_test_database):
     """Test the run_select_query tool with wrong tenant."""
+    _, test_db, test_table, _ = setup_test_database
+    tenant = "wrong_tenant"
     async with Client(mcp_server) as client:
-        result = await client.call_tool("list_databases", {"tenant": "wrong_tenant"})
-        assert result == {
-            "status": "error",
-            "message": "Query not performed for non-existent tenant - 'wrong_tenant'"
-        }
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool("run_select_query", {"tenant": tenant, "query": f"SELECT COUNT(*) FROM {test_db}.{test_table}",})
+        
+        assert f"Query not performed for invalid tenant - '{tenant}'" in str(exc_info.value)
 
+@pytest.mark.asyncio
 async def test_list_databases(mcp_server, setup_test_database):
     """Test the list_databases tool."""
     test_tenant, test_db, _, _ = setup_test_database
