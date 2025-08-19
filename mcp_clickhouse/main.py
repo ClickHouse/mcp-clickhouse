@@ -1,9 +1,9 @@
 from .mcp_server import mcp
-from .mcp_env import get_config, TransportType
+from .mcp_env import get_mcp_config, TransportType
 
 
 def main():
-    config = get_config()
+    config = get_mcp_config()
     transport = config.mcp_server_transport
 
     # For HTTP and SSE transports, we need to specify host and port

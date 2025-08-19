@@ -10,6 +10,9 @@ An MCP server for ClickHouse.
 
 ### ClickHouse Tools
 
+* `list_clickhouse_tenants`
+  * List all clickhouse tenants.
+
 * `run_select_query`
   * Execute SQL queries on your ClickHouse cluster.
   * Input: `sql` (string): The SQL query to execute.
@@ -23,6 +26,9 @@ An MCP server for ClickHouse.
   * Input: `database` (string): The name of the database.
 
 ### chDB Tools
+
+* `list_chdb_tenants`
+  * List all chdb tenants.
 
 * `run_chdb_select_query`
   * Execute SQL queries using [chDB](https://github.com/chdb-io/chdb)'s embedded ClickHouse engine.
@@ -162,6 +168,132 @@ You can also enable both ClickHouse and chDB simultaneously:
         "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30",
         "CHDB_ENABLED": "true",
         "CHDB_DATA_PATH": "/path/to/chdb/data"
+      }
+    }
+  }
+}
+```
+
+Multi-tenancy configuration is also supported. This is enabled by defining custom prefixes in front of the base environment variables. The below configuration creates two tenants: `cluster1` and `cluster2`.
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp-clickhouse",
+        "--python",
+        "3.10",
+        "mcp-clickhouse"
+      ],
+      "env": {
+        "cluster1_CLICKHOUSE_HOST": "<clickhouse-host>",
+        "cluster1_CLICKHOUSE_PORT": "<clickhouse-port>",
+        "cluster1_CLICKHOUSE_USER": "<clickhouse-user>",
+        "cluster1_CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "cluster1_CLICKHOUSE_SECURE": "true",
+        "cluster1_CLICKHOUSE_VERIFY": "true",
+        "cluster1_CLICKHOUSE_CONNECT_TIMEOUT": "30",
+        "cluster1_CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30",
+        "cluster1_CHDB_ENABLED": "true",
+        "cluster1_CHDB_DATA_PATH": "/path/to/chdb/data",
+        "cluster2_CLICKHOUSE_HOST": "<clickhouse-host>",
+        "cluster2_CLICKHOUSE_PORT": "<clickhouse-port>",
+        "cluster2_CLICKHOUSE_USER": "<clickhouse-user>",
+        "cluster2_CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "cluster2_CLICKHOUSE_SECURE": "true",
+        "cluster2_CLICKHOUSE_VERIFY": "true",
+        "cluster2_CLICKHOUSE_CONNECT_TIMEOUT": "30",
+        "cluster2_CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30",
+        "cluster2_CHDB_ENABLED": "true",
+        "cluster2_CHDB_DATA_PATH": "/path/to/chdb/data"
+      }
+    }
+  }
+}
+```
+
+If no custom prefix is defined, a `default` tenant is automatically assigned based on the original environment variables. Defining custom tenants using the reserved `default` prefix is not allowed. The below example creates two tenants: `default` and `custom`.
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp-clickhouse",
+        "--python",
+        "3.10",
+        "mcp-clickhouse"
+      ],
+      "env": {
+        "CLICKHOUSE_HOST": "<clickhouse-host>",
+        "CLICKHOUSE_PORT": "<clickhouse-port>",
+        "CLICKHOUSE_USER": "<clickhouse-user>",
+        "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "CLICKHOUSE_SECURE": "true",
+        "CLICKHOUSE_VERIFY": "true",
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
+        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30",
+        "CHDB_ENABLED": "true",
+        "CHDB_DATA_PATH": "/path/to/chdb/data",
+        "custom_CLICKHOUSE_HOST": "<clickhouse-host>",
+        "custom_CLICKHOUSE_PORT": "<clickhouse-port>",
+        "custom_CLICKHOUSE_USER": "<clickhouse-user>",
+        "custom_CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "custom_CLICKHOUSE_SECURE": "true",
+        "custom_CLICKHOUSE_VERIFY": "true",
+        "custom_CLICKHOUSE_CONNECT_TIMEOUT": "30",
+        "custom_CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30",
+        "custom_CHDB_ENABLED": "true",
+        "custom_CHDB_DATA_PATH": "/path/to/chdb/data"
+      }
+    }
+  }
+}
+```
+
+The below example will throw an error as `default` prefix is used.
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp-clickhouse",
+        "--python",
+        "3.10",
+        "mcp-clickhouse"
+      ],
+      "env": {
+        "CLICKHOUSE_HOST": "<clickhouse-host>",
+        "CLICKHOUSE_PORT": "<clickhouse-port>",
+        "CLICKHOUSE_USER": "<clickhouse-user>",
+        "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "CLICKHOUSE_SECURE": "true",
+        "CLICKHOUSE_VERIFY": "true",
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
+        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30",
+        "CHDB_ENABLED": "true",
+        "CHDB_DATA_PATH": "/path/to/chdb/data",
+        "default_CLICKHOUSE_HOST": "<clickhouse-host>",
+        "default_CLICKHOUSE_PORT": "<clickhouse-port>",
+        "default_CLICKHOUSE_USER": "<clickhouse-user>",
+        "default_CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "default_CLICKHOUSE_SECURE": "true",
+        "default_CLICKHOUSE_VERIFY": "true",
+        "default_CLICKHOUSE_CONNECT_TIMEOUT": "30",
+        "default_CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30",
+        "default_CHDB_ENABLED": "true",
+        "default_CHDB_DATA_PATH": "/path/to/chdb/data"
       }
     }
   }

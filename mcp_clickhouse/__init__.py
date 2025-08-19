@@ -1,4 +1,6 @@
 from .mcp_server import (
+    list_clickhouse_tenants,
+    list_chdb_tenants,
     create_clickhouse_client,
     list_databases,
     list_tables,
@@ -9,6 +11,8 @@ from .mcp_server import (
 )
 
 __all__ = [
+    "list_clickhouse_tenants",
+    "list_chdb_tenants",
     "list_databases",
     "list_tables",
     "run_select_query",
