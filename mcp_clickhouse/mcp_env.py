@@ -57,6 +57,9 @@ class ClickHouseConfig:
             
     def _getenv(self, key: str, default=None, cast=str):
         prefixed_key = f"{self.tenant}_{key}"
+        if self.tenant == "":
+            prefixed_key = key # default
+
         val = os.getenv(prefixed_key, os.getenv(key, default))
         if val is not None and cast is not str:
             try:
@@ -154,7 +157,7 @@ class ClickHouseConfig:
             "verify": self.verify,
             "connect_timeout": self.connect_timeout,
             "send_receive_timeout": self.send_receive_timeout,
-            "client_name": f"{self.tenant}mcp_clickhouse",
+            "client_name": f"mcp_clickhouse_{self.tenant if self.tenant else 'default'}",
         }
 
         # Add optional database if set
@@ -199,6 +202,9 @@ class ChDBConfig:
 
     def _getenv(self, key: str, default=None, cast=str):
         prefixed_key = f"{self.tenant}_{key}"
+        if self.tenant == "":
+            prefixed_key = key # default
+
         val = os.getenv(prefixed_key, os.getenv(key, default))
         if val is not None and cast is not str:
             try:
@@ -266,9 +272,11 @@ def load_clickhouse_configs() -> Dict[str, ClickHouseConfig]:
         if key.endswith("CLICKHOUSE_HOST") and not key.startswith("CLICKHOUSE_HOST"):
             # <tenant>_CLICKHOUSE_HOST 
             tenant = key[: -len("_CLICKHOUSE_HOST")]
+            if tenant == "default":
+                raise ValueError("default is a reserved tenant")
             _CLICKHOUSE_TENANTS[tenant] = ClickHouseConfig(tenant=tenant)
         elif key.endswith("CLICKHOUSE_HOST") and key.startswith("CLICKHOUSE_HOST"):
-            # default tenant -> <empty>_CLICKHOUSE_HOST
+            # default tenant -> <empty>CLICKHOUSE_HOST
             _CLICKHOUSE_TENANTS["default"] = ClickHouseConfig(tenant="")
     
     return _CLICKHOUSE_TENANTS
@@ -279,9 +287,11 @@ def load_chdb_configs() -> Dict[str, ChDBConfig]:
         if key.endswith("CHDB_DATA_PATH") and not key.startswith("CHDB_DATA_PATH"):
             # <tenant>_CHDB_DATA_PATH
             tenant = key[: -len("_CHDB_DATA_PATH")]
+            if tenant == "default":
+                raise ValueError("default is a reserved tenant")
             _CHDB_TENANTS[tenant] = ChDBConfig(tenant=tenant)
         elif key.endswith("CHDB_DATA_PATH") and key.startswith("CHDB_DATA_PATH"):
-            # default tenant -> <empty>_CHDB_DATA_PATH
+            # default tenant -> <empty>CHDB_DATA_PATH
             _CHDB_TENANTS["default"] = ChDBConfig(tenant="")
     return _CHDB_TENANTS
 
@@ -304,12 +314,12 @@ def get_chdb_config(tenant: str = "default") -> ChDBConfig:
         raise ValueError(f"No ChDB config found for tenant '{tenant}'")
     return _CHDB_TENANTS[tenant]
 
-def list_clickhouse_tenants() -> List[str]:
+def get_clickhouse_tenants() -> List[str]:
     """Get list of all clickhouse tenant names."""
     global _CLICKHOUSE_TENANTS
     return [tenant for tenant in _CLICKHOUSE_TENANTS.keys()]
 
-def list_chdb_tenants() -> List[str]:
+def get_chdb_tenants() -> List[str]:
     """Get list of all chdb tenant names."""
     global _CHDB_TENANTS
     return [tenant for tenant in _CHDB_TENANTS.keys()]

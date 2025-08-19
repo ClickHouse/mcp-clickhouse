@@ -20,10 +20,8 @@ def event_loop():
 @pytest_asyncio.fixture(scope="module")
 async def setup_test_database():
     """Set up test database and tables before running tests."""
-    # Test tenant
-    test_tenant = "example"
 
-    client = create_clickhouse_client(test_tenant)
+    client = create_clickhouse_client(tenant= "default")
 
     # Test database and table names
     test_db = "test_mcp_db"
@@ -76,7 +74,7 @@ async def setup_test_database():
         (1003, 'login', '2024-01-01 12:00:00')
     """)
 
-    yield test_tenant, test_db, test_table, test_table2
+    yield test_db, test_table, test_table2
 
     # Cleanup after tests
     client.command(f"DROP DATABASE IF EXISTS {test_db}")
@@ -101,7 +99,7 @@ async def test_list_databases_wrong_tenant(mcp_server):
 @pytest.mark.asyncio
 async def test_list_tables_wrong_tenant(mcp_server, setup_test_database):
     """Test the list_tables tool with wrong tenant."""
-    _, test_db, test_table, _ = setup_test_database
+    test_db, test_table, _ = setup_test_database
     tenant = "wrong_tenant"
     async with Client(mcp_server) as client:
         with pytest.raises(ToolError) as exc_info:
@@ -111,7 +109,7 @@ async def test_list_tables_wrong_tenant(mcp_server, setup_test_database):
 @pytest.mark.asyncio
 async def test_run_select_query_wrong_tenant(mcp_server, setup_test_database):
     """Test the run_select_query tool with wrong tenant."""
-    _, test_db, test_table, _ = setup_test_database
+    test_db, test_table, _ = setup_test_database
     tenant = "wrong_tenant"
     async with Client(mcp_server) as client:
         with pytest.raises(ToolError) as exc_info:
@@ -123,37 +121,36 @@ async def test_run_select_query_wrong_tenant(mcp_server, setup_test_database):
 async def test_list_clickhouse_tenants(mcp_server):
     """Test the list_clickhouse_tenants tool."""
     async with Client(mcp_server) as client:
-        result = await client.call_tool("list_clickhouse_tenants")
-
-        # The result should be a list containing at least one item
-        assert len(result) >= 1
+        result = await client.call_tool("list_clickhouse_tenants", {})
+        # The result should be a list containing one item
+        assert len(result) == 1
         assert isinstance(result[0].text, str)
-        tenants = json.loads(result[0].text)
 
+        # Parse the result text (it's a JSON list of tenant names)
+        tenants = json.loads(result[0].text)
+        
         assert "default" in tenants  # default tenant is defined in .env (no prefix)
-        assert "example" in tenants  # example tenant is defined in .env (example prefix)
 
 @pytest.mark.asyncio
 async def test_list_chdb_tenants(mcp_server):
     """Test the list_chdb_tenants tool."""
     async with Client(mcp_server) as client:
-        result = await client.call_tool("list_chdb_tenants")
-
-        # The result should be a list containing at least one item
-        assert len(result) >= 1
+        result = await client.call_tool("list_chdb_tenants", {})
+        # The result should be a list containing one item
+        assert len(result) == 1
         assert isinstance(result[0].text, str)
+        # Parse the result text (it's a JSON list of tenant names)
         tenants = json.loads(result[0].text)
         
         assert "default" in tenants  # default tenant is defined in .env (no prefix)
-        assert "example" in tenants  # example tenant is defined in .env (example prefix)
 
 @pytest.mark.asyncio
 async def test_list_databases(mcp_server, setup_test_database):
     """Test the list_databases tool."""
-    test_tenant, test_db, _, _ = setup_test_database
+    test_db, _, _ = setup_test_database
 
     async with Client(mcp_server) as client:
-        result = await client.call_tool("list_databases", {"tenant": test_tenant})
+        result = await client.call_tool("list_databases", {"tenant": "default"})
 
         # The result should be a list containing at least one item
         assert len(result) >= 1
@@ -168,10 +165,10 @@ async def test_list_databases(mcp_server, setup_test_database):
 @pytest.mark.asyncio
 async def test_list_tables_basic(mcp_server, setup_test_database):
     """Test the list_tables tool without filters."""
-    test_tenant, test_db, test_table, test_table2 = setup_test_database
+    test_db, test_table, test_table2 = setup_test_database
 
     async with Client(mcp_server) as client:
-        result = await client.call_tool("list_tables", {"tenant": test_tenant, "database": test_db})
+        result = await client.call_tool("list_tables", {"tenant": "default", "database": test_db})
 
         assert len(result) >= 1
         tables = json.loads(result[0].text)
@@ -203,11 +200,11 @@ async def test_list_tables_basic(mcp_server, setup_test_database):
 @pytest.mark.asyncio
 async def test_list_tables_with_like_filter(mcp_server, setup_test_database):
     """Test the list_tables tool with LIKE filter."""
-    test_tenant, test_db, test_table, _ = setup_test_database
+    test_db, test_table, _ = setup_test_database
 
     async with Client(mcp_server) as client:
         # Test with LIKE filter
-        result = await client.call_tool("list_tables", {"tenant": test_tenant, "database": test_db, "like": "test_%"})
+        result = await client.call_tool("list_tables", {"tenant": "default", "database": test_db, "like": "test_%"})
 
         tables_data = json.loads(result[0].text)
 
@@ -224,11 +221,11 @@ async def test_list_tables_with_like_filter(mcp_server, setup_test_database):
 @pytest.mark.asyncio
 async def test_list_tables_with_not_like_filter(mcp_server, setup_test_database):
     """Test the list_tables tool with NOT LIKE filter."""
-    test_tenant, test_db, _, test_table2 = setup_test_database
+    test_db, _, test_table2 = setup_test_database
 
     async with Client(mcp_server) as client:
         # Test with NOT LIKE filter
-        result = await client.call_tool("list_tables", {"tenant": test_tenant, "database": test_db, "not_like": "test_%"})
+        result = await client.call_tool("list_tables", {"tenant": "default", "database": test_db, "not_like": "test_%"})
 
         tables_data = json.loads(result[0].text)
 
@@ -245,11 +242,11 @@ async def test_list_tables_with_not_like_filter(mcp_server, setup_test_database)
 @pytest.mark.asyncio
 async def test_run_select_query_success(mcp_server, setup_test_database):
     """Test running a successful SELECT query."""
-    test_tenant, test_db, test_table, _ = setup_test_database
+    test_db, test_table, _ = setup_test_database
 
     async with Client(mcp_server) as client:
         query = f"SELECT id, name, age FROM {test_db}.{test_table} ORDER BY id"
-        result = await client.call_tool("run_select_query", {"tenant": test_tenant, "query": query})
+        result = await client.call_tool("run_select_query", {"tenant": "default", "query": query})
 
         query_result = json.loads(result[0].text)
 
@@ -271,11 +268,11 @@ async def test_run_select_query_success(mcp_server, setup_test_database):
 @pytest.mark.asyncio
 async def test_run_select_query_with_aggregation(mcp_server, setup_test_database):
     """Test running a SELECT query with aggregation."""
-    test_tenant, test_db, test_table, _ = setup_test_database
+    test_db, test_table, _ = setup_test_database
 
     async with Client(mcp_server) as client:
         query = f"SELECT COUNT(*) as count, AVG(age) as avg_age FROM {test_db}.{test_table}"
-        result = await client.call_tool("run_select_query", {"tenant": test_tenant, "query": query})
+        result = await client.call_tool("run_select_query", {"tenant": "default", "query": query})
 
         query_result = json.loads(result[0].text)
 
@@ -288,11 +285,11 @@ async def test_run_select_query_with_aggregation(mcp_server, setup_test_database
 @pytest.mark.asyncio
 async def test_run_select_query_with_join(mcp_server, setup_test_database):
     """Test running a SELECT query with JOIN."""
-    test_tenant, test_db, test_table, test_table2 = setup_test_database
+    test_db, test_table, test_table2 = setup_test_database
 
     async with Client(mcp_server) as client:
         # Insert related data for join
-        client_direct = create_clickhouse_client(test_tenant)
+        client_direct = create_clickhouse_client("default")
         client_direct.command(f"""
             INSERT INTO {test_db}.{test_table2} (event_id, event_type, timestamp) VALUES
             (2001, 'purchase', '2024-01-01 14:00:00')
@@ -303,7 +300,7 @@ async def test_run_select_query_with_join(mcp_server, setup_test_database):
             COUNT(DISTINCT event_type) as event_types_count
         FROM {test_db}.{test_table2}
         """
-        result = await client.call_tool("run_select_query", {"tenant": test_tenant, "query": query})
+        result = await client.call_tool("run_select_query", {"tenant": "default", "query": query})
 
         query_result = json.loads(result[0].text)
         assert query_result["rows"][0][0] == 3  # login, logout, purchase
@@ -312,7 +309,7 @@ async def test_run_select_query_with_join(mcp_server, setup_test_database):
 @pytest.mark.asyncio
 async def test_run_select_query_error(mcp_server, setup_test_database):
     """Test running a SELECT query that results in an error."""
-    test_tenant, test_db, _, _ = setup_test_database
+    test_db, _, _ = setup_test_database
 
     async with Client(mcp_server) as client:
         # Query non-existent table
@@ -320,14 +317,14 @@ async def test_run_select_query_error(mcp_server, setup_test_database):
 
         # Should raise ToolError
         with pytest.raises(ToolError) as exc_info:
-            await client.call_tool("run_select_query", {"tenant": test_tenant, "query": query})
+            await client.call_tool("run_select_query", {"tenant": "default", "query": query})
 
         assert "Query execution failed" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
 async def test_run_select_query_syntax_error(mcp_server, setup_test_database):
-    test_tenant, _, _, _ = setup_test_database
+    _, _, _ = setup_test_database
 
     """Test running a SELECT query with syntax error."""
     async with Client(mcp_server) as client:
@@ -336,7 +333,7 @@ async def test_run_select_query_syntax_error(mcp_server, setup_test_database):
 
         # Should raise ToolError
         with pytest.raises(ToolError) as exc_info:
-            await client.call_tool("run_select_query", {"tenant": test_tenant, "query": query})
+            await client.call_tool("run_select_query", {"tenant": "default", "query": query})
 
         assert "Query execution failed" in str(exc_info.value)
 
@@ -344,10 +341,10 @@ async def test_run_select_query_syntax_error(mcp_server, setup_test_database):
 @pytest.mark.asyncio
 async def test_table_metadata_details(mcp_server, setup_test_database):
     """Test that table metadata is correctly retrieved."""
-    test_tenant, test_db, test_table, _ = setup_test_database
+    test_db, test_table, _ = setup_test_database
 
     async with Client(mcp_server) as client:
-        result = await client.call_tool("list_tables", {"tenant": test_tenant, "database": test_db})
+        result = await client.call_tool("list_tables", {"tenant": "default", "database": test_db})
         tables = json.loads(result[0].text)
 
         # Find our test table
@@ -383,10 +380,10 @@ async def test_table_metadata_details(mcp_server, setup_test_database):
 @pytest.mark.asyncio
 async def test_system_database_access(mcp_server, setup_test_database):
     """Test that we can access system databases."""
-    test_tenant, _, _, _ = setup_test_database
+    _, _, _ = setup_test_database
     async with Client(mcp_server) as client:
         # List tables in system database
-        result = await client.call_tool("list_tables", {"tenant": test_tenant, "database": "system"})
+        result = await client.call_tool("list_tables", {"tenant": "default", "database": "system"})
         tables = json.loads(result[0].text)
 
         # System database should have many tables
@@ -402,7 +399,7 @@ async def test_system_database_access(mcp_server, setup_test_database):
 @pytest.mark.asyncio
 async def test_concurrent_queries(mcp_server, setup_test_database):
     """Test running multiple queries concurrently."""
-    test_tenant, test_db, test_table, test_table2 = setup_test_database
+    test_db, test_table, test_table2 = setup_test_database
 
     async with Client(mcp_server) as client:
         # Run multiple queries concurrently
@@ -415,7 +412,7 @@ async def test_concurrent_queries(mcp_server, setup_test_database):
 
         # Execute all queries concurrently
         results = await asyncio.gather(
-            *[client.call_tool("run_select_query", {"tenant": test_tenant, "query": query}) for query in queries]
+            *[client.call_tool("run_select_query", {"tenant": "default", "query": query}) for query in queries]
         )
 
         # Verify all queries succeeded

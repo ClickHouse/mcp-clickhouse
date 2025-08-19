@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, asdict, is_dataclass
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from mcp_clickhouse.mcp_env import load_clickhouse_configs, load_chdb_configs, list_clickhouse_tenants, list_chdb_tenants, get_config, get_chdb_config
+from mcp_clickhouse.mcp_env import load_clickhouse_configs, load_chdb_configs, get_clickhouse_tenants, get_chdb_tenants, get_config, get_chdb_config
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 
 
@@ -66,8 +66,8 @@ load_clickhouse_configs()
 load_chdb_configs()
 
 # List of Tenants
-CLICKHOUSE_TENANTS = list_clickhouse_tenants()
-CHDB_TENANTS = list_chdb_tenants()
+CLICKHOUSE_TENANTS = get_clickhouse_tenants()
+CHDB_TENANTS = get_chdb_tenants()
 
 # Create ThreadPoolExecutors for each tenant
 CLICKHOUSE_QUERY_EXECUTOR = {
@@ -168,15 +168,15 @@ def chdb_tenant_available(tenant: str):
         return True
     return False
 
-def list_chdb_tenants():
+def list_clickhouse_tenants():
     """List available Clickhouse tenants"""
     global CLICKHOUSE_TENANTS
-    return CLICKHOUSE_TENANTS
+    return json.dumps(CLICKHOUSE_TENANTS)
 
 def list_chdb_tenants():
     """List available chDB tenants"""
     global CHDB_TENANTS
-    return CHDB_TENANTS
+    return json.dumps(CHDB_TENANTS)
 
 def list_databases(tenant: str):
     """List available ClickHouse databases"""

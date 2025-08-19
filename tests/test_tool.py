@@ -4,7 +4,7 @@ import json
 from dotenv import load_dotenv
 from fastmcp.exceptions import ToolError
 
-from mcp_clickhouse import create_clickhouse_client, list_clickhouse_tenants, list_chdb_tenants, list_databases, list_tables, run_select_query 
+from mcp_clickhouse import create_clickhouse_client, list_clickhouse_tenants, list_databases, list_tables, run_select_query 
 
 load_dotenv()
 
@@ -12,7 +12,7 @@ class TestClickhouseTools(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Set up the environment before tests."""
-        cls.client = create_clickhouse_client("example")
+        cls.client = create_clickhouse_client(tenant="default")
 
         # Prepare test database and table
         cls.test_db = "test_tool_db"
@@ -42,15 +42,8 @@ class TestClickhouseTools(unittest.TestCase):
 
     def test_list_clickhouse_tenants(self):
         tenants = list_clickhouse_tenants()
-        self.assertIn("example", tenants)
         self.assertIn("default", tenants)
-        self.assertEqual(len(tenants), 2)
-
-    def test_list_chdb_tenants(self):
-        tenants = list_chdb_tenants()
-        self.assertIn("example", tenants)
-        self.assertIn("default", tenants)
-        self.assertEqual(len(tenants), 2)
+        self.assertEqual(len(tenants), 1)
 
     def test_list_databases_wrong_tenant(self):
         """Test listing tables with wrong tenant."""
@@ -88,21 +81,21 @@ class TestClickhouseTools(unittest.TestCase):
 
     def test_list_databases(self):
         """Test listing databases."""
-        result = list_databases("example")
+        result = list_databases("default")
         # Parse JSON response
         databases = json.loads(result)
         self.assertIn(self.test_db, databases)
 
     def test_list_tables_without_like(self):
         """Test listing tables without a 'LIKE' filter."""
-        result = list_tables("example", self.test_db)
+        result = list_tables("default", self.test_db)
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["name"], self.test_table)
 
     def test_list_tables_with_like(self):
         """Test listing tables with a 'LIKE' filter."""
-        result = list_tables("example", self.test_db, like=f"{self.test_table}%")
+        result = list_tables("default", self.test_db, like=f"{self.test_table}%")
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["name"], self.test_table)
@@ -110,7 +103,7 @@ class TestClickhouseTools(unittest.TestCase):
     def test_run_select_query_success(self):
         """Test running a SELECT query successfully."""
         query = f"SELECT * FROM {self.test_db}.{self.test_table}"
-        result = run_select_query("example", query)
+        result = run_select_query("default", query)
         self.assertIsInstance(result, dict)
         self.assertEqual(len(result["rows"]), 2)
         self.assertEqual(result["rows"][0][0], 1)
@@ -122,13 +115,13 @@ class TestClickhouseTools(unittest.TestCase):
 
         # Should raise ToolError
         with self.assertRaises(ToolError) as context:
-            run_select_query("example", query)
+            run_select_query("default", query)
 
         self.assertIn("Query execution failed", str(context.exception))
 
     def test_table_and_column_comments(self):
         """Test that table and column comments are correctly retrieved."""
-        result = list_tables("example", self.test_db)
+        result = list_tables("default", self.test_db)
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
 
