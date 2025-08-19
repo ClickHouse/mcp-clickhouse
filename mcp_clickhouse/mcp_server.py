@@ -168,6 +168,16 @@ def chdb_tenant_available(tenant: str):
         return True
     return False
 
+def list_chdb_tenants():
+    """List available Clickhouse tenants"""
+    global CLICKHOUSE_TENANTS
+    return CLICKHOUSE_TENANTS
+
+def list_chdb_tenants():
+    """List available chDB tenants"""
+    global CHDB_TENANTS
+    return CHDB_TENANTS
+
 def list_databases(tenant: str):
     """List available ClickHouse databases"""
     if not clickhouse_tenant_available(tenant):
@@ -430,6 +440,7 @@ def _init_chdb_client(tenant: str):
 if not CLICKHOUSE_TENANTS:
     logger.info("ClickHouse tools not registered")
 else:
+    mcp.add_tool(Tool.from_function(list_clickhouse_tenants))
     mcp.add_tool(Tool.from_function(list_databases))
     mcp.add_tool(Tool.from_function(list_tables))
     mcp.add_tool(Tool.from_function(run_select_query))
@@ -443,6 +454,7 @@ else:
         if _chdb_client:
             atexit.register(lambda: _chdb_client.close())
 
+    mcp.add_tool(Tool.from_function(list_chdb_tenants))
     mcp.add_tool(Tool.from_function(run_chdb_select_query))
     chdb_prompt = Prompt.from_function(
         chdb_initial_prompt,

@@ -120,6 +120,34 @@ async def test_run_select_query_wrong_tenant(mcp_server, setup_test_database):
         assert f"Query not performed for invalid tenant - '{tenant}'" in str(exc_info.value)
 
 @pytest.mark.asyncio
+async def test_list_clickhouse_tenants(mcp_server):
+    """Test the list_clickhouse_tenants tool."""
+    async with Client(mcp_server) as client:
+        result = await client.call_tool("list_clickhouse_tenants")
+
+        # The result should be a list containing at least one item
+        assert len(result) >= 1
+        assert isinstance(result[0].text, str)
+        tenants = json.loads(result[0].text)
+
+        assert "default" in tenants  # default tenant is defined in .env (no prefix)
+        assert "example" in tenants  # example tenant is defined in .env (example prefix)
+
+@pytest.mark.asyncio
+async def test_list_chdb_tenants(mcp_server):
+    """Test the list_chdb_tenants tool."""
+    async with Client(mcp_server) as client:
+        result = await client.call_tool("list_chdb_tenants")
+
+        # The result should be a list containing at least one item
+        assert len(result) >= 1
+        assert isinstance(result[0].text, str)
+        tenants = json.loads(result[0].text)
+        
+        assert "default" in tenants  # default tenant is defined in .env (no prefix)
+        assert "example" in tenants  # example tenant is defined in .env (example prefix)
+
+@pytest.mark.asyncio
 async def test_list_databases(mcp_server, setup_test_database):
     """Test the list_databases tool."""
     test_tenant, test_db, _, _ = setup_test_database

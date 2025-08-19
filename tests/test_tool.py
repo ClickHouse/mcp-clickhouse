@@ -4,7 +4,7 @@ import json
 from dotenv import load_dotenv
 from fastmcp.exceptions import ToolError
 
-from mcp_clickhouse import create_clickhouse_client, list_databases, list_tables, run_select_query
+from mcp_clickhouse import create_clickhouse_client, list_clickhouse_tenants, list_chdb_tenants, list_databases, list_tables, run_select_query 
 
 load_dotenv()
 
@@ -39,6 +39,18 @@ class TestClickhouseTools(unittest.TestCase):
     def tearDownClass(cls):
         """Clean up the environment after tests."""
         cls.client.command(f"DROP DATABASE IF EXISTS {cls.test_db}")
+
+    def test_list_clickhouse_tenants(self):
+        tenants = list_clickhouse_tenants()
+        self.assertIn("example", tenants)
+        self.assertIn("default", tenants)
+        self.assertEqual(len(tenants), 2)
+
+    def test_list_chdb_tenants(self):
+        tenants = list_chdb_tenants()
+        self.assertIn("example", tenants)
+        self.assertIn("default", tenants)
+        self.assertEqual(len(tenants), 2)
 
     def test_list_databases_wrong_tenant(self):
         """Test listing tables with wrong tenant."""
