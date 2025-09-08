@@ -29,6 +29,39 @@ An MCP server for ClickHouse.
   * Input: `sql` (string): The SQL query to execute.
   * Query data directly from various sources (files, URLs, databases) without ETL processes.
 
+### Memory Tools (Experimental)
+
+> [!WARNING]
+> Memory tools are an experimental feature and may change in future versions.
+
+When enabled via the `CLICKHOUSE_MEMORY=true` environment variable, the following memory management tools become available:
+
+* `save_memory`
+  * Store user-provided information as key-value pairs for later retrieval and reference.
+  * Input: `key` (string): A concise, descriptive key that summarizes the content.
+  * Input: `value` (string): The information to store.
+
+* `get_memories_titles`
+  * Retrieve all memory keys/titles to see what information has been stored.
+  * Returns a list of all stored memory keys with timestamps.
+
+* `get_memory`
+  * Retrieve all memory entries matching a specific key.
+  * Input: `key` (string): The key to search for.
+  * Returns all memories associated with that key, ordered by most recent first.
+
+* `get_all_memories`
+  * Retrieve all saved memories from the memory table.
+  * Input: None
+  * **Warning**: Should only be used when explicitly requested, as it may return large amounts of data.
+
+* `delete_memory`
+  * Delete all memory entries matching a specific key.
+  * Input: `key` (string): The key of memories to delete.
+  * **Warning**: Should only be used when explicitly requested by the user.
+
+These tools use ClickHouse to store memories in a `user_memory` table, allowing information to persist across sessions.
+
 ### Health Check Endpoint
 
 When running with HTTP or SSE transport, a health check endpoint is available at `/health`. This endpoint:
@@ -317,6 +350,9 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_ENABLED`: Enable/disable ClickHouse functionality
   * Default: `"true"`
   * Set to `"false"` to disable ClickHouse tools when using chDB only
+* `CLICKHOUSE_MEMORY`: Enable/disable memory tools (experimental)
+  * Default: `"false"`
+  * Set to `"true"` to enable memory management tools for storing key-value data
 
 #### chDB Variables
 

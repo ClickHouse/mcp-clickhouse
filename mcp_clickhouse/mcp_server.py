@@ -267,6 +267,283 @@ def get_readonly_setting(client) -> str:
         return "1"  # Default to basic read-only mode if setting isn't present
 
 
+def execute_write_query(query: str):
+    """This function bypasses the read-only mode and allows write queries to be executed.
+
+    TODO: Find a sustainable way to execute write queries.
+    
+    Args:
+        query: The write query to execute
+    
+    Returns:
+        The result of the write query
+    """
+    client = create_clickhouse_client()
+    try:
+        res = client.command(query)
+        logger.info("Write query executed successfully")
+        return res
+    except Exception as err:
+        logger.error(f"Error executing write query: {err}")
+        return {"error": str(err)}
+
+
+def save_memory(key: str, value: str):
+    """Store user-provided information as key-value pairs for later retrieval and reference. Generate a concise, descriptive key that summarizes the value content provided."""
+    logger.info(f"Saving memory with key: {key}")
+    
+    try:
+        # Create table if it doesn't exist
+        logger.info("Ensuring user_memory table exists")
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS user_memory (
+            key String,
+            value String,
+            created_at DateTime DEFAULT now(),
+            updated_at DateTime DEFAULT now()
+        ) ENGINE = MergeTree()
+        ORDER BY key
+        """
+        
+        create_result = execute_write_query(create_table_query)
+        if isinstance(create_result, dict) and "error" in create_result:
+            return {
+                "status": "error",
+                "message": f"Failed to create user_memory table: {create_result['error']}"
+            }
+        
+        # Insert or replace the memory data using REPLACE INTO for upsert behavior
+        insert_query = f"""
+        INSERT INTO user_memory (key, value, updated_at) 
+        VALUES ({format_query_value(key)}, {format_query_value(value)}, now())
+        """
+        
+        insert_result = execute_write_query(insert_query)
+        if isinstance(insert_result, dict) and "error" in insert_result:
+            return {
+                "status": "error", 
+                "message": f"Failed to save memory: {insert_result['error']}"
+            }
+        
+        logger.info(f"Successfully saved memory with key: {key}")
+        return {
+            "status": "success",
+            "message": f"Memory '{key}' saved successfully",
+            "key": key
+        }
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in save_memory: {str(e)}")
+        return {"status": "error", "message": f"Unexpected error: {str(e)}"}
+
+
+def get_memories_titles():
+    """Retrieve all memory keys/titles from the user memory table to see what information has been stored."""
+    logger.info("Retrieving all memory titles")
+    
+    try:
+        # Query to get all keys with their timestamps
+        query = """
+        SELECT key, created_at, updated_at 
+        FROM user_memory 
+        ORDER BY updated_at DESC
+        """
+        
+        result = execute_query(query)
+        
+        # Check if we received an error structure from execute_query
+        if isinstance(result, dict) and "error" in result:
+            return {
+                "status": "error",
+                "message": f"Failed to retrieve memory titles: {result['error']}"
+            }
+        
+        # Extract just the keys for the response from the new result format
+        rows = result.get("rows", [])
+        titles = [row[0] for row in rows] if rows else []
+        
+        # Convert rows to dict format for details
+        columns = result.get("columns", [])
+        details = []
+        for row in rows:
+            row_dict = {}
+            for i, col_name in enumerate(columns):
+                row_dict[col_name] = row[i]
+            details.append(row_dict)
+        
+        logger.info(f"Retrieved {len(titles)} memory titles")
+        return {
+            "status": "success",
+            "titles": titles,
+            "count": len(titles),
+            "details": details  # Include full details with timestamps
+        }
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in get_memories_titles: {str(e)}")
+        return {"status": "error", "message": f"Unexpected error: {str(e)}"}
+
+
+def get_memory(key: str):
+    """Retrieve all memory entries matching the specified key from the user memory table."""
+    logger.info(f"Retrieving memory for key: {key}")
+    
+    try:
+        # Query to get all memories matching the key, ordered by most recent first
+        query = f"""
+        SELECT key, value, created_at, updated_at 
+        FROM user_memory 
+        WHERE key = {format_query_value(key)}
+        ORDER BY updated_at DESC
+        """
+        
+        result = execute_query(query)
+        
+        # Check if we received an error structure from execute_query
+        if isinstance(result, dict) and "error" in result:
+            return {
+                "status": "error",
+                "message": f"Failed to retrieve memory: {result['error']}"
+            }
+        
+        # Convert to dict format
+        columns = result.get("columns", [])
+        rows = result.get("rows", [])
+        memories = []
+        for row in rows:
+            row_dict = {}
+            for i, col_name in enumerate(columns):
+                row_dict[col_name] = row[i]
+            memories.append(row_dict)
+        
+        # Check if memory exists
+        if not memories:
+            logger.info(f"No memory found for key: {key}")
+            return {
+                "status": "not_found",
+                "message": f"No memory found with key '{key}'",
+                "key": key
+            }
+        
+        # Return all matching memories
+        logger.info(f"Successfully retrieved {len(memories)} memories for key: {key}")
+        
+        return {
+            "status": "success",
+            "key": key,
+            "count": len(memories),
+            "memories": memories
+        }
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in get_memory: {str(e)}")
+        return {"status": "error", "message": f"Unexpected error: {str(e)}"}
+
+
+def get_all_memories():
+    """Retrieve all saved memories from the user memory table, don't list them back, just the give the number of memories retrieved. WARNING: This tool should only be used when explicitly requested by the user, as it may return large amounts of data."""
+    logger.info("Retrieving all memories")
+    
+    try:
+        # Query to get all memories ordered by most recent first
+        query = """
+        SELECT key, value, created_at, updated_at 
+        FROM user_memory 
+        ORDER BY updated_at DESC
+        """
+        
+        result = execute_query(query)
+        
+        # Check if we received an error structure from execute_query
+        if isinstance(result, dict) and "error" in result:
+            return {
+                "status": "error",
+                "message": f"Failed to retrieve all memories: {result['error']}"
+            }
+        
+        # Convert to dict format
+        columns = result.get("columns", [])
+        rows = result.get("rows", [])
+        memories = []
+        for row in rows:
+            row_dict = {}
+            for i, col_name in enumerate(columns):
+                row_dict[col_name] = row[i]
+            memories.append(row_dict)
+        
+        # Return all memories
+        logger.info(f"Successfully retrieved {len(memories)} total memories")
+        
+        return {
+            "status": "success",
+            "count": len(memories),
+            "memories": memories
+        }
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in get_all_memories: {str(e)}")
+        return {"status": "error", "message": f"Unexpected error: {str(e)}"}
+
+
+def delete_memory(key: str):
+    """Delete all memory entries matching the specified key from the user memory table. Warining this tool should only be used when explicitly requested by the user"""
+    logger.info(f"Deleting memory for key: {key}")
+    
+    try:
+        # First check if memories exist for this key
+        check_query = f"""
+        SELECT count() 
+        FROM user_memory 
+        WHERE key = {format_query_value(key)}
+        """
+        
+        check_result = execute_query(check_query)
+        
+        # Check if we received an error structure from execute_query
+        if isinstance(check_result, dict) and "error" in check_result:
+            return {
+                "status": "error",
+                "message": f"Failed to check memory existence: {check_result['error']}"
+            }
+        
+        # Check if any memories exist - handle new result format
+        rows = check_result.get("rows", [])
+        if not rows or len(rows) == 0 or rows[0][0] == 0:
+            logger.info(f"No memories found for key: {key}")
+            return {
+                "status": "not_found",
+                "message": f"No memories found with key '{key}'",
+                "key": key
+            }
+        
+        memories_count = rows[0][0]
+        
+        # Delete the memories
+        delete_query = f"""
+        ALTER TABLE user_memory 
+        DELETE WHERE key = {format_query_value(key)}
+        """
+        
+        delete_result = execute_write_query(delete_query)
+        if isinstance(delete_result, dict) and "error" in delete_result:
+            return {
+                "status": "error", 
+                "message": f"Failed to delete memories: {delete_result['error']}"
+            }
+        
+        logger.info(f"Successfully deleted {memories_count} memories for key: {key}")
+        return {
+            "status": "success",
+            "message": f"Deleted {memories_count} memory entries with key '{key}'",
+            "key": key,
+            "deleted_count": memories_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in delete_memory: {str(e)}")
+        return {"status": "error", "message": f"Unexpected error: {str(e)}"}
+
+
 def create_chdb_client():
     """Create a chDB client connection."""
     if not get_chdb_config().enabled:
@@ -370,3 +647,15 @@ if os.getenv("CHDB_ENABLED", "false").lower() == "true":
     )
     mcp.add_prompt(chdb_prompt)
     logger.info("chDB tools and prompts registered")
+
+# Conditionally register memory tools based on CLICKHOUSE_MEMORY flag
+config = get_config()
+if config.memory_enabled:
+    logger.info("Memory tools enabled - registering memory management tools")
+    mcp.add_tool(Tool.from_function(save_memory))
+    mcp.add_tool(Tool.from_function(get_memories_titles))
+    mcp.add_tool(Tool.from_function(get_memory))
+    mcp.add_tool(Tool.from_function(get_all_memories))
+    mcp.add_tool(Tool.from_function(delete_memory))
+else:
+    logger.info("Memory tools disabled - set CLICKHOUSE_MEMORY=true to enable")
