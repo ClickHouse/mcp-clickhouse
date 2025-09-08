@@ -162,6 +162,14 @@ class ClickHouseConfig:
         """
         return int(os.getenv("CLICKHOUSE_MCP_BIND_PORT", "8000"))
 
+    @property
+    def memory_enabled(self) -> bool:
+        """Get whether memory tools are enabled.
+
+        Default: False
+        """
+        return os.getenv("CLICKHOUSE_MEMORY", "false").lower() == "true"
+
     def get_client_config(self) -> dict:
         """Get the configuration dictionary for clickhouse_connect client.
 
