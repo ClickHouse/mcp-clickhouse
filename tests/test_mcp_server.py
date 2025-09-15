@@ -96,11 +96,11 @@ async def test_list_databases(mcp_server, setup_test_database):
         result = await client.call_tool("list_databases", {})
 
         # The result should be a list containing at least one item
-        assert len(result) >= 1
-        assert isinstance(result[0].text, str)
+        assert len(result.content) >= 1
+        assert isinstance(result.content[0].text, str)
 
         # Parse the result text (it's a JSON list of database names)
-        databases = json.loads(result[0].text)
+        databases = json.loads(result.content[0].text)
         assert test_db in databases
         assert "system" in databases  # System database should always exist
 
@@ -113,8 +113,8 @@ async def test_list_tables_basic(mcp_server, setup_test_database):
     async with Client(mcp_server) as client:
         result = await client.call_tool("list_tables", {"database": test_db})
 
-        assert len(result) >= 1
-        tables = json.loads(result[0].text)
+        assert len(result.content) >= 1
+        tables = json.loads(result.content[0].text)
 
         # Should have exactly 2 tables
         assert len(tables) == 2
@@ -149,7 +149,7 @@ async def test_list_tables_with_like_filter(mcp_server, setup_test_database):
         # Test with LIKE filter
         result = await client.call_tool("list_tables", {"database": test_db, "like": "test_%"})
 
-        tables_data = json.loads(result[0].text)
+        tables_data = json.loads(result.content[0].text)
 
         # Handle both single dict and list of dicts
         if isinstance(tables_data, dict):
@@ -170,7 +170,7 @@ async def test_list_tables_with_not_like_filter(mcp_server, setup_test_database)
         # Test with NOT LIKE filter
         result = await client.call_tool("list_tables", {"database": test_db, "not_like": "test_%"})
 
-        tables_data = json.loads(result[0].text)
+        tables_data = json.loads(result.content[0].text)
 
         # Handle both single dict and list of dicts
         if isinstance(tables_data, dict):
@@ -191,7 +191,7 @@ async def test_run_select_query_success(mcp_server, setup_test_database):
         query = f"SELECT id, name, age FROM {test_db}.{test_table} ORDER BY id"
         result = await client.call_tool("run_select_query", {"query": query})
 
-        query_result = json.loads(result[0].text)
+        query_result = json.loads(result.content[0].text)
 
         # Check structure
         assert "columns" in query_result
@@ -217,7 +217,7 @@ async def test_run_select_query_with_aggregation(mcp_server, setup_test_database
         query = f"SELECT COUNT(*) as count, AVG(age) as avg_age FROM {test_db}.{test_table}"
         result = await client.call_tool("run_select_query", {"query": query})
 
-        query_result = json.loads(result[0].text)
+        query_result = json.loads(result.content[0].text)
 
         assert query_result["columns"] == ["count", "avg_age"]
         assert len(query_result["rows"]) == 1
@@ -245,7 +245,7 @@ async def test_run_select_query_with_join(mcp_server, setup_test_database):
         """
         result = await client.call_tool("run_select_query", {"query": query})
 
-        query_result = json.loads(result[0].text)
+        query_result = json.loads(result.content[0].text)
         assert query_result["rows"][0][0] == 3  # login, logout, purchase
 
 
@@ -286,7 +286,7 @@ async def test_table_metadata_details(mcp_server, setup_test_database):
 
     async with Client(mcp_server) as client:
         result = await client.call_tool("list_tables", {"database": test_db})
-        tables = json.loads(result[0].text)
+        tables = json.loads(result.content[0].text)
 
         # Find our test table
         test_table_info = next(t for t in tables if t["name"] == test_table)
@@ -324,7 +324,7 @@ async def test_system_database_access(mcp_server):
     async with Client(mcp_server) as client:
         # List tables in system database
         result = await client.call_tool("list_tables", {"database": "system"})
-        tables = json.loads(result[0].text)
+        tables = json.loads(result.content[0].text)
 
         # System database should have many tables
         assert len(tables) > 10
@@ -360,6 +360,6 @@ async def test_concurrent_queries(mcp_server, setup_test_database):
 
         # Check each result
         for i, result in enumerate(results):
-            query_result = json.loads(result[0].text)
+            query_result = json.loads(result.content[0].text)
             assert "rows" in query_result
             assert len(query_result["rows"]) == 1
