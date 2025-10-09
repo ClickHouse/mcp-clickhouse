@@ -1,4 +1,3 @@
-import os
 import pytest
 
 from mcp_clickhouse.mcp_env import ClickHouseConfig
