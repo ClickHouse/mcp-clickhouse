@@ -314,6 +314,9 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_MCP_BIND_PORT`: Port to bind the MCP server to when using HTTP or SSE transport
   * Default: `"8000"`
   * Only used when transport is `"http"` or `"sse"`
+* `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for SELECT tools
+  * Default: `"30"`
+  * Increase this if you see `Query timed out after ...` errors for heavy queries
 * `CLICKHOUSE_ENABLED`: Enable/disable ClickHouse functionality
   * Default: `"true"`
   * Set to `"false"` to disable ClickHouse tools when using chDB only

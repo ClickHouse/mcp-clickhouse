@@ -17,7 +17,7 @@ from dataclasses import dataclass, field, asdict, is_dataclass
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from mcp_clickhouse.mcp_env import get_config, get_chdb_config
+from mcp_clickhouse.mcp_env import get_config, get_chdb_config, get_mcp_config
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 
 
@@ -63,9 +63,11 @@ logger = logging.getLogger(MCP_SERVER_NAME)
 
 QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
-SELECT_QUERY_TIMEOUT_SECS = 30
 
 load_dotenv()
+
+SELECT_QUERY_TIMEOUT_SECS = get_mcp_config().query_timeout
+logger.info(f"SELECT query timeout set to {SELECT_QUERY_TIMEOUT_SECS}s")
 
 mcp = FastMCP(
     name=MCP_SERVER_NAME,

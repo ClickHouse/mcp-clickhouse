@@ -43,9 +43,6 @@ class ClickHouseConfig:
         CLICKHOUSE_SEND_RECEIVE_TIMEOUT: Send/receive timeout in seconds (default: 300)
         CLICKHOUSE_DATABASE: Default database to use (default: None)
         CLICKHOUSE_PROXY_PATH: Path to be added to the host URL. For instance, for servers behind an HTTP proxy (default: None)
-        CLICKHOUSE_MCP_SERVER_TRANSPORT: MCP server transport method - "stdio", "http", or "sse" (default: stdio)
-        CLICKHOUSE_MCP_BIND_HOST: Host to bind the MCP server to when using HTTP or SSE transport (default: 127.0.0.1)
-        CLICKHOUSE_MCP_BIND_PORT: Port to bind the MCP server to when using HTTP or SSE transport (default: 8000)
         CLICKHOUSE_ENABLED: Enable ClickHouse server (default: true)
     """
 
@@ -128,39 +125,6 @@ class ClickHouseConfig:
     @property
     def proxy_path(self) -> str:
         return os.getenv("CLICKHOUSE_PROXY_PATH")
-
-    @property
-    def mcp_server_transport(self) -> str:
-        """Get the MCP server transport method.
-
-        Valid options: "stdio", "http", "sse"
-        Default: "stdio"
-        """
-        transport = os.getenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", TransportType.STDIO.value).lower()
-
-        # Validate transport type
-        if transport not in TransportType.values():
-            valid_options = ", ".join(f'"{t}"' for t in TransportType.values())
-            raise ValueError(f"Invalid transport '{transport}'. Valid options: {valid_options}")
-        return transport
-
-    @property
-    def mcp_bind_host(self) -> str:
-        """Get the host to bind the MCP server to.
-
-        Only used when transport is "http" or "sse".
-        Default: "127.0.0.1"
-        """
-        return os.getenv("CLICKHOUSE_MCP_BIND_HOST", "127.0.0.1")
-
-    @property
-    def mcp_bind_port(self) -> int:
-        """Get the port to bind the MCP server to.
-
-        Only used when transport is "http" or "sse".
-        Default: 8000
-        """
-        return int(os.getenv("CLICKHOUSE_MCP_BIND_PORT", "8000"))
 
     def get_client_config(self) -> dict:
         """Get the configuration dictionary for clickhouse_connect client.
@@ -281,3 +245,49 @@ def get_chdb_config() -> ChDBConfig:
     if _CHDB_CONFIG_INSTANCE is None:
         _CHDB_CONFIG_INSTANCE = ChDBConfig()
     return _CHDB_CONFIG_INSTANCE
+
+
+@dataclass
+class MCPServerConfig:
+    """Configuration for MCP server-level settings.
+
+    These settings control the server transport and tool behavior and are
+    intentionally independent of ClickHouse connection validation.
+
+    Optional environment variables (with defaults):
+        CLICKHOUSE_MCP_SERVER_TRANSPORT: "stdio", "http", or "sse" (default: stdio)
+        CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
+        CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
+        CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
+    """
+
+    @property
+    def server_transport(self) -> str:
+        transport = os.getenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", TransportType.STDIO.value).lower()
+        if transport not in TransportType.values():
+            valid_options = ", ".join(f'"{t}"' for t in TransportType.values())
+            raise ValueError(f"Invalid transport '{transport}'. Valid options: {valid_options}")
+        return transport
+
+    @property
+    def bind_host(self) -> str:
+        return os.getenv("CLICKHOUSE_MCP_BIND_HOST", "127.0.0.1")
+
+    @property
+    def bind_port(self) -> int:
+        return int(os.getenv("CLICKHOUSE_MCP_BIND_PORT", "8000"))
+
+    @property
+    def query_timeout(self) -> int:
+        return int(os.getenv("CLICKHOUSE_MCP_QUERY_TIMEOUT", "30"))
+
+
+_MCP_CONFIG_INSTANCE = None
+
+
+def get_mcp_config() -> MCPServerConfig:
+    """Gets the singleton instance of MCPServerConfig."""
+    global _MCP_CONFIG_INSTANCE
+    if _MCP_CONFIG_INSTANCE is None:
+        _MCP_CONFIG_INSTANCE = MCPServerConfig()
+    return _MCP_CONFIG_INSTANCE
