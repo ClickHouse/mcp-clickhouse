@@ -67,15 +67,7 @@ SELECT_QUERY_TIMEOUT_SECS = 30
 
 load_dotenv()
 
-mcp = FastMCP(
-    name=MCP_SERVER_NAME,
-    dependencies=[
-        "clickhouse-connect",
-        "python-dotenv",
-        "pip-system-certs",
-        "chdb",
-    ],
-)
+mcp = FastMCP(name=MCP_SERVER_NAME)
 
 
 @mcp.custom_route("/health", methods=["GET"])
