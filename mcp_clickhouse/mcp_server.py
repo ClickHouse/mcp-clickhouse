@@ -66,18 +66,7 @@ atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
 
 load_dotenv()
 
-SELECT_QUERY_TIMEOUT_SECS = get_mcp_config().query_timeout
-logger.info(f"SELECT query timeout set to {SELECT_QUERY_TIMEOUT_SECS}s")
-
-mcp = FastMCP(
-    name=MCP_SERVER_NAME,
-    dependencies=[
-        "clickhouse-connect",
-        "python-dotenv",
-        "pip-system-certs",
-        "chdb",
-    ],
-)
+mcp = FastMCP(name=MCP_SERVER_NAME)
 
 
 @mcp.custom_route("/health", methods=["GET"])

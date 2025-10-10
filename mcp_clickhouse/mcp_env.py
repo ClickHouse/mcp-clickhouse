@@ -137,6 +137,7 @@ class ClickHouseConfig:
             "port": self.port,
             "username": self.username,
             "password": self.password,
+            "interface": "https" if self.secure else "http",
             "secure": self.secure,
             "verify": self.verify,
             "connect_timeout": self.connect_timeout,
