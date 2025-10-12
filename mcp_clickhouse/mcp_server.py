@@ -1,6 +1,6 @@
 import logging
 import json
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 import concurrent.futures
 import atexit
 import os
@@ -17,12 +17,13 @@ from dataclasses import dataclass, field, asdict, is_dataclass
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from mcp_clickhouse.mcp_env import get_config, get_chdb_config
+from mcp_clickhouse.mcp_env import get_config, get_all_configs, get_mcp_server_config, get_chdb_config
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 
 
 @dataclass
 class Column:
+    """ClickHouse column metadata."""
     database: str
     table: str
     name: str
@@ -34,6 +35,7 @@ class Column:
 
 @dataclass
 class Table:
+    """ClickHouse table metadata."""
     database: str
     name: str
     engine: str
@@ -61,10 +63,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(MCP_SERVER_NAME)
 
+# Initialize query executor thread pool
 QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
 SELECT_QUERY_TIMEOUT_SECS = 30
 
+# Load environment variables
 load_dotenv()
 
 mcp = FastMCP(name=MCP_SERVER_NAME)
@@ -103,14 +107,40 @@ async def health_check(request: Request) -> PlainTextResponse:
 
 
 def result_to_table(query_columns, result) -> List[Table]:
+    """Convert query result to Table objects.
+
+    Args:
+        query_columns: Column names from the query
+        result: Query result rows
+
+    Returns:
+        List of Table objects
+    """
     return [Table(**dict(zip(query_columns, row))) for row in result]
 
 
 def result_to_column(query_columns, result) -> List[Column]:
+    """Convert query result to Column objects.
+
+    Args:
+        query_columns: Column names from the query
+        result: Query result rows
+
+    Returns:
+        List of Column objects
+    """
     return [Column(**dict(zip(query_columns, row))) for row in result]
 
 
-def to_json(obj: Any) -> str:
+def to_json(obj: Any) -> Any:
+    """Convert dataclasses to JSON-serializable objects.
+
+    Args:
+        obj: Object to convert
+
+    Returns:
+        JSON-serializable version of the object
+    """
     if is_dataclass(obj):
         return json.dumps(asdict(obj), default=to_json)
     elif isinstance(obj, list):
@@ -120,71 +150,194 @@ def to_json(obj: Any) -> str:
     return obj
 
 
-def list_databases():
-    """List available ClickHouse databases"""
-    logger.info("Listing all databases")
-    client = create_clickhouse_client()
-    result = client.command("SHOW DATABASES")
-
-    # Convert newline-separated string to list and trim whitespace
-    if isinstance(result, str):
-        databases = [db.strip() for db in result.strip().split("\n")]
-    else:
-        databases = [result]
-
-    logger.info(f"Found {len(databases)} databases")
-    return json.dumps(databases)
+def list_clickhouse_servers():
+    """List all available ClickHouse server configurations."""
+    logger.info("Listing all configured ClickHouse servers")
+    try:
+        servers = get_all_configs().get_available_servers()
+        return servers
+    except Exception as e:
+        logger.error(f"Error listing servers: {str(e)}")
+        return {"error": str(e)}
 
 
-def list_tables(database: str, like: Optional[str] = None, not_like: Optional[str] = None):
+def list_databases(clickhouse_server: Optional[str] = None):
+    """List available ClickHouse databases.
+
+    Args:
+        clickhouse_server: Optional ClickHouse server name, uses default if not specified
+    """
+    logger.info(f"Listing all databases from server: {clickhouse_server or 'default'}")
+    try:
+        if not clickhouse_server:
+            available_servers = get_all_configs().get_available_servers()
+            if not available_servers:
+                return {"error": "No valid ClickHouse configurations available"}
+
+        client = create_clickhouse_client(clickhouse_server)
+        result = client.command("SHOW DATABASES")
+
+        # Convert newline-separated string to list and trim whitespace
+        if isinstance(result, str):
+            databases = [db.strip() for db in result.strip().split("\n")]
+        else:
+            databases = [result]
+
+        logger.info(f"Found {len(databases)} databases")
+        return json.dumps(databases)
+    except Exception as e:
+        logger.error(f"Error listing databases: {str(e)}")
+        return {"error": str(e)}
+
+
+def list_tables(
+        database: str,
+        like: Optional[str] = None,
+        not_like: Optional[str] = None,
+        clickhouse_server: Optional[str] = None
+):
     """List available ClickHouse tables in a database, including schema, comment,
-    row count, and column count."""
-    logger.info(f"Listing tables in database '{database}'")
-    client = create_clickhouse_client()
-    query = f"SELECT database, name, engine, create_table_query, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, total_bytes_uncompressed, parts, active_parts, total_marks, comment FROM system.tables WHERE database = {format_query_value(database)}"
-    if like:
-        query += f" AND name LIKE {format_query_value(like)}"
+    row count, and column count.
 
-    if not_like:
-        query += f" AND name NOT LIKE {format_query_value(not_like)}"
+    Args:
+        database: Database name
+        like: Optional table name pattern to match
+        not_like: Optional table name pattern to exclude
+        clickhouse_server: Optional ClickHouse server name, uses default if not specified
+    """
+    logger.info(f"Listing tables in database '{database}' from server: {clickhouse_server or 'default'}")
+    try:
+        client = create_clickhouse_client(clickhouse_server)
+        query = f"SELECT database, name, engine, create_table_query, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, total_bytes_uncompressed, parts, active_parts, total_marks, comment FROM system.tables WHERE database = {format_query_value(database)}"
+        if like:
+            query += f" AND name LIKE {format_query_value(like)}"
 
-    result = client.query(query)
+        if not_like:
+            query += f" AND name NOT LIKE {format_query_value(not_like)}"
 
-    # Deserialize result as Table dataclass instances
-    tables = result_to_table(result.column_names, result.result_rows)
+        result = client.query(query)
 
-    for table in tables:
-        column_data_query = f"SELECT database, table, name, type AS column_type, default_kind, default_expression, comment FROM system.columns WHERE database = {format_query_value(database)} AND table = {format_query_value(table.name)}"
-        column_data_query_result = client.query(column_data_query)
-        table.columns = [
-            c
-            for c in result_to_column(
-                column_data_query_result.column_names,
-                column_data_query_result.result_rows,
-            )
+        # Deserialize result as Table dataclass instances
+        tables = result_to_table(result.column_names, result.result_rows)
+
+        for table in tables:
+            column_data_query = f"SELECT database, table, name, type AS column_type, default_kind, default_expression, comment FROM system.columns WHERE database = {format_query_value(database)} AND table = {format_query_value(table.name)}"
+            column_data_query_result = client.query(column_data_query)
+            table.columns = [
+                c
+                for c in result_to_column(
+                    column_data_query_result.column_names,
+                    column_data_query_result.result_rows,
+                )
+            ]
+
+        logger.info(f"Found {len(tables)} tables")
+        return [asdict(table) for table in tables]
+    except Exception as e:
+        logger.error(f"Error listing tables: {str(e)}")
+        return {"error": str(e)}
+
+
+def execute_query(query: str, clickhouse_server: Optional[str] = None):
+    """Execute a query on the ClickHouse server.
+
+    Args:
+        query: SQL query to execute
+        clickhouse_server: Optional server name
+
+    Returns:
+        Query results or error dictionary
+    """
+    try:
+        query_upper = query.upper().strip()
+
+        allowed_prefixes = [
+            "SELECT ",
+            "SHOW ",
+            "DESCRIBE ",
+            "DESC ",
+            "EXISTS ",
+            "EXPLAIN "
         ]
 
-    logger.info(f"Found {len(tables)} tables")
-    return [asdict(table) for table in tables]
+        forbidden_keywords = [
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "DROP",
+            "CREATE",
+            "ALTER",
+            "RENAME",
+            "TRUNCATE",
+            "OPTIMIZE",
+            "KILL",
+            "ATTACH",
+            "DETACH",
+            "SYSTEM",
+            "GRANT",
+            "REVOKE",
+            "SET "
+        ]
+
+        is_allowed = any(query_upper.startswith(prefix) for prefix in allowed_prefixes)
+
+        contains_forbidden = any(f" {keyword} " in f" {query_upper} " or query_upper.startswith(keyword) for keyword in forbidden_keywords)
+
+        if not is_allowed or contains_forbidden:
+            logger.warning(f"Rejected non-read-only query: {query}")
+            return {
+                "error": "Only read-only queries (SELECT, SHOW, DESCRIBE, etc.) are allowed for security reasons."
+            }
+
+        client = create_clickhouse_client(clickhouse_server)
+
+        # Check for server name prefix in query and clean it
+        if clickhouse_server and f"{clickhouse_server}." in query:
+            query = query.replace(f"{clickhouse_server}.", "")
+            logger.info(f"Removed server name prefix from query")
+
+        try:
+            # Get readonly setting
+            read_only = get_readonly_setting(client)
+            res = client.query(query, settings={"readonly": read_only})
+            column_names = res.column_names
+            rows = []
+            for row in res.result_rows:
+                row_dict = {}
+                for i, col_name in enumerate(column_names):
+                    # Handle special data types for serialization
+                    value = row[i]
+                    if hasattr(value, 'isoformat'):  # For datetime objects
+                        value = value.isoformat()
+                    row_dict[col_name] = value
+                rows.append(row_dict)
+            logger.info(f"Query returned {len(rows)} rows")
+            return rows
+        except Exception as err:
+            logger.error(f"Error executing query: {err}")
+            # Return a structured dictionary rather than a string to ensure proper serialization
+            # by the MCP protocol. String responses for errors can cause BrokenResourceError.
+            return {"error": str(err)}
+    except Exception as e:
+        logger.error(f"Failed to create client: {e}")
+        return {"error": f"Connection error: {str(e)}"}
 
 
-def execute_query(query: str):
-    client = create_clickhouse_client()
+def run_select_query(query: str, clickhouse_server: Optional[str] = None):
+    """Run a SELECT query in a ClickHouse database.
+
+    Args:
+        query: SQL query to execute
+        clickhouse_server: Optional ClickHouse server name, uses default if not specified
+    """
+    logger.info(f"Executing SELECT query on server '{clickhouse_server or 'default'}': {query}")
     try:
-        read_only = get_readonly_setting(client)
-        res = client.query(query, settings={"readonly": read_only})
-        logger.info(f"Query returned {len(res.result_rows)} rows")
-        return {"columns": res.column_names, "rows": res.result_rows}
-    except Exception as err:
-        logger.error(f"Error executing query: {err}")
-        raise ToolError(f"Query execution failed: {str(err)}")
+        # Auto-correct query if it contains server name as database prefix
+        if clickhouse_server and f"{clickhouse_server}." in query:
+            query = query.replace(f"{clickhouse_server}.", "")
+            logger.info(f"Modified query to remove server prefix")
 
-
-def run_select_query(query: str):
-    """Run a SELECT query in a ClickHouse database"""
-    logger.info(f"Executing SELECT query: {query}")
-    try:
-        future = QUERY_EXECUTOR.submit(execute_query, query)
+        future = QUERY_EXECUTOR.submit(execute_query, query, clickhouse_server)
         try:
             result = future.result(timeout=SELECT_QUERY_TIMEOUT_SECS)
             # Check if we received an error structure from execute_query
@@ -196,6 +349,17 @@ def run_select_query(query: str):
                     "status": "error",
                     "message": f"Query failed: {result['error']}",
                 }
+
+            # Ensure result is serializable
+            try:
+                json.dumps(result)
+            except (TypeError, OverflowError) as e:
+                logger.error(f"Query result contains non-serializable data: {e}")
+                return {
+                    "status": "error",
+                    "message": f"Result format error: {e}",
+                }
+
             return result
         except concurrent.futures.TimeoutError:
             logger.warning(f"Query timed out after {SELECT_QUERY_TIMEOUT_SECS} seconds: {query}")
@@ -205,11 +369,35 @@ def run_select_query(query: str):
         raise
     except Exception as e:
         logger.error(f"Unexpected error in run_select_query: {str(e)}")
-        raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
+        # Return structured error instead of raising to prevent MCP serialization failures
+        return {"status": "error", "message": f"Unexpected error: {str(e)}"}
 
 
-def create_clickhouse_client():
-    client_config = get_config().get_client_config()
+def get_readonly_setting(client):
+    """Get the appropriate readonly setting for the client."""
+    try:
+        read_only = client.server_settings.get("readonly")
+        if read_only:
+            if read_only == "0":
+                return "1"  # Force read-only mode if server has it disabled
+            else:
+                return read_only  # Respect server's readonly setting (likely 2)
+        else:
+            return "1"  # Default to basic read-only mode if setting isn't present
+    except:
+        return "1"  # Default to basic read-only mode if we can't get server settings
+
+
+def create_clickhouse_client(server_name: Optional[str] = None):
+    """Create a ClickHouse client connection.
+
+    Args:
+        server_name: Optional server name, uses default if not specified
+
+    Returns:
+        ClickHouse client instance
+    """
+    client_config = get_config(server_name).get_client_config()
     logger.info(
         f"Creating ClickHouse client connection to {client_config['host']}:{client_config['port']} "
         f"as {client_config['username']} "
@@ -227,36 +415,6 @@ def create_clickhouse_client():
     except Exception as e:
         logger.error(f"Failed to connect to ClickHouse: {str(e)}")
         raise
-
-
-def get_readonly_setting(client) -> str:
-    """Get the appropriate readonly setting value to use for queries.
-
-    This function handles potential conflicts between server and client readonly settings:
-    - readonly=0: No read-only restrictions
-    - readonly=1: Only read queries allowed, settings cannot be changed
-    - readonly=2: Only read queries allowed, settings can be changed (except readonly itself)
-
-    If server has readonly=2 and client tries to set readonly=1, it would cause:
-    "Setting readonly is unknown or readonly" error
-
-    This function preserves the server's readonly setting unless it's 0, in which case
-    we enforce readonly=1 to ensure queries are read-only.
-
-    Args:
-        client: ClickHouse client connection
-
-    Returns:
-        String value of readonly setting to use
-    """
-    read_only = client.server_settings.get("readonly")
-    if read_only:
-        if read_only == "0":
-            return "1"  # Force read-only mode if server has it disabled
-        else:
-            return read_only.value  # Respect server's readonly setting (likely 2)
-    else:
-        return "1"  # Default to basic read-only mode if setting isn't present
 
 
 def create_chdb_client():
@@ -343,6 +501,7 @@ def _init_chdb_client():
 
 # Register tools based on configuration
 if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
+    mcp.add_tool(Tool.from_function(list_clickhouse_servers))
     mcp.add_tool(Tool.from_function(list_databases))
     mcp.add_tool(Tool.from_function(list_tables))
     mcp.add_tool(Tool.from_function(run_select_query))
@@ -362,3 +521,13 @@ if os.getenv("CHDB_ENABLED", "false").lower() == "true":
     )
     mcp.add_prompt(chdb_prompt)
     logger.info("chDB tools and prompts registered")
+
+
+def run_server():
+    """Start the MCP server with the configured transport and port settings."""
+    server_config = get_mcp_server_config()
+    logger.info(f"Starting MCP server on {server_config.host}:{server_config.port} with streamable-http transport")
+
+    # Use streamable-http transport to listen for HTTP requests
+    mcp.run(transport="streamable-http")
+
