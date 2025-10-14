@@ -295,7 +295,7 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_VERIFY`: Enable/disable SSL certificate verification
   * Default: `"true"`
   * Set to `"false"` to disable certificate verification (not recommended for production)
-  * TLS certificates: The package attempts to use your operating system trust store if `truststore` is installed. We try `truststore.inject_into_ssl()` at startup; if unavailable, Python’s default SSL behavior is used.
+  * TLS certificates: The package uses your operating system trust store for TLS certificate verification via `truststore`. We call `truststore.inject_into_ssl()` at startup to ensure proper certificate handling. Python’s default SSL behavior is used as a fallback only if an unexpected error occurs.
 * `CLICKHOUSE_CONNECT_TIMEOUT`: Connection timeout in seconds
   * Default: `"30"`
   * Increase this value if you experience connection timeouts
