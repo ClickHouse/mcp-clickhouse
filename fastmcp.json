@@ -1,0 +1,15 @@
+{
+  "$schema": "https://gofastmcp.com/public/schemas/fastmcp.json/v1.json",
+  "source": {
+    "path": "mcp_clickhouse/mcp_server.py",
+    "entrypoint": "mcp"
+  },
+  "environment": {
+    "dependencies": [
+      "clickhouse-connect",
+      "python-dotenv",
+      "truststore",
+      "chdb"
+    ]
+  }
+}

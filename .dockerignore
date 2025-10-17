@@ -1,0 +1,72 @@
+# Git
+.git/
+.gitignore
+.github/
+
+# Documentation
+LICENSE
+# README.md is needed for package build
+# *.md files may be needed for package metadata
+
+# Development environment
+.venv/
+.env
+.envrc
+.python-version
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Cache directories
+.ruff_cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Test files and directories
+tests/
+test-services/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+cover/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+MANIFEST
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+.DS_Store
+Thumbs.db
+
+# Docker files (avoid copying Dockerfile into itself)
+Dockerfile
+.dockerignore
+
+# Editor config (not needed at runtime)
+.editorconfig
+
+# Claude AI files
+.claude/ 
