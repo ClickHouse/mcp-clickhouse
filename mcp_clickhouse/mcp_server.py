@@ -197,6 +197,9 @@ def get_paginated_table_data(
     end_idx = min(start_idx + page_size, len(table_names))
     current_page_table_names = table_names[start_idx:end_idx]
 
+    if not current_page_table_names:
+        return [], end_idx, False
+
     query = f"""
         SELECT database, name, engine, create_table_query, dependencies_database,
                dependencies_table, engine_full, sorting_key, primary_key, total_rows,

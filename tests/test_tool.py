@@ -104,6 +104,31 @@ class TestClickhouseTools(unittest.TestCase):
         self.assertEqual(columns["id"]["comment"], "Primary identifier")
         self.assertEqual(columns["name"]["comment"], "User name field")
 
+    def test_list_tables_empty_database(self):
+        """Test listing tables in an empty database returns empty list without errors."""
+        empty_db = "test_empty_db"
+
+        self.client.command(f"CREATE DATABASE IF NOT EXISTS {empty_db}")
+
+        try:
+            result = list_tables(empty_db)
+            self.assertIsInstance(result, dict)
+            self.assertIn("tables", result)
+            self.assertEqual(len(result["tables"]), 0)
+            self.assertEqual(result["total_tables"], 0)
+            self.assertIsNone(result["next_page_token"])
+        finally:
+            self.client.command(f"DROP DATABASE IF EXISTS {empty_db}")
+
+    def test_list_tables_with_not_like_filter_excluding_all(self):
+        """Test listing tables with a NOT LIKE filter that excludes all tables."""
+        result = list_tables(self.test_db, not_like="%")
+        self.assertIsInstance(result, dict)
+        self.assertIn("tables", result)
+        self.assertEqual(len(result["tables"]), 0)
+        self.assertEqual(result["total_tables"], 0)
+        self.assertIsNone(result["next_page_token"])
+
 
 if __name__ == "__main__":
     unittest.main()
