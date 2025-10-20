@@ -1,26 +1,26 @@
-import atexit
-import concurrent.futures
-import json
 import logging
+import json
+from typing import Optional, List, Any, Dict
+import concurrent.futures
+import atexit
 import os
 import uuid
-from dataclasses import asdict, dataclass, field, is_dataclass
-from typing import Any, Dict, List, Optional
 
-import chdb.session as chs
 import clickhouse_connect
-from cachetools import TTLCache
+import chdb.session as chs
 from clickhouse_connect.driver.binding import format_query_value
 from dotenv import load_dotenv
 from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
-from fastmcp.prompts import Prompt
+from cachetools import TTLCache
 from fastmcp.tools import Tool
+from fastmcp.prompts import Prompt
+from fastmcp.exceptions import ToolError
+from dataclasses import dataclass, field, asdict, is_dataclass
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
+from mcp_clickhouse.mcp_env import get_config, get_chdb_config, get_mcp_config
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
-from mcp_clickhouse.mcp_env import get_chdb_config, get_config, get_mcp_config
 
 
 @dataclass
