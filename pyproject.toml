@@ -12,6 +12,7 @@ dependencies = [
      "clickhouse-connect>=0.8.16",
      "truststore>=0.10",
      "chdb>=3.3.0",
+     "cachetools>=5.5.0",
 ]
 
 [project.scripts]
