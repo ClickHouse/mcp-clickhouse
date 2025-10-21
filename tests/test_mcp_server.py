@@ -114,10 +114,18 @@ async def test_list_tables_basic(mcp_server, setup_test_database):
         result = await client.call_tool("list_tables", {"database": test_db})
 
         assert len(result.content) >= 1
-        tables = json.loads(result.content[0].text)
+        response = json.loads(result.content[0].text)
+
+        assert isinstance(response, dict)
+        assert "tables" in response
+        assert "next_page_token" in response
+        assert "total_tables" in response
+
+        tables = response["tables"]
 
         # Should have exactly 2 tables
         assert len(tables) == 2
+        assert response["total_tables"] == 2
 
         # Get table names
         table_names = [table["name"] for table in tables]
@@ -149,14 +157,12 @@ async def test_list_tables_with_like_filter(mcp_server, setup_test_database):
         # Test with LIKE filter
         result = await client.call_tool("list_tables", {"database": test_db, "like": "test_%"})
 
-        tables_data = json.loads(result.content[0].text)
+        response = json.loads(result.content[0].text)
 
-        # Handle both single dict and list of dicts
-        if isinstance(tables_data, dict):
-            tables = [tables_data]
-        else:
-            tables = tables_data
+        assert isinstance(response, dict)
+        assert "tables" in response
 
+        tables = response["tables"]
         assert len(tables) == 1
         assert tables[0]["name"] == test_table
 
@@ -170,14 +176,12 @@ async def test_list_tables_with_not_like_filter(mcp_server, setup_test_database)
         # Test with NOT LIKE filter
         result = await client.call_tool("list_tables", {"database": test_db, "not_like": "test_%"})
 
-        tables_data = json.loads(result.content[0].text)
+        response = json.loads(result.content[0].text)
 
-        # Handle both single dict and list of dicts
-        if isinstance(tables_data, dict):
-            tables = [tables_data]
-        else:
-            tables = tables_data
+        assert isinstance(response, dict)
+        assert "tables" in response
 
+        tables = response["tables"]
         assert len(tables) == 1
         assert tables[0]["name"] == test_table2
 
@@ -286,7 +290,11 @@ async def test_table_metadata_details(mcp_server, setup_test_database):
 
     async with Client(mcp_server) as client:
         result = await client.call_tool("list_tables", {"database": test_db})
-        tables = json.loads(result.content[0].text)
+        response = json.loads(result.content[0].text)
+
+        assert isinstance(response, dict)
+        assert "tables" in response
+        tables = response["tables"]
 
         # Find our test table
         test_table_info = next(t for t in tables if t["name"] == test_table)
@@ -322,12 +330,16 @@ async def test_table_metadata_details(mcp_server, setup_test_database):
 async def test_system_database_access(mcp_server):
     """Test that we can access system databases."""
     async with Client(mcp_server) as client:
-        # List tables in system database
-        result = await client.call_tool("list_tables", {"database": "system"})
-        tables = json.loads(result.content[0].text)
+        # List tables in system database with larger page size
+        result = await client.call_tool("list_tables", {"database": "system", "page_size": 100})
+        response = json.loads(result.content[0].text)
 
-        # System database should have many tables
-        assert len(tables) > 10
+        assert isinstance(response, dict)
+        assert "tables" in response
+        assert "total_tables" in response
+        tables = response["tables"]
+
+        assert response["total_tables"] > 10
 
         # Check for some common system tables
         table_names = [t["name"] for t in tables]

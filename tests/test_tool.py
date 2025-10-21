@@ -51,16 +51,20 @@ class TestClickhouseTools(unittest.TestCase):
     def test_list_tables_without_like(self):
         """Test listing tables without a 'LIKE' filter."""
         result = list_tables(self.test_db)
-        self.assertIsInstance(result, list)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["name"], self.test_table)
+        self.assertIsInstance(result, dict)
+        self.assertIn("tables", result)
+        tables = result["tables"]
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(tables[0]["name"], self.test_table)
 
     def test_list_tables_with_like(self):
         """Test listing tables with a 'LIKE' filter."""
         result = list_tables(self.test_db, like=f"{self.test_table}%")
-        self.assertIsInstance(result, list)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["name"], self.test_table)
+        self.assertIsInstance(result, dict)
+        self.assertIn("tables", result)
+        tables = result["tables"]
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(tables[0]["name"], self.test_table)
 
     def test_run_select_query_success(self):
         """Test running a SELECT query successfully."""
@@ -84,10 +88,12 @@ class TestClickhouseTools(unittest.TestCase):
     def test_table_and_column_comments(self):
         """Test that table and column comments are correctly retrieved."""
         result = list_tables(self.test_db)
-        self.assertIsInstance(result, list)
-        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result, dict)
+        self.assertIn("tables", result)
+        tables = result["tables"]
+        self.assertEqual(len(tables), 1)
 
-        table_info = result[0]
+        table_info = tables[0]
         # Verify table comment
         self.assertEqual(table_info["comment"], "Test table for unit testing")
 
@@ -97,6 +103,31 @@ class TestClickhouseTools(unittest.TestCase):
         # Verify column comments
         self.assertEqual(columns["id"]["comment"], "Primary identifier")
         self.assertEqual(columns["name"]["comment"], "User name field")
+
+    def test_list_tables_empty_database(self):
+        """Test listing tables in an empty database returns empty list without errors."""
+        empty_db = "test_empty_db"
+
+        self.client.command(f"CREATE DATABASE IF NOT EXISTS {empty_db}")
+
+        try:
+            result = list_tables(empty_db)
+            self.assertIsInstance(result, dict)
+            self.assertIn("tables", result)
+            self.assertEqual(len(result["tables"]), 0)
+            self.assertEqual(result["total_tables"], 0)
+            self.assertIsNone(result["next_page_token"])
+        finally:
+            self.client.command(f"DROP DATABASE IF EXISTS {empty_db}")
+
+    def test_list_tables_with_not_like_filter_excluding_all(self):
+        """Test listing tables with a NOT LIKE filter that excludes all tables."""
+        result = list_tables(self.test_db, not_like="%")
+        self.assertIsInstance(result, dict)
+        self.assertIn("tables", result)
+        self.assertEqual(len(result["tables"]), 0)
+        self.assertEqual(result["total_tables"], 0)
+        self.assertIsNone(result["next_page_token"])
 
 
 if __name__ == "__main__":

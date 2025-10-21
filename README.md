@@ -19,8 +19,17 @@ An MCP server for ClickHouse.
   * List all databases on your ClickHouse cluster.
 
 * `list_tables`
-  * List all tables in a database.
-  * Input: `database` (string): The name of the database.
+  * List tables in a database with pagination.
+  * Required input: `database` (string).
+  * Optional inputs:
+    * `like` / `not_like` (string): Apply `LIKE` or `NOT LIKE` filters to table names.
+    * `page_token` (string): Token returned by a previous call for fetching the next page.
+    * `page_size` (int, default `50`): Number of tables returned per page.
+    * `include_detailed_columns` (bool, default `true`): When `false`, omits column metadata for lighter responses while keeping the full `create_table_query`.
+  * Response shape:
+    * `tables`: Array of table objects for the current page.
+    * `next_page_token`: Pass this value back to fetch the next page, or `null` when there are no more tables.
+    * `total_tables`: Total count of tables that match the supplied filters.
 
 ### chDB Tools
 
