@@ -187,8 +187,6 @@ def get_paginated_table_data(
         table_names: List of all table names to paginate
         start_idx: Starting index for pagination
         page_size: Number of tables per page
-        like: Optional LIKE filter
-        not_like: Optional NOT LIKE filter
         include_detailed_columns: Whether to include detailed column metadata (default: True)
 
     Returns:
