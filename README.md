@@ -1,6 +1,6 @@
 # ClickHouse MCP Server
 
-[![PyPI - Version](https://img.shields.io/pypi/v/mcp-clickhouse)](https://pypi.org/project/mcp-clickhouse)
+[![PyPI - Version](https://img.shields.io/pypi/v/mcp-clickhouse)](https://pypi.org/project/mcp-clickhouse) [![Trust Score](https://archestra.ai/mcp-catalog/api/badge/quality/ClickHouse/mcp-clickhouse)](https://archestra.ai/mcp-catalog/clickhouse__mcp-clickhouse)
 
 An MCP server for ClickHouse.
 
