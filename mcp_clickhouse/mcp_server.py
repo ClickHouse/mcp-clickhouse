@@ -244,22 +244,6 @@ def run_query(query: str):
         raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
 
 
-def _get_query_tool_description() -> str:
-    config = get_config()
-    if not config.allow_write_access:
-        return (
-            "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
-            "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML when appropriate."
-        )
-
-    drop_status = "DROP operations are allowed" if config.allow_drop else "DROP operations are blocked (set CLICKHOUSE_ALLOW_DROP=true to enable)"
-    return (
-        f"Execute SQL queries in ClickHouse with writes enabled. "
-        f"CLICKHOUSE_ALLOW_WRITE_ACCESS=true so DDL and DML statements are permitted. "
-        f"{drop_status}."
-    )
-
-
 def create_clickhouse_client():
     client_config = get_config().get_client_config()
     logger.info(
@@ -449,7 +433,14 @@ def _init_chdb_client():
 if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
     mcp.add_tool(Tool.from_function(list_databases))
     mcp.add_tool(Tool.from_function(list_tables))
-    mcp.add_tool(Tool.from_function(run_query, description=_get_query_tool_description()))
+    mcp.add_tool(Tool.from_function(
+        run_query,
+        description=(
+            "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
+            "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML operations. "
+            "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow DROP operations."
+        )
+    ))
     logger.info("ClickHouse tools registered")
 
 
