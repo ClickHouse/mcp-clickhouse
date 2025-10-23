@@ -44,8 +44,8 @@ class ClickHouseConfig:
         CLICKHOUSE_DATABASE: Default database to use (default: None)
         CLICKHOUSE_PROXY_PATH: Path to be added to the host URL. For instance, for servers behind an HTTP proxy (default: None)
         CLICKHOUSE_ENABLED: Enable ClickHouse server (default: true)
-        CLICKHOUSE_READ_ONLY: Force read-only queries (default: true)
-        CLICKHOUSE_ALLOW_DROP: Allow DROP operations when writes are enabled (default: false)
+        CLICKHOUSE_ALLOW_WRITE_ACCESS: Allow write operations (DDL and DML) (default: false)
+        CLICKHOUSE_ALLOW_DROP: Allow DROP operations when writes are also enabled (default: false)
     """
 
     def __init__(self):
@@ -129,19 +129,19 @@ class ClickHouseConfig:
         return os.getenv("CLICKHOUSE_PROXY_PATH")
 
     @property
-    def read_only(self) -> bool:
-        """Get whether queries should be forced to read-only mode.
+    def allow_write_access(self) -> bool:
+        """Get whether write operations (DDL and DML) are allowed.
 
-        Default: True
+        Default: False
         """
-        return os.getenv("CLICKHOUSE_READ_ONLY", "true").lower() == "true"
+        return os.getenv("CLICKHOUSE_ALLOW_WRITE_ACCESS", "false").lower() == "true"
 
     @property
     def allow_drop(self) -> bool:
         """Get whether DROP operations (DROP TABLE, DROP DATABASE) are allowed.
 
         This setting provides an additional safety layer when write access is enabled.
-        Even with CLICKHOUSE_READ_ONLY=false, DROP operations require this flag.
+        Even with CLICKHOUSE_ALLOW_WRITE_ACCESS=true, DROP operations require this flag.
 
         Default: False
         """

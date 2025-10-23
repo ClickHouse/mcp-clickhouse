@@ -179,9 +179,11 @@ def _validate_query_for_drop(query: str) -> None:
     """
     config = get_config()
 
-    if config.read_only:
+    # If writes are not enabled, skip this check (readonly mode will catch it anyway)
+    if not config.allow_write_access:
         return
 
+    # If DROP is explicitly allowed, no validation needed
     if config.allow_drop:
         return
 
@@ -214,7 +216,7 @@ def execute_query(query: str):
 def run_query(query: str):
     """Execute a SQL query against ClickHouse.
 
-    Queries run in read-only mode by default (readonly=1). Set CLICKHOUSE_READ_ONLY=false
+    Queries run in read-only mode by default. Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true
     to allow DDL and DML statements when your ClickHouse server permits them.
     """
     logger.info(f"Executing query: {query}")
@@ -246,16 +248,16 @@ def run_query(query: str):
 
 def _get_query_tool_description() -> str:
     config = get_config()
-    if config.read_only:
+    if not config.allow_write_access:
         return (
             "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
-            "Set CLICKHOUSE_READ_ONLY=false to allow DDL and DML when appropriate."
+            "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML when appropriate."
         )
 
     drop_status = "DROP operations are allowed" if config.allow_drop else "DROP operations are blocked (set CLICKHOUSE_ALLOW_DROP=true to enable)"
     return (
         f"Execute SQL queries in ClickHouse with writes enabled. "
-        f"CLICKHOUSE_READ_ONLY=false so DDL and DML statements are permitted. "
+        f"CLICKHOUSE_ALLOW_WRITE_ACCESS=true so DDL and DML statements are permitted. "
         f"{drop_status}."
     )
 
@@ -296,12 +298,12 @@ def get_readonly_setting(client) -> Optional[str]:
     """Determine the readonly setting value for queries.
 
     This implements the following logic:
-    1. If CLICKHOUSE_READ_ONLY=false (writes enabled):
+    1. If CLICKHOUSE_ALLOW_WRITE_ACCESS=true (writes enabled):
        - Allow writes if server permits (server readonly=None or "0")
        - Fall back to server's readonly setting if server enforces it
        - Log a warning when falling back
 
-    2. If CLICKHOUSE_READ_ONLY=true (default, read-only mode):
+    2. If CLICKHOUSE_ALLOW_WRITE_ACCESS=false (default, read-only mode):
        - Enforce readonly=1 if server allows writes
        - Respect server's readonly setting if server enforces stricter mode
 
@@ -315,21 +317,21 @@ def get_readonly_setting(client) -> Optional[str]:
     server_settings = getattr(client, "server_settings", {}) or {}
     server_readonly = _normalize_readonly_value(server_settings.get("readonly"))
 
-    # Case 1: User wants write access (CLICKHOUSE_READ_ONLY=false)
-    if not config.read_only:
+    # Case 1: User wants write access (CLICKHOUSE_ALLOW_WRITE_ACCESS=true)
+    if config.allow_write_access:
         if server_readonly in (None, "0"):
-            logger.info("Write mode enabled (CLICKHOUSE_READ_ONLY=false)")
+            logger.info("Write mode enabled (CLICKHOUSE_ALLOW_WRITE_ACCESS=true)")
             return "0"
 
         # If server forbids writes, respect server configuration
         logger.warning(
-            "CLICKHOUSE_READ_ONLY=false but server enforces readonly=%s; "
+            "CLICKHOUSE_ALLOW_WRITE_ACCESS=true but server enforces readonly=%s; "
             "write operations will fail",
             server_readonly,
         )
         return server_readonly
 
-    # Case 2: User wants read-only mode (CLICKHOUSE_READ_ONLY=true, default)
+    # Case 2: User wants read-only mode (CLICKHOUSE_ALLOW_WRITE_ACCESS=false, default)
     if server_readonly in (None, "0"):
         return "1"  # Enforce read-only since server allows writes
 

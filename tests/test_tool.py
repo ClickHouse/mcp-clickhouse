@@ -101,11 +101,11 @@ class TestClickhouseTools(unittest.TestCase):
         self.assertEqual(columns["name"]["comment"], "User name field")
 
 
-@patch.dict(os.environ, {"CLICKHOUSE_READ_ONLY": "false", "CLICKHOUSE_ALLOW_DROP": "true"})
+@patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "true", "CLICKHOUSE_ALLOW_DROP": "true"})
 class TestClickhouseWriteMode(unittest.TestCase):
-    """Tests for write mode functionality (CLICKHOUSE_READ_ONLY=false).
+    """Tests for write mode functionality (CLICKHOUSE_ALLOW_WRITE_ACCESS=true).
 
-    Note: These tests use @patch.dict to temporarily set CLICKHOUSE_READ_ONLY=false
+    Note: These tests use @patch.dict to temporarily set CLICKHOUSE_ALLOW_WRITE_ACCESS=true
     and CLICKHOUSE_ALLOW_DROP=true without affecting other tests. This allows testing
     write operations in isolation.
     """
@@ -194,7 +194,7 @@ class TestClickhouseWriteMode(unittest.TestCase):
         self.client.command(f"DROP TABLE {self.test_db}.alter_test")
 
 
-@patch.dict(os.environ, {"CLICKHOUSE_READ_ONLY": "false", "CLICKHOUSE_ALLOW_DROP": "true"})
+@patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "true", "CLICKHOUSE_ALLOW_DROP": "true"})
 class TestClickhouseDropProtection(unittest.TestCase):
     """Tests for DROP operation protection.
 
@@ -225,7 +225,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
         """Clean up the environment after tests."""
         cls.client.command(f"DROP DATABASE IF EXISTS {cls.test_db}")
 
-    @patch.dict(os.environ, {"CLICKHOUSE_READ_ONLY": "false", "CLICKHOUSE_ALLOW_DROP": "false"})
+    @patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "true", "CLICKHOUSE_ALLOW_DROP": "false"})
     def test_drop_table_blocked_when_flag_not_set(self):
         """Test that DROP TABLE is blocked when CLICKHOUSE_ALLOW_DROP=false."""
         drop_query = f"DROP TABLE {self.test_db}.{self.test_table}"
@@ -238,7 +238,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
         self.assertIn("DROP operations are not allowed", error_msg)
         self.assertIn("CLICKHOUSE_ALLOW_DROP=true", error_msg)
 
-    @patch.dict(os.environ, {"CLICKHOUSE_READ_ONLY": "false", "CLICKHOUSE_ALLOW_DROP": "false"})
+    @patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "true", "CLICKHOUSE_ALLOW_DROP": "false"})
     def test_drop_database_blocked_when_flag_not_set(self):
         """Test that DROP DATABASE is blocked when CLICKHOUSE_ALLOW_DROP=false."""
         temp_db = "test_temp_drop_db"
@@ -272,7 +272,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
         result = run_query(drop_query)
         self.assertIsInstance(result, dict)
 
-    @patch.dict(os.environ, {"CLICKHOUSE_READ_ONLY": "false", "CLICKHOUSE_ALLOW_DROP": "false"})
+    @patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "true", "CLICKHOUSE_ALLOW_DROP": "false"})
     def test_insert_allowed_without_drop_flag(self):
         """Test that INSERT works even when CLICKHOUSE_ALLOW_DROP=false."""
         insert_query = f"""
@@ -286,7 +286,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
         result = run_query(select_query)
         self.assertGreaterEqual(len(result["rows"]), 1)
 
-    @patch.dict(os.environ, {"CLICKHOUSE_READ_ONLY": "false", "CLICKHOUSE_ALLOW_DROP": "false"})
+    @patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "true", "CLICKHOUSE_ALLOW_DROP": "false"})
     def test_create_allowed_without_drop_flag(self):
         """Test that CREATE TABLE works even when CLICKHOUSE_ALLOW_DROP=false."""
         create_query = f"""
@@ -306,16 +306,16 @@ class TestClickhouseDropProtection(unittest.TestCase):
 
 
 class TestClickhouseReadOnlyMode(unittest.TestCase):
-    """Tests for read-only mode functionality (CLICKHOUSE_READ_ONLY=true, default).
+    """Tests for read-only mode functionality (CLICKHOUSE_ALLOW_WRITE_ACCESS=false, default).
 
     These tests verify that write operations are properly blocked when
-    CLICKHOUSE_READ_ONLY is true (the default setting).
+    CLICKHOUSE_ALLOW_WRITE_ACCESS is false (the default setting).
     """
 
     @classmethod
     def setUpClass(cls):
         """Set up the environment before tests."""
-        cls.env_patcher = patch.dict(os.environ, {"CLICKHOUSE_READ_ONLY": "true"})
+        cls.env_patcher = patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "false"})
         cls.env_patcher.start()
 
         cls.client = create_clickhouse_client()
@@ -339,7 +339,7 @@ class TestClickhouseReadOnlyMode(unittest.TestCase):
         cls.env_patcher.stop()
 
     def test_insert_blocked_in_readonly_mode(self):
-        """Test that INSERT queries fail when CLICKHOUSE_READ_ONLY=true."""
+        """Test that INSERT queries fail when CLICKHOUSE_ALLOW_WRITE_ACCESS=false."""
         insert_query = f"""
             INSERT INTO {self.test_db}.{self.test_table} (id, value)
             VALUES (1, 'should_fail')
@@ -356,7 +356,7 @@ class TestClickhouseReadOnlyMode(unittest.TestCase):
         )
 
     def test_create_table_blocked_in_readonly_mode(self):
-        """Test that CREATE TABLE queries fail when CLICKHOUSE_READ_ONLY=true."""
+        """Test that CREATE TABLE queries fail when CLICKHOUSE_ALLOW_WRITE_ACCESS=false."""
         create_query = f"""
             CREATE TABLE {self.test_db}.should_not_exist (
                 id UInt32
@@ -375,7 +375,7 @@ class TestClickhouseReadOnlyMode(unittest.TestCase):
         )
 
     def test_alter_table_blocked_in_readonly_mode(self):
-        """Test that ALTER TABLE queries fail when CLICKHOUSE_READ_ONLY=true."""
+        """Test that ALTER TABLE queries fail when CLICKHOUSE_ALLOW_WRITE_ACCESS=false."""
         alter_query = f"""
             ALTER TABLE {self.test_db}.{self.test_table}
             ADD COLUMN new_column String

@@ -13,7 +13,7 @@ An MCP server for ClickHouse.
 * `run_query`
   * Execute SQL queries on your ClickHouse cluster.
   * Input: `query` (string): The SQL query to execute.
-  * Queries run in read-only mode by default (`CLICKHOUSE_READ_ONLY=true`), but writes can be enabled explicitly if needed.
+  * Queries run in read-only mode by default (`CLICKHOUSE_ALLOW_WRITE_ACCESS=false`), but writes can be enabled explicitly if needed.
 
 * `list_databases`
   * List all databases on your ClickHouse cluster.
@@ -174,22 +174,22 @@ You can also enable both ClickHouse and chDB simultaneously:
 
 ### Optional Write Access
 
-By default, this MCP enforces read-only queries so that accidental mutations cannot happen during exploration. To allow DDL or INSERT/UPDATE statements, set the `CLICKHOUSE_READ_ONLY` environment variable to `false`. The server keeps enforcing read-only mode if the ClickHouse instance itself disallows writes.
+By default, this MCP enforces read-only queries so that accidental mutations cannot happen during exploration. To allow DDL or INSERT/UPDATE statements, set the `CLICKHOUSE_ALLOW_WRITE_ACCESS` environment variable to `true`. The server keeps enforcing read-only mode if the ClickHouse instance itself disallows writes.
 
 ### DROP Operation Protection
 
-Even when write access is enabled (`CLICKHOUSE_READ_ONLY=false`), DROP operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY) require an additional opt-in flag for safety. This prevents accidental data deletion during AI exploration.
+Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), DROP operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY) require an additional opt-in flag for safety. This prevents accidental data deletion during AI exploration.
 
 To enable DROP operations, set both flags:
 ```json
 "env": {
-  "CLICKHOUSE_READ_ONLY": "false",
+  "CLICKHOUSE_ALLOW_WRITE_ACCESS": "true",
   "CLICKHOUSE_ALLOW_DROP": "true"
 }
 ```
 
 This two-tier approach ensures that accidental drops are very difficult:
-- **Write operations** (INSERT, UPDATE, CREATE) require `CLICKHOUSE_READ_ONLY=false`
+- **Write operations** (INSERT, UPDATE, CREATE) require `CLICKHOUSE_ALLOW_WRITE_ACCESS=true`
 - **Destructive operations** (DROP) additionally require `CLICKHOUSE_ALLOW_DROP=true`
 
 ### Running Without uv (Using System Python)
@@ -341,13 +341,13 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_ENABLED`: Enable/disable ClickHouse functionality
   * Default: `"true"`
   * Set to `"false"` to disable ClickHouse tools when using chDB only
-* `CLICKHOUSE_READ_ONLY`: Force read-only query mode
-  * Default: `"true"`
-  * Set to `"false"` to allow DDL (CREATE, ALTER, DROP) and DML (INSERT, UPDATE, DELETE) operations
-  * When enabled, queries run with `readonly=1` setting to prevent data modifications
+* `CLICKHOUSE_ALLOW_WRITE_ACCESS`: Allow write operations (DDL and DML)
+  * Default: `"false"`
+  * Set to `"true"` to allow DDL (CREATE, ALTER, DROP) and DML (INSERT, UPDATE, DELETE) operations
+  * When disabled (default), queries run with `readonly=1` setting to prevent data modifications
 * `CLICKHOUSE_ALLOW_DROP`: Allow DROP operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY)
   * Default: `"false"`
-  * Only takes effect when `CLICKHOUSE_READ_ONLY=false`
+  * Only takes effect when `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` is also set
   * Set to `"true"` to explicitly allow destructive DROP operations
   * This is a safety feature to prevent accidental data deletion during AI exploration
 
