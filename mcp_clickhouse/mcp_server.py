@@ -188,10 +188,8 @@ def _validate_query_for_drop(query: str) -> None:
         return
 
     # Simple pattern matching for DROP operations
-    query_upper = query.upper()
-
     drop_pattern = r'\bDROP\s+(TABLE|DATABASE|VIEW|DICTIONARY)\b'
-    if re.search(drop_pattern, query_upper):
+    if re.search(drop_pattern, query, re.IGNORECASE):
         raise ToolError(
             "DROP operations are not allowed. "
             "Set CLICKHOUSE_ALLOW_DROP=true to enable DROP TABLE/DATABASE operations. "
@@ -343,6 +341,16 @@ def _normalize_readonly_value(value: Any) -> Optional[str]:
 
     The clickhouse_connect library represents settings as objects with a .value attribute.
     This function extracts the actual value for our logic.
+
+    Args:
+        value: The readonly setting value from ClickHouse server. Can be:
+            - None (server has no readonly restriction)
+            - A clickhouse_connect setting object with a .value attribute
+            - An int (0, 1, 2)
+            - A str ("0", "1", "2")
+
+    Returns:
+        Optional[str]: Normalized readonly value as string ("0", "1", "2") or None
     """
     if value is None:
         return None
