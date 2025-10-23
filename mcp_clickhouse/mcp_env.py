@@ -44,6 +44,8 @@ class ClickHouseConfig:
         CLICKHOUSE_DATABASE: Default database to use (default: None)
         CLICKHOUSE_PROXY_PATH: Path to be added to the host URL. For instance, for servers behind an HTTP proxy (default: None)
         CLICKHOUSE_ENABLED: Enable ClickHouse server (default: true)
+        CLICKHOUSE_ALLOW_WRITE_ACCESS: Allow write operations (DDL and DML) (default: false)
+        CLICKHOUSE_ALLOW_DROP: Allow DROP operations when writes are also enabled (default: false)
     """
 
     def __init__(self):
@@ -125,6 +127,25 @@ class ClickHouseConfig:
     @property
     def proxy_path(self) -> str:
         return os.getenv("CLICKHOUSE_PROXY_PATH")
+
+    @property
+    def allow_write_access(self) -> bool:
+        """Get whether write operations (DDL and DML) are allowed.
+
+        Default: False
+        """
+        return os.getenv("CLICKHOUSE_ALLOW_WRITE_ACCESS", "false").lower() == "true"
+
+    @property
+    def allow_drop(self) -> bool:
+        """Get whether DROP operations (DROP TABLE, DROP DATABASE) are allowed.
+
+        This setting provides an additional safety layer when write access is enabled.
+        Even with CLICKHOUSE_ALLOW_WRITE_ACCESS=true, DROP operations require this flag.
+
+        Default: False
+        """
+        return os.getenv("CLICKHOUSE_ALLOW_DROP", "false").lower() == "true"
 
     def get_client_config(self) -> dict:
         """Get the configuration dictionary for clickhouse_connect client.

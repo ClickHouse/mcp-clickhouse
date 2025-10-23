@@ -4,6 +4,7 @@ from typing import Optional, List, Any
 import concurrent.futures
 import atexit
 import os
+import re
 
 import clickhouse_connect
 import chdb.session as chs
@@ -167,11 +168,42 @@ def list_tables(database: str, like: Optional[str] = None, not_like: Optional[st
     return [asdict(table) for table in tables]
 
 
+def _validate_query_for_drop(query: str) -> None:
+    """Validate that DROP operations are allowed.
+
+    Args:
+        query: The SQL query to validate
+
+    Raises:
+        ToolError: If the query contains DROP operations but CLICKHOUSE_ALLOW_DROP is not set
+    """
+    config = get_config()
+
+    # If writes are not enabled, skip this check (readonly mode will catch it anyway)
+    if not config.allow_write_access:
+        return
+
+    # If DROP is explicitly allowed, no validation needed
+    if config.allow_drop:
+        return
+
+    # Simple pattern matching for DROP operations
+    drop_pattern = r'\bDROP\s+(TABLE|DATABASE|VIEW|DICTIONARY)\b'
+    if re.search(drop_pattern, query, re.IGNORECASE):
+        raise ToolError(
+            "DROP operations are not allowed. "
+            "Set CLICKHOUSE_ALLOW_DROP=true to enable DROP TABLE/DATABASE operations. "
+            "This is a safety feature to prevent accidental data deletion."
+        )
+
+
 def execute_query(query: str):
     client = create_clickhouse_client()
     try:
-        read_only = get_readonly_setting(client)
-        res = client.query(query, settings={"readonly": read_only})
+        _validate_query_for_drop(query)
+
+        query_settings = build_query_settings(client)
+        res = client.query(query, settings=query_settings)
         logger.info(f"Query returned {len(res.result_rows)} rows")
         return {"columns": res.column_names, "rows": res.result_rows}
     except Exception as err:
@@ -179,9 +211,13 @@ def execute_query(query: str):
         raise ToolError(f"Query execution failed: {str(err)}")
 
 
-def run_select_query(query: str):
-    """Run a SELECT query in a ClickHouse database"""
-    logger.info(f"Executing SELECT query: {query}")
+def run_query(query: str):
+    """Execute a SQL query against ClickHouse.
+
+    Queries run in read-only mode by default. Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true
+    to allow DDL and DML statements when your ClickHouse server permits them.
+    """
+    logger.info(f"Executing query: {query}")
     try:
         future = QUERY_EXECUTOR.submit(execute_query, query)
         try:
@@ -204,7 +240,7 @@ def run_select_query(query: str):
     except ToolError:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in run_select_query: {str(e)}")
+        logger.error("Unexpected error in run_query: %s", str(e))
         raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
 
 
@@ -229,34 +265,85 @@ def create_clickhouse_client():
         raise
 
 
-def get_readonly_setting(client) -> str:
-    """Get the appropriate readonly setting value to use for queries.
+def build_query_settings(client) -> dict[str, str]:
+    """Build query settings dict for ClickHouse queries.
 
-    This function handles potential conflicts between server and client readonly settings:
-    - readonly=0: No read-only restrictions
-    - readonly=1: Only read queries allowed, settings cannot be changed
-    - readonly=2: Only read queries allowed, settings can be changed (except readonly itself)
+    Always returns a dict (possibly empty) to ensure consistent behavior.
+    """
+    readonly_setting = get_readonly_setting(client)
+    if readonly_setting is not None:
+        return {"readonly": readonly_setting}
+    return {}
 
-    If server has readonly=2 and client tries to set readonly=1, it would cause:
-    "Setting readonly is unknown or readonly" error
 
-    This function preserves the server's readonly setting unless it's 0, in which case
-    we enforce readonly=1 to ensure queries are read-only.
+def get_readonly_setting(client) -> Optional[str]:
+    """Determine the readonly setting value for queries.
 
-    Args:
-        client: ClickHouse client connection
+    This implements the following logic:
+    1. If CLICKHOUSE_ALLOW_WRITE_ACCESS=true (writes enabled):
+       - Allow writes if server permits (server readonly=None or "0")
+       - Fall back to server's readonly setting if server enforces it
+       - Log a warning when falling back
+
+    2. If CLICKHOUSE_ALLOW_WRITE_ACCESS=false (default, read-only mode):
+       - Enforce readonly=1 if server allows writes
+       - Respect server's readonly setting if server enforces stricter mode
 
     Returns:
-        String value of readonly setting to use
+        "0" = writes allowed
+        "1" = read-only mode (allows SET of non-privileged settings)
+        "2" = strict read-only (server enforced; disallows SET)
+        None = use server default (shouldn't happen in practice)
     """
-    read_only = client.server_settings.get("readonly")
-    if read_only:
-        if read_only == "0":
-            return "1"  # Force read-only mode if server has it disabled
-        else:
-            return read_only.value  # Respect server's readonly setting (likely 2)
-    else:
-        return "1"  # Default to basic read-only mode if setting isn't present
+    config = get_config()
+    server_settings = getattr(client, "server_settings", {}) or {}
+    server_readonly = _normalize_readonly_value(server_settings.get("readonly"))
+
+    # Case 1: User wants write access (CLICKHOUSE_ALLOW_WRITE_ACCESS=true)
+    if config.allow_write_access:
+        if server_readonly in (None, "0"):
+            logger.info("Write mode enabled (CLICKHOUSE_ALLOW_WRITE_ACCESS=true)")
+            return "0"
+
+        # If server forbids writes, respect server configuration
+        logger.warning(
+            "CLICKHOUSE_ALLOW_WRITE_ACCESS=true but server enforces readonly=%s; "
+            "write operations will fail",
+            server_readonly,
+        )
+        return server_readonly
+
+    # Case 2: User wants read-only mode (CLICKHOUSE_ALLOW_WRITE_ACCESS=false, default)
+    if server_readonly in (None, "0"):
+        return "1"  # Enforce read-only since server allows writes
+
+    return server_readonly  # Server already enforces readonly, respect it
+
+
+def _normalize_readonly_value(value: Any) -> Optional[str]:
+    """Normalize ClickHouse readonly setting to a simple string.
+
+    The clickhouse_connect library represents settings as objects with a .value attribute.
+    This function extracts the actual value for our logic.
+
+    Args:
+        value: The readonly setting value from ClickHouse server. Can be:
+            - None (server has no readonly restriction)
+            - A clickhouse_connect setting object with a .value attribute
+            - An int (0, 1, 2)
+            - A str ("0", "1", "2")
+
+    Returns:
+        Optional[str]: Normalized readonly value as string ("0", "1", "2") or None
+    """
+    if value is None:
+        return None
+
+    # Extract value from clickhouse_connect setting object
+    if hasattr(value, "value"):
+        value = value.value
+
+    return str(value)
 
 
 def create_chdb_client():
@@ -346,7 +433,14 @@ def _init_chdb_client():
 if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
     mcp.add_tool(Tool.from_function(list_databases))
     mcp.add_tool(Tool.from_function(list_tables))
-    mcp.add_tool(Tool.from_function(run_select_query))
+    mcp.add_tool(Tool.from_function(
+        run_query,
+        description=(
+            "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
+            "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML operations. "
+            "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow DROP operations."
+        )
+    ))
     logger.info("ClickHouse tools registered")
 
 
