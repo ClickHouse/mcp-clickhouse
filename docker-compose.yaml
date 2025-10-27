@@ -1,0 +1,16 @@
+services:
+  clickhouse-mcp:
+    image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mcp-clickhouse:0.0.1
+    ports:
+      - "8000:8000"
+    environment:
+      - CLICKHOUSE_HOST=127.0.0.1
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_SECURE=false
+      - CLICKHOUSE_VERIFY=false
+      - CLICKHOUSE_DATABASE=default
+      - CLICKHOUSE_MCP_SERVER_TRANSPORT=http
+      - CLICKHOUSE_MCP_BIND_HOST=0.0.0.0
+      - CLICKHOUSE_MCP_BIND_PORT=8000
