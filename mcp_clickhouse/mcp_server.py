@@ -132,7 +132,10 @@ def list_databases():
         databases = [result]
 
     logger.info(f"Found {len(databases)} databases")
-    return json.dumps(databases)
+    return {
+        "databases": databases,
+        "count": len(databases)
+    }
 
 
 def list_tables(database: str, like: Optional[str] = None, not_like: Optional[str] = None):
