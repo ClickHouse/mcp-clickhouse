@@ -1,6 +1,6 @@
 services:
   clickhouse-mcp:
-    image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mcp-clickhouse:0.0.2
+    image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mcp-myscale:0.0.2
     ports:
       - "8000:8000"
     environment:
