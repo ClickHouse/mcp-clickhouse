@@ -1,0 +1,16 @@
+services:
+  myscaledb:
+    image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb:24.8.8.1-a1f30b22-release
+    privileged: true
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    environment:
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
+      - CLICKHOUSE_DB=default
+
+volumes:
+  clickhouse-data:./volumes/data

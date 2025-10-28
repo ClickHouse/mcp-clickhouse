@@ -292,3 +292,133 @@ def get_mcp_config() -> MCPServerConfig:
     if _MCP_CONFIG_INSTANCE is None:
         _MCP_CONFIG_INSTANCE = MCPServerConfig()
     return _MCP_CONFIG_INSTANCE
+
+
+@dataclass
+class PGVectorConfig:
+    """Configuration for PostgreSQL with pgvector extension.
+
+    This class handles all environment variable configuration with sensible defaults
+    and type conversion. It provides typed methods for accessing each configuration value.
+
+    Required environment variables (only when PGVECTOR_ENABLED=true):
+        PGVECTOR_HOST: The hostname of the PostgreSQL server
+        PGVECTOR_PORT: The port number (default: 5432)
+        PGVECTOR_USER: The username for authentication
+        PGVECTOR_PASSWORD: The password for authentication
+        PGVECTOR_DATABASE: The database name
+
+    Optional environment variables (with defaults):
+        PGVECTOR_ENABLED: Enable pgvector functionality (default: false)
+        PGVECTOR_CONNECT_TIMEOUT: Connection timeout in seconds (default: 30)
+        PGVECTOR_SSLMODE: SSL mode for connection (default: prefer)
+    """
+
+    def __init__(self):
+        """Initialize the configuration from environment variables."""
+        if self.enabled:
+            self._validate_required_vars()
+
+    @property
+    def enabled(self) -> bool:
+        """Get whether pgvector is enabled.
+
+        Default: False
+        """
+        return os.getenv("PGVECTOR_ENABLED", "false").lower() == "true"
+
+    @property
+    def host(self) -> str:
+        """Get the PostgreSQL host."""
+        return os.environ["PGVECTOR_HOST"]
+
+    @property
+    def port(self) -> int:
+        """Get the PostgreSQL port.
+
+        Default: 5432
+        """
+        return int(os.getenv("PGVECTOR_PORT", "5432"))
+
+    @property
+    def username(self) -> str:
+        """Get the PostgreSQL username."""
+        return os.environ["PGVECTOR_USER"]
+
+    @property
+    def password(self) -> str:
+        """Get the PostgreSQL password."""
+        return os.environ["PGVECTOR_PASSWORD"]
+
+    @property
+    def database(self) -> str:
+        """Get the database name."""
+        return os.environ["PGVECTOR_DATABASE"]
+
+    @property
+    def connect_timeout(self) -> int:
+        """Get the connection timeout in seconds.
+
+        Default: 30
+        """
+        return int(os.getenv("PGVECTOR_CONNECT_TIMEOUT", "30"))
+
+    @property
+    def sslmode(self) -> str:
+        """Get the SSL mode for connection.
+
+        Default: prefer
+        Valid options: disable, allow, prefer, require, verify-ca, verify-full
+        """
+        return os.getenv("PGVECTOR_SSLMODE", "prefer")
+
+    def get_client_config(self) -> dict:
+        """Get the configuration dictionary for psycopg2/asyncpg client.
+
+        Returns:
+            dict: Configuration ready to be passed to PostgreSQL client
+        """
+        return {
+            "host": self.host,
+            "port": self.port,
+            "user": self.username,
+            "password": self.password,
+            "database": self.database,
+            "connect_timeout": self.connect_timeout,
+            "sslmode": self.sslmode,
+        }
+
+    def _validate_required_vars(self) -> None:
+        """Validate that all required environment variables are set.
+
+        Raises:
+            ValueError: If any required environment variable is missing.
+        """
+        missing_vars = []
+        for var in [
+            "PGVECTOR_HOST",
+            "PGVECTOR_USER",
+            "PGVECTOR_PASSWORD",
+            "PGVECTOR_DATABASE",
+        ]:
+            if var not in os.environ:
+                missing_vars.append(var)
+
+        if missing_vars:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+
+
+# Global instance for pgvector config
+_PGVECTOR_CONFIG_INSTANCE = None
+
+
+def get_pgvector_config() -> PGVectorConfig:
+    """Gets the singleton instance of PGVectorConfig.
+
+    Returns:
+        PGVectorConfig: The pgvector configuration instance
+    """
+    global _PGVECTOR_CONFIG_INSTANCE
+    if _PGVECTOR_CONFIG_INSTANCE is None:
+        _PGVECTOR_CONFIG_INSTANCE = PGVectorConfig()
+    return _PGVECTOR_CONFIG_INSTANCE
