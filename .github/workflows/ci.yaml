@@ -11,11 +11,34 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      clickhouse:
-        image: clickhouse/clickhouse-server:24.10
+      myscaledb:
+        image: myscale/myscaledb:1.8.0
         ports:
           - 9000:9000
           - 8123:8123
+        env:
+          CLICKHOUSE_DB: default
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: myscaledb
+        options: >-
+          --health-cmd "clickhouse-client --query 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      
+      postgres:
+        image: pgvector/pgvector:pg16
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vectordb
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout repository
@@ -30,17 +53,35 @@ jobs:
       - name: Install Project
         run: uv sync --all-extras --dev
 
+      - name: Setup test databases
+        env:
+          PGPASSWORD: postgres
+        run: |
+          # Setup PostgreSQL with pgvector extension
+          psql -h localhost -U postgres -d vectordb -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
       - name: Run tests
         env:
-          CLICKHOUSE_HOST: "localhost"
-          CLICKHOUSE_PORT: "8123"
-          CLICKHOUSE_USER: "default"
-          CLICKHOUSE_PASSWORD: ""
-          CLICKHOUSE_SECURE: "false"
-          CLICKHOUSE_VERIFY: "false"
+          # MyScaleDB configuration
+          MYSCALE_HOST: "localhost"
+          MYSCALE_PORT: "8123"
+          MYSCALE_USER: "default"
+          MYSCALE_PASSWORD: "myscaledb"
+          MYSCALE_SECURE: "false"
+          MYSCALE_VERIFY: "false"
+          # pgvector configuration
+          PGVECTOR_ENABLED: "true"
+          PGVECTOR_HOST: "localhost"
+          PGVECTOR_PORT: "5432"
+          PGVECTOR_USER: "postgres"
+          PGVECTOR_PASSWORD: "postgres"
+          PGVECTOR_DATABASE: "vectordb"
+          PGVECTOR_SSLMODE: "disable"
+          # chDB configuration
           CHDB_ENABLED: "true"
+          CHDB_DATA_PATH: ":memory:"
         run: |
-          uv run pytest tests
+          uv run pytest tests -v
 
       - name: Lint with Ruff
         run: uv run ruff check .
@@ -61,18 +102,18 @@ jobs:
           context: .
           push: false
           load: true
-          tags: mcp-clickhouse:test
+          tags: mcp-myscaledb:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Test Docker image import
         run: |
-          docker run --rm mcp-clickhouse:test python -c "import mcp_clickhouse; print('✅ MCP ClickHouse Docker image works!')"
+          docker run --rm mcp-myscaledb:test python -c "import mcp_server; print('✅ MCP MyScaleDB Docker image works!')"
 
       - name: Test Docker image default command
         run: |
           timeout 10s docker run --rm \
-            -e CLICKHOUSE_HOST=localhost \
-            -e CLICKHOUSE_USER=default \
-            -e CLICKHOUSE_PASSWORD="" \
-            mcp-clickhouse:test || [ $? = 124 ] && echo "✅ Docker container starts successfully"
+            -e MYSCALE_HOST=localhost \
+            -e MYSCALE_USER=default \
+            -e MYSCALE_PASSWORD="" \
+            mcp-myscaledb:test || [ $? = 124 ] && echo "✅ Docker container starts successfully"
