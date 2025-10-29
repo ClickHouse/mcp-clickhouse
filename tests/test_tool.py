@@ -4,7 +4,7 @@ import json
 from dotenv import load_dotenv
 from fastmcp.exceptions import ToolError
 
-from mcp_clickhouse import create_clickhouse_client, list_databases, list_tables, run_select_query
+from mcp_server.myscaledb import create_myscale_client, list_databases, list_tables, run_select_query
 
 load_dotenv()
 
@@ -13,7 +13,7 @@ class TestClickhouseTools(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Set up the environment before tests."""
-        cls.client = create_clickhouse_client()
+        cls.client = create_myscale_client()
 
         # Prepare test database and table
         cls.test_db = "test_tool_db"

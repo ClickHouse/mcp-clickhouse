@@ -1,17 +1,17 @@
 import pytest
 
-from mcp_clickhouse.mcp_env import ClickHouseConfig
+from mcp_server.config import MyScaleConfig
 
 
 def test_interface_http_when_secure_false(monkeypatch: pytest.MonkeyPatch):
     """Test that interface is set to 'http' when CLICKHOUSE_SECURE=false."""
-    monkeypatch.setenv("CLICKHOUSE_HOST", "localhost")
-    monkeypatch.setenv("CLICKHOUSE_USER", "test")
-    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "test")
-    monkeypatch.setenv("CLICKHOUSE_SECURE", "false")
-    monkeypatch.setenv("CLICKHOUSE_PORT", "8123")
+    monkeypatch.setenv("MYSCALE_HOST", "localhost")
+    monkeypatch.setenv("MYSCALE_USER", "test")
+    monkeypatch.setenv("MYSCALE_PASSWORD", "test")
+    monkeypatch.setenv("MYSCALE_SECURE", "false")
+    monkeypatch.setenv("MYSCALE_PORT", "8123")
 
-    config = ClickHouseConfig()
+    config = MyScaleConfig()
     client_config = config.get_client_config()
 
     assert client_config["interface"] == "http"
@@ -20,14 +20,14 @@ def test_interface_http_when_secure_false(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_interface_https_when_secure_true(monkeypatch: pytest.MonkeyPatch):
-    """Test that interface is set to 'https' when CLICKHOUSE_SECURE=true."""
-    monkeypatch.setenv("CLICKHOUSE_HOST", "example.com")
-    monkeypatch.setenv("CLICKHOUSE_USER", "test")
-    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "test")
-    monkeypatch.setenv("CLICKHOUSE_SECURE", "true")
-    monkeypatch.setenv("CLICKHOUSE_PORT", "8443")
+    """Test that interface is set to 'https' when MYSCALE_SECURE=true."""
+    monkeypatch.setenv("MYSCALE_HOST", "example.com")
+    monkeypatch.setenv("MYSCALE_USER", "test")
+    monkeypatch.setenv("MYSCALE_PASSWORD", "test")
+    monkeypatch.setenv("MYSCALE_SECURE", "true")
+    monkeypatch.setenv("MYSCALE_PORT", "8443")
 
-    config = ClickHouseConfig()
+    config = MyScaleConfig()
     client_config = config.get_client_config()
 
     assert client_config["interface"] == "https"
@@ -36,14 +36,14 @@ def test_interface_https_when_secure_true(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_interface_https_by_default(monkeypatch: pytest.MonkeyPatch):
-    """Test that interface defaults to 'https' when CLICKHOUSE_SECURE is not set."""
-    monkeypatch.setenv("CLICKHOUSE_HOST", "example.com")
-    monkeypatch.setenv("CLICKHOUSE_USER", "test")
-    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "test")
-    monkeypatch.delenv("CLICKHOUSE_SECURE", raising=False)
-    monkeypatch.delenv("CLICKHOUSE_PORT", raising=False)
+    """Test that interface defaults to 'https' when MYSCALE_SECURE is not set."""
+    monkeypatch.setenv("MYSCALE_HOST", "example.com")
+    monkeypatch.setenv("MYSCALE_USER", "test")
+    monkeypatch.setenv("MYSCALE_PASSWORD", "test")
+    monkeypatch.delenv("MYSCALE_SECURE", raising=False)
+    monkeypatch.delenv("MYSCALE_PORT", raising=False)
 
-    config = ClickHouseConfig()
+    config = MyScaleConfig()
     client_config = config.get_client_config()
 
     assert client_config["interface"] == "https"
@@ -52,14 +52,14 @@ def test_interface_https_by_default(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_interface_http_with_custom_port(monkeypatch: pytest.MonkeyPatch):
-    """Test that interface is 'http' with custom port when CLICKHOUSE_SECURE=false."""
-    monkeypatch.setenv("CLICKHOUSE_HOST", "localhost")
-    monkeypatch.setenv("CLICKHOUSE_USER", "test")
-    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "test")
-    monkeypatch.setenv("CLICKHOUSE_SECURE", "false")
-    monkeypatch.setenv("CLICKHOUSE_PORT", "9000")
+    """Test that interface is 'http' with custom port when MYSCALE_SECURE=false."""
+    monkeypatch.setenv("MYSCALE_HOST", "localhost")
+    monkeypatch.setenv("MYSCALE_USER", "test")
+    monkeypatch.setenv("MYSCALE_PASSWORD", "test")
+    monkeypatch.setenv("MYSCALE_SECURE", "false")
+    monkeypatch.setenv("MYSCALE_PORT", "9000")
 
-    config = ClickHouseConfig()
+    config = MyScaleConfig()
     client_config = config.get_client_config()
 
     assert client_config["interface"] == "http"
@@ -68,14 +68,14 @@ def test_interface_http_with_custom_port(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_interface_https_with_custom_port(monkeypatch: pytest.MonkeyPatch):
-    """Test that interface is 'https' with custom port when CLICKHOUSE_SECURE=true."""
-    monkeypatch.setenv("CLICKHOUSE_HOST", "example.com")
-    monkeypatch.setenv("CLICKHOUSE_USER", "test")
-    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "test")
-    monkeypatch.setenv("CLICKHOUSE_SECURE", "true")
-    monkeypatch.setenv("CLICKHOUSE_PORT", "9443")
+    """Test that interface is 'https' with custom port when MYSCALE_SECURE=true."""
+    monkeypatch.setenv("MYSCALE_HOST", "example.com")
+    monkeypatch.setenv("MYSCALE_USER", "test")
+    monkeypatch.setenv("MYSCALE_PASSWORD", "test")
+    monkeypatch.setenv("MYSCALE_SECURE", "true")
+    monkeypatch.setenv("MYSCALE_PORT", "9443")
 
-    config = ClickHouseConfig()
+    config = MyScaleConfig()
     client_config = config.get_client_config()
 
     assert client_config["interface"] == "https"

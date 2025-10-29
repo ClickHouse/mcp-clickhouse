@@ -17,10 +17,10 @@ dependencies = [
 ]
 
 [project.scripts]
-mcp-clickhouse = "mcp_clickhouse.main:main"
+mcp-clickhouse = "mcp_server.main:main"
 
 [project.urls]
-Home = "https://github.com/ClickHouse/mcp-clickhouse"
+Home = "https://github.com/OriginHubAI/mcp-sqlvectordb"
 
 [project.optional-dependencies]
 dev = [
@@ -30,7 +30,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["mcp_clickhouse"]
+packages = ["mcp_server"]
 
 [tool.ruff]
 line-length = 100

@@ -16,14 +16,14 @@ def mock_env_vars(monkeypatch):
     monkeypatch.setenv("PGVECTOR_DATABASE", "vectordb")
     monkeypatch.setenv("PGVECTOR_SSLMODE", "disable")
     # Disable other services
-    monkeypatch.setenv("CLICKHOUSE_ENABLED", "false")
+    monkeypatch.setenv("MYSCALE_ENABLED", "false")
     monkeypatch.setenv("CHDB_ENABLED", "false")
 
 
 @pytest.fixture
 def mock_psycopg2():
     """Mock psycopg2 for testing."""
-    with patch("mcp_clickhouse.mcp_server.psycopg2") as mock_pg:
+    with patch("mcp_server.pgvector.server.psycopg2") as mock_pg:
         # Create mock connection and cursor
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
@@ -43,7 +43,7 @@ def mock_psycopg2():
 
 def test_pgvector_config(mock_env_vars):
     """Test PGVectorConfig initialization."""
-    from mcp_clickhouse.mcp_env import get_pgvector_config
+    from mcp_server.mcp_env import get_pgvector_config
     
     config = get_pgvector_config()
     
@@ -59,7 +59,7 @@ def test_pgvector_config(mock_env_vars):
 
 def test_pgvector_config_client_config(mock_env_vars):
     """Test PGVectorConfig get_client_config method."""
-    from mcp_clickhouse.mcp_env import get_pgvector_config
+    from mcp_server.mcp_env import get_pgvector_config
     
     config = get_pgvector_config()
     client_config = config.get_client_config()
@@ -75,7 +75,7 @@ def test_pgvector_config_client_config(mock_env_vars):
 
 def test_pgvector_config_missing_vars(monkeypatch):
     """Test PGVectorConfig with missing required variables."""
-    from mcp_clickhouse.mcp_env import PGVectorConfig
+    from mcp_server.mcp_env import PGVectorConfig
     
     monkeypatch.setenv("PGVECTOR_ENABLED", "true")
     # Don't set required variables
@@ -95,7 +95,7 @@ def test_list_pgvector_tables(mock_env_vars, mock_psycopg2):
         {"table_schema": "public", "table_name": "documents", "table_type": "BASE TABLE"},
     ]
     
-    from mcp_clickhouse.mcp_server import list_pgvector_tables
+    from mcp_server.mcp_server import list_pgvector_tables
     
     result = list_pgvector_tables()
     
@@ -128,7 +128,7 @@ def test_list_pgvector_vectors(mock_env_vars, mock_psycopg2):
         }
     ]
     
-    from mcp_clickhouse.mcp_server import list_pgvector_vectors
+    from mcp_server.mcp_server import list_pgvector_vectors
     
     result = list_pgvector_vectors()
     
@@ -148,7 +148,7 @@ def test_search_similar_vectors(mock_env_vars, mock_psycopg2):
         {"id": 2, "name": "item2", "distance": 0.5},
     ]
     
-    from mcp_clickhouse.mcp_server import search_similar_vectors
+    from mcp_server.mcp_server import search_similar_vectors
     
     result = search_similar_vectors(
         table_name="items",
@@ -165,7 +165,7 @@ def test_search_similar_vectors(mock_env_vars, mock_psycopg2):
 
 def test_search_similar_vectors_invalid_distance(mock_env_vars, mock_psycopg2):
     """Test search_similar_vectors with invalid distance function."""
-    from mcp_clickhouse.mcp_server import search_similar_vectors
+    from mcp_server.mcp_server import search_similar_vectors
     from fastmcp.exceptions import ToolError
     
     with pytest.raises(ToolError, match="Invalid distance function"):
@@ -181,7 +181,7 @@ def test_run_pgvector_select_query(mock_env_vars, mock_psycopg2):
     """Test run_pgvector_select_query function."""
     mock_pg, mock_conn, mock_cursor = mock_psycopg2
     
-    from mcp_clickhouse.mcp_server import run_pgvector_select_query
+    from mcp_server.mcp_server import run_pgvector_select_query
     
     query = "SELECT * FROM items LIMIT 5"
     result = run_pgvector_select_query(query)
@@ -192,8 +192,8 @@ def test_run_pgvector_select_query(mock_env_vars, mock_psycopg2):
 
 def test_pgvector_prompt():
     """Test pgvector_initial_prompt function."""
-    from mcp_clickhouse.mcp_server import pgvector_initial_prompt
-    from mcp_clickhouse.pgvector_prompt import PGVECTOR_PROMPT
+    from mcp_server.mcp_server import pgvector_initial_prompt
+    from mcp_server.pgvector_prompt import PGVECTOR_PROMPT
     
     prompt = pgvector_initial_prompt()
     

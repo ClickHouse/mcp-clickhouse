@@ -2,7 +2,7 @@ import unittest
 
 from dotenv import load_dotenv
 
-from mcp_clickhouse import create_chdb_client, run_chdb_select_query
+from mcp_server.chdb import create_chdb_client, run_chdb_select_query
 
 load_dotenv()
 

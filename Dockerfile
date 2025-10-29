@@ -41,4 +41,4 @@ COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Run the MCP ClickHouse server by default
-CMD ["python", "-m", "mcp_clickhouse.main"]
+CMD ["python", "-m", "mcp_server.main"]

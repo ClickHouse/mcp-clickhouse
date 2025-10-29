@@ -1,6 +1,6 @@
 """pgvector prompts for MCP server."""
 
-PGVECTOR_PROMPT = """
+PGVECTOR_PROMPT = r"""
 # PostgreSQL pgvector MCP System Prompt
 
 ## Available Tools
@@ -198,4 +198,3 @@ This will significantly speed up similarity searches."
   - Inner Product (`<#>`): For normalized vectors, similar to cosine
   - Cosine (`<=>`): Best for text embeddings and semantic search
 """
-

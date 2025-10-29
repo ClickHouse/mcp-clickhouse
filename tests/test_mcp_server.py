@@ -3,7 +3,8 @@ import pytest_asyncio
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 import asyncio
-from mcp_clickhouse.mcp_server import mcp, create_clickhouse_client
+from mcp_server.main import mcp
+from mcp_server.myscaledb import create_myscale_client
 from dotenv import load_dotenv
 import json
 
@@ -22,7 +23,7 @@ def event_loop():
 @pytest_asyncio.fixture(scope="module")
 async def setup_test_database():
     """Set up test database and tables before running tests."""
-    client = create_clickhouse_client()
+    client = create_myscale_client()
 
     # Test database and table names
     test_db = "test_mcp_db"
