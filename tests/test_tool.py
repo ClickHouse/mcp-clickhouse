@@ -44,8 +44,7 @@ class TestClickhouseTools(unittest.TestCase):
     def test_list_databases(self):
         """Test listing databases."""
         result = list_databases()
-        # Parse JSON response
-        databases = json.loads(result)
+        databases = result["databases"]
         self.assertIn(self.test_db, databases)
 
     def test_list_tables_without_like(self):

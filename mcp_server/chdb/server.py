@@ -43,8 +43,14 @@ def _init_chdb_client():
 
 def create_chdb_client():
     """创建 chDB 客户端连接。"""
+    global _chdb_client
     if not get_chdb_config().enabled:
         raise ValueError("chDB 未启用。设置 CHDB_ENABLED=true 以启用它。")
+    
+    # 如果客户端尚未初始化，则初始化它
+    if _chdb_client is None:
+        _chdb_client = _init_chdb_client()
+    
     return _chdb_client
 
 

@@ -1,10 +1,15 @@
 import unittest
+import os
 
 from dotenv import load_dotenv
 
 from mcp_server.chdb import create_chdb_client, run_chdb_select_query
 
 load_dotenv()
+
+# 确保 chDB 已启用用于测试
+os.environ["CHDB_ENABLED"] = "true"
+os.environ["CHDB_DATA_PATH"] = ":memory:"
 
 
 class TestChDBTools(unittest.TestCase):

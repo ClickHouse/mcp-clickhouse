@@ -93,9 +93,9 @@ class MyScaleConfig:
     def secure(self) -> bool:
         """Get whether HTTPS is enabled.
 
-        Default: False
+        Default: True (for security)
         """
-        return os.getenv("MYSCALE_SECURE", "false").lower() == "true"
+        return os.getenv("MYSCALE_SECURE", "true").lower() == "true"
 
     @property
     def verify(self) -> bool:

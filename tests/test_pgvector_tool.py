@@ -1,6 +1,7 @@
 """Tests for pgvector tools."""
 
 import os
+import sys
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 
@@ -23,7 +24,15 @@ def mock_env_vars(monkeypatch):
 @pytest.fixture
 def mock_psycopg2():
     """Mock psycopg2 for testing."""
-    with patch("mcp_server.pgvector.server.psycopg2") as mock_pg:
+    # Mock both psycopg2 and psycopg2.extras at the import level
+    with patch.dict('sys.modules', {
+        'psycopg2': MagicMock(),
+        'psycopg2.extras': MagicMock()
+    }):
+        # Import the module to get the mocked psycopg2
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        
         # Create mock connection and cursor
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
@@ -36,14 +45,14 @@ def mock_psycopg2():
         ]
         
         mock_conn.cursor.return_value = mock_cursor
-        mock_pg.connect.return_value = mock_conn
+        psycopg2.connect = MagicMock(return_value=mock_conn)
         
-        yield mock_pg, mock_conn, mock_cursor
+        yield psycopg2, mock_conn, mock_cursor
 
 
 def test_pgvector_config(mock_env_vars):
     """Test PGVectorConfig initialization."""
-    from mcp_server.mcp_env import get_pgvector_config
+    from mcp_server.config import get_pgvector_config
     
     config = get_pgvector_config()
     
@@ -59,7 +68,7 @@ def test_pgvector_config(mock_env_vars):
 
 def test_pgvector_config_client_config(mock_env_vars):
     """Test PGVectorConfig get_client_config method."""
-    from mcp_server.mcp_env import get_pgvector_config
+    from mcp_server.config import get_pgvector_config
     
     config = get_pgvector_config()
     client_config = config.get_client_config()
@@ -75,12 +84,19 @@ def test_pgvector_config_client_config(mock_env_vars):
 
 def test_pgvector_config_missing_vars(monkeypatch):
     """Test PGVectorConfig with missing required variables."""
-    from mcp_server.mcp_env import PGVectorConfig
+    from mcp_server.config import PGVectorConfig
+    
+    # Clear all pgvector environment variables first
+    monkeypatch.delenv("PGVECTOR_HOST", raising=False)
+    monkeypatch.delenv("PGVECTOR_USER", raising=False)
+    monkeypatch.delenv("PGVECTOR_PASSWORD", raising=False)
+    monkeypatch.delenv("PGVECTOR_DATABASE", raising=False)
+    monkeypatch.delenv("PGVECTOR_PORT", raising=False)
     
     monkeypatch.setenv("PGVECTOR_ENABLED", "true")
     # Don't set required variables
     
-    with pytest.raises(ValueError, match="Missing required environment variables"):
+    with pytest.raises(ValueError, match="缺少必需的环境变量"):
         PGVectorConfig()
 
 
@@ -95,7 +111,7 @@ def test_list_pgvector_tables(mock_env_vars, mock_psycopg2):
         {"table_schema": "public", "table_name": "documents", "table_type": "BASE TABLE"},
     ]
     
-    from mcp_server.mcp_server import list_pgvector_tables
+    from mcp_server.pgvector import list_pgvector_tables
     
     result = list_pgvector_tables()
     
@@ -128,7 +144,7 @@ def test_list_pgvector_vectors(mock_env_vars, mock_psycopg2):
         }
     ]
     
-    from mcp_server.mcp_server import list_pgvector_vectors
+    from mcp_server.pgvector import list_pgvector_vectors
     
     result = list_pgvector_vectors()
     
@@ -148,7 +164,7 @@ def test_search_similar_vectors(mock_env_vars, mock_psycopg2):
         {"id": 2, "name": "item2", "distance": 0.5},
     ]
     
-    from mcp_server.mcp_server import search_similar_vectors
+    from mcp_server.pgvector import search_similar_vectors
     
     result = search_similar_vectors(
         table_name="items",
@@ -165,10 +181,10 @@ def test_search_similar_vectors(mock_env_vars, mock_psycopg2):
 
 def test_search_similar_vectors_invalid_distance(mock_env_vars, mock_psycopg2):
     """Test search_similar_vectors with invalid distance function."""
-    from mcp_server.mcp_server import search_similar_vectors
+    from mcp_server.pgvector import search_similar_vectors
     from fastmcp.exceptions import ToolError
     
-    with pytest.raises(ToolError, match="Invalid distance function"):
+    with pytest.raises(ToolError, match="无效的距离函数"):
         search_similar_vectors(
             table_name="items",
             vector_column="embedding",
@@ -181,7 +197,7 @@ def test_run_pgvector_select_query(mock_env_vars, mock_psycopg2):
     """Test run_pgvector_select_query function."""
     mock_pg, mock_conn, mock_cursor = mock_psycopg2
     
-    from mcp_server.mcp_server import run_pgvector_select_query
+    from mcp_server.pgvector import run_pgvector_select_query
     
     query = "SELECT * FROM items LIMIT 5"
     result = run_pgvector_select_query(query)
@@ -192,8 +208,7 @@ def test_run_pgvector_select_query(mock_env_vars, mock_psycopg2):
 
 def test_pgvector_prompt():
     """Test pgvector_initial_prompt function."""
-    from mcp_server.mcp_server import pgvector_initial_prompt
-    from mcp_server.pgvector_prompt import PGVECTOR_PROMPT
+    from mcp_server.pgvector import pgvector_initial_prompt, PGVECTOR_PROMPT
     
     prompt = pgvector_initial_prompt()
     

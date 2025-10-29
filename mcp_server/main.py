@@ -8,7 +8,11 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from .config import get_myscale_config, get_chdb_config, get_mcp_config, TransportType
+# Support both relative and absolute imports
+try:
+    from .config import get_myscale_config, get_chdb_config, get_mcp_config, TransportType
+except ImportError:
+    from mcp_server.config import get_myscale_config, get_chdb_config, get_mcp_config, TransportType
 
 # Configure logging
 logging.basicConfig(
@@ -47,7 +51,10 @@ async def health_check(request: Request) -> PlainTextResponse:
                 )
 
         # Try to create a client connection to verify MyScaleDB connectivity
-        from .myscaledb import create_myscale_client
+        try:
+            from .myscaledb import create_myscale_client
+        except ImportError:
+            from mcp_server.myscaledb import create_myscale_client
         client = create_myscale_client()
         version = client.server_version
         return PlainTextResponse(f"OK - Connected to MyScaleDB {version}")
@@ -60,19 +67,28 @@ def register_services():
     """Register all services based on configuration."""
     # Register MyScaleDB service
     if os.getenv("MYSCALE_ENABLED", "true").lower() == "true":
-        from .myscaledb import register_tools as register_myscale_tools
+        try:
+            from .myscaledb import register_tools as register_myscale_tools
+        except ImportError:
+            from mcp_server.myscaledb import register_tools as register_myscale_tools
         register_myscale_tools(mcp)
         logger.info("MyScaleDB service registered")
 
     # Register chDB service
     if os.getenv("CHDB_ENABLED", "false").lower() == "true":
-        from .chdb import register_tools as register_chdb_tools
+        try:
+            from .chdb import register_tools as register_chdb_tools
+        except ImportError:
+            from mcp_server.chdb import register_tools as register_chdb_tools
         register_chdb_tools(mcp)
         logger.info("chDB service registered")
 
     # Register pgvector service
     if os.getenv("PGVECTOR_ENABLED", "false").lower() == "true":
-        from .pgvector import register_tools as register_pgvector_tools
+        try:
+            from .pgvector import register_tools as register_pgvector_tools
+        except ImportError:
+            from mcp_server.pgvector import register_tools as register_pgvector_tools
         register_pgvector_tools(mcp)
         logger.info("pgvector service registered")
 
