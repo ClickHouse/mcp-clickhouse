@@ -148,8 +148,7 @@ def list_tables(database: str, like: Optional[str] = None, not_like: Optional[st
     """
     logger.info(f"Listing tables in database '{database}'")
     client = create_myscale_client()
-    # not show create_table_query
-    query = f"SELECT database, name, engine, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, total_bytes_uncompressed, parts, active_parts, total_marks, comment FROM system.tables WHERE database = {format_query_value(database)}"
+    query = f"SELECT database, name, engine, create_table_query, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, total_bytes_uncompressed, parts, active_parts, total_marks, comment FROM system.tables WHERE database = {format_query_value(database)}"
     if like:
         query += f" AND name LIKE {format_query_value(like)}"
 

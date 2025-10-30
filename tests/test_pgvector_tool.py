@@ -96,7 +96,7 @@ def test_pgvector_config_missing_vars(monkeypatch):
     monkeypatch.setenv("PGVECTOR_ENABLED", "true")
     # Don't set required variables
     
-    with pytest.raises(ValueError, match="缺少必需的环境变量"):
+    with pytest.raises(ValueError, match="Missing required environment variables"):
         PGVectorConfig()
 
 
@@ -184,7 +184,7 @@ def test_search_similar_vectors_invalid_distance(mock_env_vars, mock_psycopg2):
     from mcp_server.pgvector import search_similar_vectors
     from fastmcp.exceptions import ToolError
     
-    with pytest.raises(ToolError, match="无效的距离函数"):
+    with pytest.raises(ToolError, match="Invalid distance function"):
         search_similar_vectors(
             table_name="items",
             vector_column="embedding",
