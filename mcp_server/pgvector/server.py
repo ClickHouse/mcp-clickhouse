@@ -1,4 +1,4 @@
-"""pgvector MCP 服务实现。"""
+"""pgvector MCP service implementation."""
 
 import logging
 import concurrent.futures
@@ -14,41 +14,41 @@ from .prompts import PGVECTOR_PROMPT
 
 logger = logging.getLogger("mcp-clickhouse.pgvector")
 
-# 查询执行器
+# Query executor
 QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 
 
 def create_pgvector_client():
-    """创建带有 pgvector 支持的 PostgreSQL 客户端连接。"""
+    """Create PostgreSQL client connection with pgvector support."""
     try:
         import psycopg2
         from psycopg2.extras import RealDictCursor
     except ImportError:
         raise ImportError(
-            "psycopg2 未安装。使用以下命令安装：pip install psycopg2-binary"
+            "psycopg2 is not installed. Install it with: pip install psycopg2-binary"
         )
 
     if not get_pgvector_config().enabled:
-        raise ValueError("pgvector 未启用。设置 PGVECTOR_ENABLED=true 以启用它。")
+        raise ValueError("pgvector is not enabled. Set PGVECTOR_ENABLED=true to enable it.")
 
     client_config = get_pgvector_config().get_client_config()
     logger.info(
-        f"创建 PostgreSQL 客户端连接到 {client_config['host']}:{client_config['port']} "
-        f"用户 {client_config['user']} (database={client_config['database']}, "
+        f"Creating PostgreSQL client connection to {client_config['host']}:{client_config['port']} "
+        f"as user {client_config['user']} (database={client_config['database']}, "
         f"sslmode={client_config['sslmode']})"
     )
 
     try:
         conn = psycopg2.connect(**client_config, cursor_factory=RealDictCursor)
-        logger.info("成功连接到 PostgreSQL 服务器")
+        logger.info("Successfully connected to PostgreSQL server")
         return conn
     except Exception as e:
-        logger.error(f"连接到 PostgreSQL 失败：{str(e)}")
+        logger.error(f"Failed to connect to PostgreSQL: {str(e)}")
         raise
 
 
 def execute_pgvector_query(query: str):
-    """在 PostgreSQL 上执行查询，支持 pgvector。"""
+    """Execute query on PostgreSQL with pgvector support."""
     conn = None
     cursor = None
     try:
@@ -56,23 +56,23 @@ def execute_pgvector_query(query: str):
         cursor = conn.cursor()
         cursor.execute(query)
 
-        # 检查查询是否返回结果
+        # Check if query returns results
         if cursor.description:
             columns = [desc[0] for desc in cursor.description]
             rows = cursor.fetchall()
-            # 将 RealDictRow 转换为常规字典
+            # Convert RealDictRow to regular dict
             rows = [dict(row) for row in rows]
-            logger.info(f"查询返回 {len(rows)} 行")
+            logger.info(f"Query returned {len(rows)} rows")
             return {"columns": columns, "rows": rows}
         else:
-            # 对于非 SELECT 查询
+            # For non-SELECT queries
             conn.commit()
-            return {"message": "查询执行成功", "rowcount": cursor.rowcount}
+            return {"message": "Query executed successfully", "rowcount": cursor.rowcount}
     except Exception as err:
-        logger.error(f"执行查询时出错：{err}")
+        logger.error(f"Error executing query: {err}")
         if conn:
             conn.rollback()
-        raise ToolError(f"查询执行失败：{str(err)}")
+        raise ToolError(f"Query execution failed: {str(err)}")
     finally:
         if cursor:
             cursor.close()
@@ -81,34 +81,59 @@ def execute_pgvector_query(query: str):
 
 
 def run_pgvector_select_query(query: str):
-    """在带有 pgvector 支持的 PostgreSQL 上运行 SELECT 查询"""
-    logger.info(f"执行 pgvector SELECT 查询：{query}")
+    """Run a SELECT query on PostgreSQL with pgvector support.
+    
+    PostgreSQL + pgvector extension
+    
+    Available Query Functions:
+    1. Vector Similarity Search:
+       - <-> : L2 distance (Euclidean) - for general vector comparison
+       - <=> : Cosine distance - for text embeddings (recommended)
+       - <#> : Inner product distance - for normalized vectors
+       - Example: SELECT id, vec_col <=> '[0.1,0.2,0.3]' AS distance FROM tbl ORDER BY distance LIMIT 10
+    
+    2. Full Text Search:
+       - to_tsvector('english', text_col): Convert text to search vector
+       - to_tsquery('search & terms'): Create search query
+       - @@ operator: Match operation
+       - Example: SELECT id FROM tbl WHERE to_tsvector('english', text) @@ to_tsquery('machine & learning') LIMIT 10
+    
+    3. Hybrid Queries:
+       - Combine vector search with full-text search
+       - Example: SELECT id FROM tbl WHERE to_tsvector('english', text) @@ to_tsquery('AI') ORDER BY vec_col <=> '[...]' LIMIT 10
+    
+    Best Practices:
+    - Use LIMIT to prevent large result sets
+    - Filter with WHERE first, then perform vector search
+    - Combine multiple search conditions for better results
+    """
+    logger.info(f"Executing pgvector SELECT query: {query}")
     try:
         future = QUERY_EXECUTOR.submit(execute_pgvector_query, query)
         try:
             timeout_secs = get_mcp_config().query_timeout
             result = future.result(timeout=timeout_secs)
             if isinstance(result, dict) and "error" in result:
-                logger.warning(f"查询失败：{result['error']}")
+                logger.warning(f"Query failed: {result['error']}")
                 return {
                     "status": "error",
-                    "message": f"查询失败：{result['error']}",
+                    "message": f"Query failed: {result['error']}",
                 }
             return result
         except concurrent.futures.TimeoutError:
-            logger.warning(f"查询在 {timeout_secs} 秒后超时：{query}")
+            logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
-            raise ToolError(f"查询在 {timeout_secs} 秒后超时")
+            raise ToolError(f"Query timed out after {timeout_secs} seconds")
     except ToolError:
         raise
     except Exception as e:
-        logger.error(f"run_pgvector_select_query 中的意外错误：{str(e)}")
-        raise RuntimeError(f"查询执行期间发生意外错误：{str(e)}")
+        logger.error(f"Unexpected error in run_pgvector_select_query: {str(e)}")
+        raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
 
 
 def list_pgvector_tables():
-    """列出 PostgreSQL 数据库中的所有表"""
-    logger.info("列出所有 PostgreSQL 表")
+    """List all tables in PostgreSQL database"""
+    logger.info("Listing all PostgreSQL tables")
     query = """
         SELECT 
             table_schema,
@@ -120,16 +145,24 @@ def list_pgvector_tables():
     """
     try:
         result = execute_pgvector_query(query)
-        logger.info(f"找到 {len(result.get('rows', []))} 个表")
+        logger.info(f"Found {len(result.get('rows', []))} tables")
         return result
     except Exception as e:
-        logger.error(f"列出表时出错：{str(e)}")
-        raise ToolError(f"列出表失败：{str(e)}")
+        logger.error(f"Error listing tables: {str(e)}")
+        raise ToolError(f"Failed to list tables: {str(e)}")
 
 
 def list_pgvector_vectors():
-    """列出所有表中的所有向量列及其维度"""
-    logger.info("列出 PostgreSQL 数据库中的所有向量列")
+    """List all vector columns and their dimensions across all tables.
+    
+    Returns detailed vector column information:
+    - Table schema and table name
+    - Vector column name
+    - Vector dimensions (e.g., vector(1536) means 1536-dimensional vector)
+    
+    Use this tool to identify vector columns and their dimensions before creating vector indexes.
+    """
+    logger.info("Listing all vector columns in PostgreSQL database")
     query = """
         SELECT 
             c.table_schema,
@@ -149,11 +182,11 @@ def list_pgvector_vectors():
     """
     try:
         result = execute_pgvector_query(query)
-        logger.info(f"找到 {len(result.get('rows', []))} 个向量列")
+        logger.info(f"Found {len(result.get('rows', []))} vector columns")
         return result
     except Exception as e:
-        logger.error(f"列出向量列时出错：{str(e)}")
-        raise ToolError(f"列出向量列失败：{str(e)}")
+        logger.error(f"Error listing vector columns: {str(e)}")
+        raise ToolError(f"Failed to list vector columns: {str(e)}")
 
 
 def search_similar_vectors(
@@ -163,28 +196,35 @@ def search_similar_vectors(
     limit: int = 10,
     distance_function: str = "l2",
 ):
-    """使用向量嵌入执行相似性搜索。
+    """Perform similarity search using vector embeddings.
     
-    参数：
-        table_name: 要搜索的表名
-        vector_column: 向量列名
-        query_vector: 查询向量字符串（例如，'[1,2,3]'）
-        limit: 返回的结果数（默认：10）
-        distance_function: 要使用的距离函数 - 'l2'、'cosine' 或 'inner_product'（默认：'l2'）
+    Args:
+        table_name: Name of the table to search
+        vector_column: Name of the vector column
+        query_vector: Query vector as string (e.g., '[1,2,3]')
+        limit: Number of results to return (default: 10)
+        distance_function: Distance function to use - 'l2', 'cosine', or 'inner_product' (default: 'l2')
+    
+    Distance Functions:
+    - 'l2': L2/Euclidean distance (<-> operator) - for general vector comparison
+    - 'cosine': Cosine distance (<=> operator) - for text embeddings
+    - 'inner_product': Inner product distance (<#> operator) - for normalized vectors
+    
+    Note: Ensure indexes are created for vector columns for optimal performance.
     """
-    logger.info(f"在 {table_name}.{vector_column} 上执行向量相似性搜索")
+    logger.info(f"Performing vector similarity search on {table_name}.{vector_column}")
     
-    # 将距离函数映射到运算符
+    # Map distance function to operator
     operators = {
-        "l2": "<->",  # L2 距离（欧几里得）
-        "cosine": "<=>",  # 余弦距离
-        "inner_product": "<#>",  # 内积（负点积）
+        "l2": "<->",  # L2 distance (Euclidean)
+        "cosine": "<=>",  # Cosine distance
+        "inner_product": "<#>",  # Inner product (negative dot product)
     }
     
     if distance_function not in operators:
         raise ToolError(
-            f"无效的距离函数 '{distance_function}'。"
-            f"有效选项：{', '.join(operators.keys())}"
+            f"Invalid distance function '{distance_function}'. "
+            f"Valid options: {', '.join(operators.keys())}"
         )
     
     operator = operators[distance_function]
@@ -198,20 +238,20 @@ def search_similar_vectors(
     
     try:
         result = execute_pgvector_query(query)
-        logger.info(f"向量搜索返回 {len(result.get('rows', []))} 个结果")
+        logger.info(f"Vector search returned {len(result.get('rows', []))} results")
         return result
     except Exception as e:
-        logger.error(f"执行向量搜索时出错：{str(e)}")
-        raise ToolError(f"执行向量搜索失败：{str(e)}")
+        logger.error(f"Error performing vector search: {str(e)}")
+        raise ToolError(f"Vector search failed: {str(e)}")
 
 
 def pgvector_initial_prompt() -> str:
-    """此提示帮助用户了解如何与 pgvector 进行交互和执行操作"""
+    """This prompt helps users understand how to interact with pgvector and perform operations."""
     return PGVECTOR_PROMPT
 
 
 def register_tools(mcp: FastMCP):
-    """将 pgvector 工具注册到 MCP 实例。"""
+    """Register pgvector tools to MCP instance."""
     mcp.add_tool(Tool.from_function(run_pgvector_select_query))
     mcp.add_tool(Tool.from_function(list_pgvector_tables))
     mcp.add_tool(Tool.from_function(list_pgvector_vectors))
@@ -220,8 +260,8 @@ def register_tools(mcp: FastMCP):
     pgvector_prompt = Prompt.from_function(
         pgvector_initial_prompt,
         name="pgvector_initial_prompt",
-        description="此提示帮助用户了解如何与 pgvector 进行交互和执行操作",
+        description="This prompt helps users understand how to interact with pgvector and perform operations.",
     )
     mcp.add_prompt(pgvector_prompt)
-    logger.info("pgvector 工具和提示已注册")
+    logger.info("pgvector tools and prompts registered")
 

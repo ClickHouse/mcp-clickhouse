@@ -1,4 +1,4 @@
-"""chDB MCP 服务实现。"""
+"""chDB MCP service implementation."""
 
 import logging
 import json
@@ -15,39 +15,39 @@ from .prompts import CHDB_PROMPT
 
 logger = logging.getLogger("mcp-clickhouse.chdb")
 
-# 查询执行器
+# Query executor
 QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
 
-# 全局 chDB 客户端
+# Global chDB client
 _chdb_client = None
 
 
 def _init_chdb_client():
-    """初始化全局 chDB 客户端实例。"""
+    """Initialize global chDB client instance."""
     try:
         if not get_chdb_config().enabled:
-            logger.info("chDB 已禁用，跳过客户端初始化")
+            logger.info("chDB is disabled, skipping client initialization")
             return None
 
         client_config = get_chdb_config().get_client_config()
         data_path = client_config["data_path"]
-        logger.info(f"创建 chDB 客户端，data_path={data_path}")
+        logger.info(f"Creating chDB client with data_path={data_path}")
         client = chs.Session(path=data_path)
-        logger.info(f"成功连接到 chDB，data_path={data_path}")
+        logger.info(f"Successfully connected to chDB with data_path={data_path}")
         return client
     except Exception as e:
-        logger.error(f"初始化 chDB 客户端失败：{e}")
+        logger.error(f"Failed to initialize chDB client: {e}")
         return None
 
 
 def create_chdb_client():
-    """创建 chDB 客户端连接。"""
+    """Create chDB client connection."""
     global _chdb_client
     if not get_chdb_config().enabled:
-        raise ValueError("chDB 未启用。设置 CHDB_ENABLED=true 以启用它。")
+        raise ValueError("chDB is not enabled. Set CHDB_ENABLED=true to enable it.")
     
-    # 如果客户端尚未初始化，则初始化它
+    # Initialize client if not already initialized
     if _chdb_client is None:
         _chdb_client = _init_chdb_client()
     
@@ -55,13 +55,13 @@ def create_chdb_client():
 
 
 def execute_chdb_query(query: str):
-    """使用 chDB 客户端执行查询。"""
+    """Execute query using chDB client."""
     client = create_chdb_client()
     try:
         res = client.query(query, "JSON")
         if res.has_error():
             error_msg = res.error_message()
-            logger.error(f"执行 chDB 查询时出错：{error_msg}")
+            logger.error(f"Error executing chDB query: {error_msg}")
             return {"error": error_msg}
 
         result_data = res.data()
@@ -73,47 +73,73 @@ def execute_chdb_query(query: str):
         return result_json.get("data", [])
 
     except Exception as err:
-        logger.error(f"执行 chDB 查询时出错：{err}")
+        logger.error(f"Error executing chDB query: {err}")
         return {"error": str(err)}
 
 
 def run_chdb_select_query(query: str):
-    """在 chDB 中运行 SQL，chDB 是一个进程内 ClickHouse 引擎"""
-    logger.info(f"执行 chDB SELECT 查询：{query}")
+    """Run SQL in chDB, an in-process ClickHouse engine.
+    
+    chDB = In-Process ClickHouse + Direct Query via Table Functions
+    
+    Key Features:
+    1. Table Functions - Query data sources directly without import:
+       - Local files: file('path/to/file.csv') or file('data.parquet', 'Parquet')
+       - Remote files: url('https://example.com/data.csv', 'CSV')
+       - S3 storage: s3('s3://bucket/path/file.csv', 'CSV')
+       - PostgreSQL: postgresql('host:port', 'database', 'table', 'user', 'password')
+       - MySQL: mysql('host:port', 'database', 'table', 'user', 'password')
+    
+    2. Supported Formats:
+       - CSV, TSV, JSON, JSONEachRow
+       - Parquet, ORC, Avro
+    
+    3. Best Practices:
+       - Use LIMIT to prevent large result sets (recommend LIMIT 10 by default)
+       - Use WHERE to filter and reduce data transfer
+       - Use SELECT to specify columns and avoid full table scans
+       - Multi-source JOIN: file() JOIN url() JOIN s3()
+       - Test connection: DESCRIBE table_function(...)
+    
+    4. No Data Import Required:
+       - Query data in place
+       - If no suitable table function exists, use Python to download to temp file and query with file()
+    """
+    logger.info(f"Executing chDB SELECT query: {query}")
     try:
         future = QUERY_EXECUTOR.submit(execute_chdb_query, query)
         try:
             timeout_secs = get_mcp_config().query_timeout
             result = future.result(timeout=timeout_secs)
-            # 检查是否从 execute_chdb_query 收到了错误结构
+            # Check if we received an error structure from execute_chdb_query
             if isinstance(result, dict) and "error" in result:
-                logger.warning(f"chDB 查询失败：{result['error']}")
+                logger.warning(f"chDB query failed: {result['error']}")
                 return {
                     "status": "error",
-                    "message": f"chDB 查询失败：{result['error']}",
+                    "message": f"chDB query failed: {result['error']}",
                 }
             return result
         except concurrent.futures.TimeoutError:
             logger.warning(
-                f"chDB 查询在 {timeout_secs} 秒后超时：{query}"
+                f"chDB query timed out after {timeout_secs} seconds: {query}"
             )
             future.cancel()
             return {
                 "status": "error",
-                "message": f"chDB 查询在 {timeout_secs} 秒后超时",
+                "message": f"chDB query timed out after {timeout_secs} seconds",
             }
     except Exception as e:
-        logger.error(f"run_chdb_select_query 中的意外错误：{e}")
-        return {"status": "error", "message": f"意外错误：{e}"}
+        logger.error(f"Unexpected error in run_chdb_select_query: {e}")
+        return {"status": "error", "message": f"Unexpected error: {e}"}
 
 
 def chdb_initial_prompt() -> str:
-    """此提示帮助用户了解如何在 chDB 中进行交互和执行常见操作"""
+    """This prompt helps users understand how to interact with chDB and perform common operations"""
     return CHDB_PROMPT
 
 
 def register_tools(mcp: FastMCP):
-    """将 chDB 工具注册到 MCP 实例。"""
+    """Register chDB tools to MCP instance."""
     global _chdb_client
     
     _chdb_client = _init_chdb_client()
@@ -124,8 +150,8 @@ def register_tools(mcp: FastMCP):
     chdb_prompt = Prompt.from_function(
         chdb_initial_prompt,
         name="chdb_initial_prompt",
-        description="此提示帮助用户了解如何在 chDB 中进行交互和执行常见操作",
+        description="This prompt helps users understand how to interact with chDB and perform common operations",
     )
     mcp.add_prompt(chdb_prompt)
-    logger.info("chDB 工具和提示已注册")
+    logger.info("chDB tools and prompts registered")
 

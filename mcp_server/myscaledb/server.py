@@ -11,6 +11,8 @@ from clickhouse_connect.driver.binding import format_query_value
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
 from fastmcp.exceptions import ToolError
+from .prompts import MYSCALEDB_PROMPT
+from fastmcp.prompts import Prompt
 
 from ..config import get_myscale_config, get_mcp_config
 
@@ -133,11 +135,21 @@ def list_databases():
 
 
 def list_tables(database: str, like: Optional[str] = None, not_like: Optional[str] = None):
-    """List available MyScaleDB tables in a database, including schema, comment,
-    row count, and column count."""
+    """List available MyScaleDB tables in a database, including schema, comment, row count, and column count.
+    
+    Returns detailed table information including:
+    - Column types (Array(Float32) indicates vector columns)
+    - Table engine and sorting keys
+    - Row counts and storage statistics
+    - Column comments and constraints
+    
+    Use this to identify vector columns before creating vector indexes.
+    Vector columns are typically Array(Float32) or Array(Float64) types.
+    """
     logger.info(f"Listing tables in database '{database}'")
     client = create_myscale_client()
-    query = f"SELECT database, name, engine, create_table_query, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, total_bytes_uncompressed, parts, active_parts, total_marks, comment FROM system.tables WHERE database = {format_query_value(database)}"
+    # not show create_table_query
+    query = f"SELECT database, name, engine, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, total_bytes_uncompressed, parts, active_parts, total_marks, comment FROM system.tables WHERE database = {format_query_value(database)}"
     if like:
         query += f" AND name LIKE {format_query_value(like)}"
 
@@ -177,8 +189,78 @@ def execute_query(query: str):
         raise ToolError(f"Query execution failed: {str(err)}")
 
 
+def run_similarity_select_query(query: str):
+    """Run a SELECT query in a MyScaleDB database.
+    
+    MyScaleDB = ClickHouse + Vector Search
+    
+    Available Query Functions:
+    1. Vector Search:
+       - distance(embedding, [0.1, 0.2, 0.3]): Calculate vector similarity
+       - Supported metrics: Cosine, L2, IP (Inner Product)
+       - Example: SELECT id, distance(embedding, [0.1, 0.2, 0.3]) AS dist FROM tbl ORDER BY dist LIMIT 10
+    
+    2. Full Text Search:
+       - TextSearch(text_col, 'search query'): Full text search with score
+       - Example: SELECT id, TextSearch(text, 'machine learning') AS score FROM tbl ORDER BY score DESC LIMIT 10
+    
+    3. Hybrid Search:
+       - HybridSearch(embedding, text_col, [0.1, 0.2, 0.3], 'search query'): Combine vector and text search
+       - Example: SELECT id, HybridSearch(embedding, text, [0.1, 0.2, 0.3], 'AI') AS score FROM tbl ORDER BY score DESC LIMIT 10
+    
+    Best Practices:
+    - Always use LIMIT to prevent large result sets
+    - Combine filters with vector/text search for better results
+    - Filter first, then search: WHERE category='tech' AND distance(...) < 0.5
+    """
+    logger.info(f"Executing Similarity SELECT query: {query}")
+    try:
+        future = QUERY_EXECUTOR.submit(execute_query, query)
+        try:
+            timeout_secs = get_mcp_config().query_timeout
+            result = future.result(timeout=timeout_secs)
+            # Check if we received an error structure from execute_query
+            if isinstance(result, dict) and "error" in result:
+                logger.warning(f"Query failed: {result['error']}")
+                # MCP requires structured responses; string error messages can cause
+                # serialization issues leading to BrokenResourceError
+                return {
+                    "status": "error",
+                    "message": f"Query failed: {result['error']}",
+                }
+            return result
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
+            future.cancel()
+            raise ToolError(f"Query timed out after {timeout_secs} seconds")
+    except ToolError:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in run_similarity_select_query: {str(e)}")
+        raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
+
 def run_select_query(query: str):
-    """Run a SELECT query in a MyScaleDB database"""
+    """Run a standard SELECT query in a MyScaleDB database.
+    
+    Use this tool for regular SQL queries without vector/text search functions.
+    For similarity search, use run_similarity_select_query instead.
+    
+    Suitable for:
+    - Data filtering and aggregation: SELECT ... WHERE ... GROUP BY ...
+    - Table joins: SELECT ... FROM t1 JOIN t2 ON ...
+    - Statistical analysis: SELECT COUNT(*), AVG(col), SUM(col) ...
+    - Data exploration: SELECT * FROM table LIMIT 10
+    
+    Best Practices:
+    - Always use LIMIT to prevent large result sets
+    - Use WHERE to filter data before aggregation
+    - Use ORDER BY to sort results
+    - Use GROUP BY for aggregation queries
+    - Use appropriate JOIN types for multi-table queries
+    
+    Note: This tool does NOT support vector search functions (distance, TextSearch, HybridSearch).
+    Use run_similarity_select_query for those queries.
+    """
     logger.info(f"Executing SELECT query: {query}")
     try:
         future = QUERY_EXECUTOR.submit(execute_query, query)
@@ -205,10 +287,20 @@ def run_select_query(query: str):
         logger.error(f"Unexpected error in run_select_query: {str(e)}")
         raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
 
+def myscaledb_initial_prompt() -> str:
+    """This prompt helps users understand how to interact with MyScaleDB and perform operations."""
+    return MYSCALEDB_PROMPT
 
 def register_tools(mcp: FastMCP):
     """Register MyScaleDB tools to MCP instance."""
     mcp.add_tool(Tool.from_function(list_databases))
     mcp.add_tool(Tool.from_function(list_tables))
     mcp.add_tool(Tool.from_function(run_select_query))
-    logger.info("MyScaleDB tools registered")
+    mcp.add_tool(Tool.from_function(run_similarity_select_query))
+    myscaledb_prompt = Prompt.from_function(
+        myscaledb_initial_prompt,
+        name="myscaledb_initial_prompt",
+        description="This prompt helps users understand how to interact with MyScaleDB and perform operations.",
+    )
+    mcp.add_prompt(myscaledb_prompt)
+    logger.info("MyScaleDB tools and prompts registered")

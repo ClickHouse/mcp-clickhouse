@@ -1,6 +1,7 @@
-"""环境配置模块，用于 MCP 服务器。
+"""Environment configuration module for MCP server.
 
-该模块处理所有环境变量配置，提供合理的默认值和类型转换。
+This module handles all environment variable configuration with sensible defaults
+and type conversion.
 """
 
 from dataclasses import dataclass
@@ -10,7 +11,7 @@ from enum import Enum
 
 
 class TransportType(str, Enum):
-    """支持的 MCP 服务器传输类型。"""
+    """Supported MCP server transport types."""
 
     STDIO = "stdio"
     HTTP = "http"
@@ -18,7 +19,7 @@ class TransportType(str, Enum):
 
     @classmethod
     def values(cls) -> list[str]:
-        """获取所有有效的传输值。"""
+        """Get all valid transport values."""
         return [transport.value for transport in cls]
 
 
@@ -170,133 +171,135 @@ class MyScaleConfig:
 
 @dataclass
 class ChDBConfig:
-    """chDB 连接设置配置。
+    """chDB connection settings configuration.
 
-    该类处理所有环境变量配置，提供合理的默认值和类型转换。
+    This class handles all environment variable configuration with sensible defaults
+    and type conversion.
 
-    必需的环境变量：
-        CHDB_DATA_PATH: chDB 数据目录的路径（仅在 CHDB_ENABLED=true 时需要）
+    Required environment variables:
+        CHDB_DATA_PATH: Path to chDB data directory (only required when CHDB_ENABLED=true)
     """
 
     def __init__(self):
-        """从环境变量初始化配置。"""
+        """Initialize configuration from environment variables."""
         if self.enabled:
             self._validate_required_vars()
 
     @property
     def enabled(self) -> bool:
-        """获取 chDB 是否启用。
+        """Get whether chDB is enabled.
 
-        默认值：False
+        Default: False
         """
         return os.getenv("CHDB_ENABLED", "false").lower() == "true"
 
     @property
     def data_path(self) -> str:
-        """获取 chDB 数据路径。"""
+        """Get chDB data path."""
         return os.getenv("CHDB_DATA_PATH", ":memory:")
 
     def get_client_config(self) -> dict:
-        """获取 chDB 客户端的配置字典。
+        """Get configuration dictionary for chDB client.
 
-        返回：
-            dict: 准备传递给 chDB 客户端的配置
+        Returns:
+            dict: Configuration ready to be passed to chDB client
         """
         return {
             "data_path": self.data_path,
         }
 
     def _validate_required_vars(self) -> None:
-        """验证所有必需的环境变量是否已设置。
+        """Validate that all required environment variables are set.
 
-        抛出：
-            ValueError: 如果缺少任何必需的环境变量。
+        Raises:
+            ValueError: If any required environment variable is missing.
         """
         pass
 
 
 @dataclass
 class PGVectorConfig:
-    """PostgreSQL with pgvector 扩展配置。
+    """PostgreSQL with pgvector extension configuration.
 
-    该类处理所有环境变量配置，提供合理的默认值和类型转换。
+    This class handles all environment variable configuration with sensible defaults
+    and type conversion.
 
-    必需的环境变量（仅当 PGVECTOR_ENABLED=true 时）：
-        PGVECTOR_HOST: PostgreSQL 服务器的主机名
-        PGVECTOR_PORT: 端口号（默认：5432）
-        PGVECTOR_USER: 认证用户名
-        PGVECTOR_PASSWORD: 认证密码
-        PGVECTOR_DATABASE: 数据库名称
+    Required environment variables (only when PGVECTOR_ENABLED=true):
+        PGVECTOR_HOST: PostgreSQL server hostname
+        PGVECTOR_PORT: Port number (default: 5432)
+        PGVECTOR_USER: Username for authentication
+        PGVECTOR_PASSWORD: Password for authentication
+        PGVECTOR_DATABASE: Database name
 
-    可选的环境变量（带默认值）：
-        PGVECTOR_ENABLED: 启用 pgvector 功能（默认：false）
-        PGVECTOR_CONNECT_TIMEOUT: 连接超时时间（秒）（默认：30）
-        PGVECTOR_SSLMODE: 连接的 SSL 模式（默认：prefer）
+    Optional environment variables (with defaults):
+        PGVECTOR_ENABLED: Enable pgvector functionality (default: false)
+        PGVECTOR_CONNECT_TIMEOUT: Connection timeout in seconds (default: 30)
+        PGVECTOR_SSLMODE: SSL mode for connection (default: prefer)
     """
 
     def __init__(self):
-        """从环境变量初始化配置。"""
+        """Initialize configuration from environment variables."""
         if self.enabled:
             self._validate_required_vars()
 
     @property
     def enabled(self) -> bool:
-        """获取 pgvector 是否启用。
+        """Get whether pgvector is enabled.
 
-        默认值：False
+        Default: False
         """
         return os.getenv("PGVECTOR_ENABLED", "false").lower() == "true"
 
     @property
     def host(self) -> str:
-        """获取 PostgreSQL 主机。"""
+        """Get PostgreSQL host."""
         return os.environ["PGVECTOR_HOST"]
 
     @property
     def port(self) -> int:
-        """获取 PostgreSQL 端口。
+        """Get PostgreSQL port.
 
-        默认值：5432
+        Default: 5432
         """
         return int(os.getenv("PGVECTOR_PORT", "5432"))
 
     @property
     def username(self) -> str:
-        """获取 PostgreSQL 用户名。"""
+        """Get PostgreSQL username."""
         return os.environ["PGVECTOR_USER"]
 
     @property
     def password(self) -> str:
-        """获取 PostgreSQL 密码。"""
+        """Get PostgreSQL password."""
         return os.environ["PGVECTOR_PASSWORD"]
 
     @property
     def database(self) -> str:
-        """获取数据库名称。"""
+        """Get database name."""
         return os.environ["PGVECTOR_DATABASE"]
 
     @property
     def connect_timeout(self) -> int:
-        """获取连接超时时间（秒）。
+        """Get connection timeout in seconds.
 
-        默认值：30
+        Default: 30
         """
         return int(os.getenv("PGVECTOR_CONNECT_TIMEOUT", "30"))
 
     @property
     def sslmode(self) -> str:
-        """获取连接的 SSL 模式。
+        """Get SSL mode for connection.
 
-        默认值：prefer
-        有效选项：disable, allow, prefer, require, verify-ca, verify-full
+        Default: prefer
+        Valid options: disable, allow, prefer, require, verify-ca, verify-full
         """
         return os.getenv("PGVECTOR_SSLMODE", "prefer")
 
     def get_client_config(self) -> dict:
-        """获取 psycopg2/asyncpg 客户端的配置字典。
+        """Get configuration dictionary for psycopg2/asyncpg client.
 
-        返回：
-            dict: 准备传递给 PostgreSQL 客户端的配置
+        Returns:
+            dict: Configuration ready to be passed to PostgreSQL client
         """
         return {
             "host": self.host,
@@ -309,10 +312,10 @@ class PGVectorConfig:
         }
 
     def _validate_required_vars(self) -> None:
-        """验证所有必需的环境变量是否已设置。
+        """Validate that all required environment variables are set.
 
-        抛出：
-            ValueError: 如果缺少任何必需的环境变量。
+        Raises:
+            ValueError: If any required environment variable is missing.
         """
         missing_vars = []
         for var in [
@@ -325,21 +328,21 @@ class PGVectorConfig:
                 missing_vars.append(var)
 
         if missing_vars:
-            raise ValueError(f"缺少必需的环境变量：{', '.join(missing_vars)}")
+            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
 
 @dataclass
 class MCPServerConfig:
-    """MCP 服务器级设置配置。
+    """MCP server-level settings configuration.
 
-    这些设置控制服务器传输和工具行为，
-    与 ClickHouse 连接验证有意分离。
+    These settings control server transport and tool behavior,
+    intentionally separated from ClickHouse connection validation.
 
-    可选的环境变量（带默认值）：
-        MCP_SERVER_TRANSPORT: "stdio", "http", 或 "sse"（默认：stdio）
-        MCP_BIND_HOST: HTTP/SSE 的绑定主机（默认：127.0.0.1）
-        MCP_BIND_PORT: HTTP/SSE 的绑定端口（默认：8000）
-        MCP_QUERY_TIMEOUT: SELECT 工具超时时间（秒）（默认：30）
+    Optional environment variables (with defaults):
+        MCP_SERVER_TRANSPORT: "stdio", "http", or "sse" (default: stdio)
+        MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
+        MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
+        MCP_QUERY_TIMEOUT: Timeout for SELECT tools in seconds (default: 30)
     """
 
     @property
@@ -347,7 +350,7 @@ class MCPServerConfig:
         transport = os.getenv("MCP_SERVER_TRANSPORT", TransportType.STDIO.value).lower()
         if transport not in TransportType.values():
             valid_options = ", ".join(f'"{t}"' for t in TransportType.values())
-            raise ValueError(f"无效的传输类型 '{transport}'。有效选项：{valid_options}")
+            raise ValueError(f"Invalid transport type '{transport}'. Valid options: {valid_options}")
         return transport
 
     @property

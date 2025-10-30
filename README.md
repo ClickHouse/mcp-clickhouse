@@ -11,9 +11,16 @@ An MCP server for MyScaleDB - combining analytical database power with vector se
 ### MyScaleDB Tools
 
 * `run_select_query`
-  * Execute SQL queries on your MyScaleDB cluster with vector search support.
-  * Input: `sql` (string): The SQL query to execute.
+  * Execute standard SQL SELECT queries on your MyScaleDB cluster.
+  * Input: `query` (string): The SQL SELECT query to execute.
+  * Best for regular data analysis and aggregation queries.
   * All MyScaleDB queries are run with `readonly = 1` to ensure they are safe.
+
+* `run_similarity_select_query`
+  * Execute SELECT queries with vector search and full-text search capabilities.
+  * Input: `query` (string): The SQL query with distance(), TextSearch(), or HybridSearch() functions.
+  * Best for similarity search, semantic search, and hybrid search queries.
+  * Supports: distance(), TextSearch(), HybridSearch() functions.
 
 * `list_databases`
   * List all databases on your MyScaleDB cluster.
@@ -412,7 +419,3 @@ uv run pytest -v tests/test_tool.py # MyScaleDB only
 uv run pytest -v tests/test_chdb_tool.py # chDB only
 uv run pytest -v tests/test_pgvector_tool.py # pgvector only
 ```
-
-## YouTube Overview
-
-[![YouTube](http://i.ytimg.com/vi/y9biAm_Fkqw/hqdefault.jpg)](https://www.youtube.com/watch?v=y9biAm_Fkqw)
