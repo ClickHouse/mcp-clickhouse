@@ -78,6 +78,7 @@ This MCP server supports both ClickHouse and chDB. You can enable either or both
         "CLICKHOUSE_PORT": "<clickhouse-port>",
         "CLICKHOUSE_USER": "<clickhouse-user>",
         "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "CLICKHOUSE_ROLE": "<clickhouse-role>",
         "CLICKHOUSE_SECURE": "true",
         "CLICKHOUSE_VERIFY": "true",
         "CLICKHOUSE_CONNECT_TIMEOUT": "30",
@@ -298,6 +299,9 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_PORT`: The port number of your ClickHouse server
   * Default: `8443` if HTTPS is enabled, `8123` if disabled
   * Usually doesn't need to be set unless using a non-standard port
+* `CLICKHOUSE_ROLE`: The role to use for authentication
+  * Default: None
+  * Set this if your user requires a specific role
 * `CLICKHOUSE_SECURE`: Enable/disable HTTPS connection
   * Default: `"true"`
   * Set to `"false"` for non-secure connections
