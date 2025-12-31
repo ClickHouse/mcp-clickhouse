@@ -1,10 +1,16 @@
 import logging
 import json
+import csv
+import os
+import uuid
+import hashlib
+import datetime
 from typing import Optional, List, Any, Dict
 import concurrent.futures
 import atexit
-import os
-import uuid
+import pathlib
+import threading
+import time
 
 import clickhouse_connect
 import chdb.session as chs
@@ -17,7 +23,7 @@ from fastmcp.prompts import Prompt
 from fastmcp.exceptions import ToolError
 from dataclasses import dataclass, field, asdict, is_dataclass
 from starlette.requests import Request
-from starlette.responses import PlainTextResponse
+from starlette.responses import PlainTextResponse, FileResponse
 
 from mcp_clickhouse.mcp_env import get_config, get_chdb_config, get_mcp_config
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
@@ -69,6 +75,97 @@ atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
 load_dotenv()
 
 mcp = FastMCP(name=MCP_SERVER_NAME)
+
+
+# Ensure download directory exists
+def ensure_download_dir():
+    """Ensure the download directory exists."""
+    download_dir = get_mcp_config().download_dir
+    pathlib.Path(download_dir).mkdir(parents=True, exist_ok=True)
+    return download_dir
+
+
+def start_file_cleanup_scheduler():
+    """Start a background thread to periodically clean up old files."""
+    retention_seconds = get_mcp_config().download_file_retention_seconds
+
+    def cleanup_worker():
+        while True:
+            try:
+                download_dir = pathlib.Path(get_mcp_config().download_dir)
+                current_time = time.time()
+                deleted_count = 0
+                for file_path in download_dir.glob("*.csv"):
+                    file_stat = file_path.stat()
+                    file_age = current_time - file_stat.st_mtime
+                    if file_age > retention_seconds:
+                        file_path.unlink()
+                        deleted_count += 1
+                        logger.info(f"Deleted old file: {file_path.name} (age: {file_age:.0f}s)")
+                if deleted_count > 0:
+                    logger.info(f"Cleanup completed: deleted {deleted_count} old files")
+                time.sleep(300)
+            except Exception as e:
+                logger.error(f"Error in cleanup worker: {e}")
+                time.sleep(60)
+    if retention_seconds > 0:
+        cleanup_thread = threading.Thread(target=cleanup_worker, daemon=True)
+        cleanup_thread.start()
+        logger.info("Started file cleanup scheduler")
+
+
+def save_query_results_to_file(columns: List[str], rows: List[Any], query: str) -> str:
+    """Save query results to a CSV file and return the file ID.
+    
+    Args:
+        columns: Column names
+        rows: Query result rows
+        query: The original SQL query
+    
+    Returns:
+        File ID for download
+    """
+    ensure_download_dir()
+    
+    # Generate unique file ID based on query and timestamp
+    file_id = hashlib.md5(f"{query}_{datetime.datetime.now().isoformat()}".encode()).hexdigest()
+    
+    # Create CSV file
+    download_dir = get_mcp_config().download_dir
+    file_path = pathlib.Path(download_dir) / f"{file_id}.csv"
+    
+    try:
+        with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(columns)
+            writer.writerows(rows)
+        
+        logger.info(f"Saved query results to file: {file_path} ({len(rows)} rows)")
+        return file_id
+    except Exception as e:
+        logger.error(f"Failed to save query results to file: {e}")
+        raise
+
+
+@mcp.custom_route("/downloads/{file_id}", methods=["GET"])
+async def download_result_file(request: Request):
+    """Download a query result file by file ID."""
+    file_id = request.path_params.get("file_id")
+    
+    if not file_id:
+        return PlainTextResponse("File ID is required", status_code=400)
+    
+    download_dir = get_mcp_config().download_dir
+    file_path = pathlib.Path(download_dir) / f"{file_id}.csv"
+    
+    if not file_path.exists():
+        return PlainTextResponse(f"File not found: {file_id}.csv", status_code=404)
+    
+    return FileResponse(
+        str(file_path),
+        media_type="text/csv",
+        filename=f"query_results_{file_id}.csv"
+    )
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -388,7 +485,27 @@ def execute_query(query: str):
     try:
         read_only = get_readonly_setting(client)
         res = client.query(query, settings={"readonly": read_only})
-        logger.info(f"Query returned {len(res.result_rows)} rows")
+        row_count = len(res.result_rows)
+        logger.info(f"Query returned {row_count} rows")
+        
+        # Check if result is too large for direct response
+        max_direct_rows = get_mcp_config().max_direct_rows
+        if row_count > max_direct_rows:
+            logger.info(f"Result too large ({row_count} > {max_direct_rows}), saving to file")
+            file_id = save_query_results_to_file(list(res.column_names), list(res.result_rows), query)
+            download_url = f"{get_mcp_config().download_base_url}/{file_id}"
+            
+            return {
+                "status": "large_result",
+                "message": f"Query returned {row_count} rows, which exceeds the maximum of {max_direct_rows} for direct response. Results saved to file. You can download it via the following link. {download_url}",
+                "file_id": file_id,
+                "download_url": download_url,
+                "row_count": row_count,
+                "column_count": len(res.column_names),
+                "columns": res.column_names,
+                "rows": res.result_rows[:5]  # Show first 5 rows as preview
+            }
+        
         return {"columns": res.column_names, "rows": res.result_rows}
     except Exception as err:
         logger.error(f"Error executing query: {err}")
@@ -579,3 +696,6 @@ if os.getenv("CHDB_ENABLED", "false").lower() == "true":
     )
     mcp.add_prompt(chdb_prompt)
     logger.info("chDB tools and prompts registered")
+
+
+start_file_cleanup_scheduler()

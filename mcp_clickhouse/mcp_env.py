@@ -292,6 +292,39 @@ class MCPServerConfig:
     def query_timeout(self) -> int:
         return int(os.getenv("CLICKHOUSE_MCP_QUERY_TIMEOUT", "30"))
 
+    @property
+    def max_direct_rows(self) -> int:
+        """Maximum number of rows to return directly before switching to file download.
+        
+        Default: 1000 rows
+        """
+        return int(os.getenv("CLICKHOUSE_MCP_MAX_DIRECT_ROWS", "1000"))
+
+    @property
+    def download_base_url(self) -> str:
+        """Base URL for file downloads when using HTTP/SSE transport.
+        
+        Default: http://localhost:8000/downloads
+        """
+        return os.getenv("CLICKHOUSE_MCP_DOWNLOAD_BASE_URL", f"http://{self.bind_host}:{self.bind_port}/downloads")
+
+    @property
+    def download_dir(self) -> str:
+        """Directory to store result files for download.
+        
+        Default: ./downloads
+        """
+        return os.getenv("CLICKHOUSE_MCP_DOWNLOAD_DIR", "./downloads")
+
+    @property
+    def download_file_retention_seconds(self) -> int:
+        """File retention time in seconds for downloaded result files.
+        
+        Default: 3600 seconds (1 hour)
+        Set to 0 to disable automatic cleanup
+        """
+        return int(os.getenv("CLICKHOUSE_MCP_DOWNLOAD_FILE_RETENTION_SECONDS", "3600"))
+
 
 _MCP_CONFIG_INSTANCE = None
 
