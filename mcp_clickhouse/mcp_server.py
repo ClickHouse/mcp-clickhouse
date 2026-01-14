@@ -19,8 +19,9 @@ from dataclasses import dataclass, field, asdict, is_dataclass
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from mcp_clickhouse.mcp_env import get_config, get_chdb_config, get_mcp_config
+from mcp_clickhouse.mcp_env import get_config, get_chdb_config, get_mcp_config, TransportType
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
+from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 
 
 @dataclass
@@ -68,7 +69,31 @@ atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
 
 load_dotenv()
 
-mcp = FastMCP(name=MCP_SERVER_NAME)
+# Configure authentication for HTTP/SSE transports
+auth_provider = None
+mcp_config = get_mcp_config()
+http_transports = [TransportType.HTTP.value, TransportType.SSE.value]
+
+if mcp_config.server_transport in http_transports:
+    if mcp_config.auth_disabled:
+        logger.warning("WARNING: MCP SERVER AUTHENTICATION IS DISABLED")
+        logger.warning("Only use this for local development/testing.")
+        logger.warning("DO NOT expose to networks.")
+    elif mcp_config.auth_token:
+        auth_provider = StaticTokenVerifier(
+            tokens={mcp_config.auth_token: {"client_id": "mcp-client", "scopes": []}},
+            required_scopes=[],
+        )
+        logger.info("Authentication enabled for HTTP/SSE transport")
+    else:
+        # No token configured and auth not disabled
+        raise ValueError(
+            "Authentication token required for HTTP/SSE transports. "
+            "Set CLICKHOUSE_MCP_AUTH_TOKEN environment variable or set "
+            "CLICKHOUSE_MCP_AUTH_DISABLED=true (for development only)."
+        )
+
+mcp = FastMCP(name=MCP_SERVER_NAME, auth=auth_provider)
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -77,6 +102,16 @@ async def health_check(request: Request) -> PlainTextResponse:
 
     Returns OK if the server is running and can connect to ClickHouse.
     """
+    if auth_provider is not None:
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return PlainTextResponse("Unauthorized", status_code=401)
+
+        token = auth_header[7:]
+        access_token = await auth_provider.verify_token(token)
+        if access_token is None:
+            return PlainTextResponse("Unauthorized", status_code=401)
+
     try:
         # Check if ClickHouse is enabled by trying to create config
         # If ClickHouse is disabled, this will succeed but connection will fail
