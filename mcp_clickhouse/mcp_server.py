@@ -16,6 +16,7 @@ from cachetools import TTLCache
 from fastmcp.tools import Tool
 from fastmcp.prompts import Prompt
 from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_context
 from dataclasses import dataclass, field, asdict, is_dataclass
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
@@ -499,6 +500,13 @@ def run_query(query: str):
 
 def create_clickhouse_client():
     client_config = get_config().get_client_config()
+
+    ctx = get_context()
+    session_config_overrides = ctx.get_state("clickhouse_client_config_overrides")
+    if session_config_overrides:
+        logger.info(f"Applying session-specific ClickHouse client config overrides {session_config_overrides}")
+        client_config.update(session_config_overrides)
+
     logger.info(
         f"Creating ClickHouse client connection to {client_config['host']}:{client_config['port']} "
         f"as {client_config['username']} "

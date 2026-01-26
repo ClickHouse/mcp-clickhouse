@@ -337,7 +337,7 @@ logger = logging.getLogger("my-middleware")
 
 class LoggingMiddleware(Middleware):
     """Log all tool calls."""
-    
+
     async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
         tool_name = context.message.name if hasattr(context.message, 'name') else 'unknown'
         logger.info(f"Calling tool: {tool_name}")
@@ -401,6 +401,22 @@ The `Middleware` base class provides hooks for different MCP operations:
 - `on_list_prompts(context, call_next)` - Called when listing prompts
 
 Each hook receives a `MiddlewareContext` object containing the message and metadata, and a `call_next` function to continue the pipeline.
+
+### Dynamic Client Configuration via Context State
+
+Middleware can override ClickHouse client configuration on a per-request basis by setting the `clickhouse_client_config_overrides` context state. The server merges these overrides with the base configuration from environment variables.
+
+```python
+from fastmcp.server.dependencies import get_context
+
+ctx = get_context()
+ctx.set_state("clickhouse_client_config_overrides", {
+    "connect_timeout": 60,
+    "send_receive_timeout": 120
+})
+```
+
+This enables advanced use cases like dynamic timeout adjustments, tenant-specific routing, or per-user connection settings.
 
 ## Development
 
