@@ -781,6 +781,30 @@ On an IPv6 or dual-stack bind, IPv4 proxies may appear as IPv4-mapped addresses 
   * The module must provide a `setup_middleware(mcp)` function
   * See [Custom Middleware](#custom-middleware) for details and examples
 
+##### mTLS (Mutual TLS) Variables
+
+These variables enable client certificate authentication for ClickHouse servers that require mutual TLS:
+
+* `CLICKHOUSE_CA_CERT`: Path to CA certificate file
+  * Default: None
+  * Set this to specify a custom CA certificate for SSL verification
+  * Example: `/path/to/ca.crt`
+* `CLICKHOUSE_CLIENT_CERT`: Path to client certificate file
+  * Default: None
+  * Required for mTLS authentication
+  * Can be a `.pem` file containing both the certificate and private key
+  * Example: `/path/to/client.crt` or `/path/to/client.pem`
+* `CLICKHOUSE_CLIENT_CERT_KEY`: Path to client private key file
+  * Default: None
+  * Optional if `CLICKHOUSE_CLIENT_CERT` is a `.pem` file containing both the certificate and private key
+  * Example: `/path/to/client.key`
+* `CLICKHOUSE_TLS_MODE`: TLS mode for client certificate authentication
+  * Default: None (auto-detected based on `CLICKHOUSE_CLIENT_CERT`)
+  * Valid options:
+    * `"mutual"` - Use client certificate for authentication (default when `CLICKHOUSE_CLIENT_CERT` is set)
+    * `"proxy"` - TLS termination at proxy, use Basic Auth with client certs for TLS only
+    * `"strict"` - Strict TLS mode with Basic Auth
+
 #### chDB Variables
 
 * `CHDB_ENABLED`: Enable/disable chDB functionality
@@ -833,6 +857,55 @@ CLICKHOUSE_HOST=sql-clickhouse.clickhouse.com
 CLICKHOUSE_USER=demo
 CLICKHOUSE_PASSWORD=
 # Uses secure defaults (HTTPS on port 8443)
+```
+
+For ClickHouse with mTLS (Mutual TLS):
+
+```env
+# Required variables
+CLICKHOUSE_HOST=your-secure-clickhouse.example.com
+CLICKHOUSE_PORT=8443
+CLICKHOUSE_USER=your-user
+CLICKHOUSE_PASSWORD=your-password
+
+# mTLS configuration
+CLICKHOUSE_SECURE=true
+CLICKHOUSE_CA_CERT=/path/to/ca.crt
+CLICKHOUSE_CLIENT_CERT=/path/to/client.crt
+CLICKHOUSE_CLIENT_CERT_KEY=/path/to/client.key
+
+# Or if using a combined .pem file:
+# CLICKHOUSE_CLIENT_CERT=/path/to/client.pem
+```
+
+Example Claude Desktop configuration with mTLS:
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp-clickhouse",
+        "--python",
+        "3.10",
+        "mcp-clickhouse"
+      ],
+      "env": {
+        "CLICKHOUSE_HOST": "your-secure-clickhouse.example.com",
+        "CLICKHOUSE_PORT": "8443",
+        "CLICKHOUSE_USER": "your-user",
+        "CLICKHOUSE_PASSWORD": "your-password",
+        "CLICKHOUSE_SECURE": "true",
+        "CLICKHOUSE_CA_CERT": "/path/to/ca.crt",
+        "CLICKHOUSE_CLIENT_CERT": "/path/to/client.crt",
+        "CLICKHOUSE_CLIENT_CERT_KEY": "/path/to/client.key"
+      }
+    }
+  }
+}
 ```
 
 For chDB only (in-memory):

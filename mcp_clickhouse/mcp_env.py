@@ -52,6 +52,10 @@ class ClickHouseConfig:
         CLICKHOUSE_ENABLED: Enable ClickHouse server (default: true)
         CLICKHOUSE_ALLOW_WRITE_ACCESS: Allow write operations (DDL and DML) (default: false)
         CLICKHOUSE_ALLOW_DROP: Allow destructive operations (DROP, TRUNCATE) when writes are also enabled (default: false)
+        CLICKHOUSE_CA_CERT: Path to CA certificate file for SSL verification (default: None)
+        CLICKHOUSE_CLIENT_CERT: Path to client certificate file for mTLS authentication (default: None)
+        CLICKHOUSE_CLIENT_CERT_KEY: Path to client private key file for mTLS authentication (default: None)
+        CLICKHOUSE_TLS_MODE: TLS mode for client certificate usage - "mutual", "proxy", or "strict" (default: None)
     """
 
     def __init__(self):
@@ -163,6 +167,46 @@ class ClickHouseConfig:
         """
         return os.getenv("CLICKHOUSE_ALLOW_DROP", "false").lower() == "true"
 
+    @property
+    def ca_cert(self) -> Optional[str]:
+        """Get the path to CA certificate file for SSL verification.
+
+        Default: None
+        """
+        return os.getenv("CLICKHOUSE_CA_CERT")
+
+    @property
+    def client_cert(self) -> Optional[str]:
+        """Get the path to client certificate file for mTLS authentication.
+
+        Default: None
+        """
+        return os.getenv("CLICKHOUSE_CLIENT_CERT")
+
+    @property
+    def client_cert_key(self) -> Optional[str]:
+        """Get the path to client private key file for mTLS authentication.
+
+        This is optional if the client_cert file contains both the certificate
+        and the private key (e.g., a combined .pem file).
+
+        Default: None
+        """
+        return os.getenv("CLICKHOUSE_CLIENT_CERT_KEY")
+
+    @property
+    def tls_mode(self) -> Optional[str]:
+        """Get the TLS mode for client certificate usage.
+
+        Valid values:
+        - 'mutual': Use client certificate for authentication (default when client_cert is set)
+        - 'proxy': TLS termination at proxy, use Basic Auth with client certs for TLS only
+        - 'strict': Strict TLS mode, use Basic Auth with client certs for TLS only
+
+        Default: None (auto-detected by clickhouse-connect)
+        """
+        return os.getenv("CLICKHOUSE_TLS_MODE")
+
     def get_client_config(self) -> dict:
         """Get the configuration dictionary for clickhouse_connect client.
 
@@ -195,6 +239,19 @@ class ClickHouseConfig:
 
         if self.server_host_name:
             config["server_host_name"] = self.server_host_name
+
+        # Add mTLS configuration if set
+        if self.ca_cert:
+            config["ca_cert"] = self.ca_cert
+
+        if self.client_cert:
+            config["client_cert"] = self.client_cert
+
+        if self.client_cert_key:
+            config["client_cert_key"] = self.client_cert_key
+
+        if self.tls_mode:
+            config["tls_mode"] = self.tls_mode
 
         return config
 
