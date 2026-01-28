@@ -50,6 +50,58 @@ curl http://localhost:8000/health
 # Response: OK - Connected to ClickHouse 24.3.1
 ```
 
+## Security
+
+### Authentication for HTTP/SSE Transports
+
+When using HTTP or SSE transport, authentication is **required by default**. The `stdio` transport (default) does not require authentication as it only communicates via standard input/output.
+
+#### Setting Up Authentication
+
+1. Generate a secure token (can be any random string):
+   ```bash
+   # Using uuidgen (macOS/Linux)
+   uuidgen
+
+   # Using openssl
+   openssl rand -hex 32
+   ```
+
+2. Configure the server with the token:
+   ```bash
+   export CLICKHOUSE_MCP_AUTH_TOKEN="your-generated-token"
+   ```
+
+3. Configure your MCP client to include the token in requests:
+
+   For Claude Desktop with HTTP/SSE transport:
+   ```json
+   {
+     "mcpServers": {
+       "mcp-clickhouse": {
+         "url": "http://127.0.0.1:8000",
+         "headers": {
+           "Authorization": "Bearer your-generated-token"
+         }
+       }
+     }
+   }
+   ```
+
+   For command-line tools:
+   ```bash
+   curl -H "Authorization: Bearer your-generated-token" http://localhost:8000/health
+   ```
+
+#### Development Mode (Disabling Authentication)
+
+For local development and testing only, you can disable authentication by setting:
+```bash
+export CLICKHOUSE_MCP_AUTH_DISABLED=true
+```
+
+**WARNING:** Only use this for local development. Do not disable authentication when the server is exposed to any network.
+
 ## Configuration
 
 This MCP server supports both ClickHouse and chDB. You can enable either or both depending on your needs.
@@ -269,14 +321,18 @@ CLICKHOUSE_PASSWORD=clickhouse
 
 5. To test with HTTP transport and the health check endpoint:
    ```bash
-   # Using default port 8000
-   CLICKHOUSE_MCP_SERVER_TRANSPORT=http python -m mcp_clickhouse.main
+   # For development, disable authentication
+   CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_AUTH_DISABLED=true python -m mcp_clickhouse.main
 
-   # Or with a custom port
-   CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_BIND_PORT=4200 python -m mcp_clickhouse.main
+   # Or with authentication (generate a token first)
+   CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_AUTH_TOKEN="your-token" python -m mcp_clickhouse.main
 
    # Then in another terminal:
-   curl http://localhost:8000/health  # or http://localhost:4200/health for custom port
+   # Without auth (if disabled):
+   curl http://localhost:8000/health
+
+   # With auth:
+   curl -H "Authorization: Bearer your-token" http://localhost:8000/health
    ```
 
 ### Environment Variables
@@ -331,6 +387,15 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for SELECT tools
   * Default: `"30"`
   * Increase this if you see `Query timed out after ...` errors for heavy queries
+* `CLICKHOUSE_MCP_AUTH_TOKEN`: Authentication token for HTTP/SSE transports
+  * Default: None
+  * **Required** when using HTTP or SSE transport (unless `CLICKHOUSE_MCP_AUTH_DISABLED=true`)
+  * Generate using `uuidgen` or `openssl rand -hex 32`
+  * Clients must send this token in the `Authorization: Bearer <token>` header
+* `CLICKHOUSE_MCP_AUTH_DISABLED`: Disable authentication for HTTP/SSE transports
+  * Default: `"false"` (authentication is enabled)
+  * Set to `"true"` to disable authentication for local development/testing only
+  * **WARNING:** Only use for local development. Do not disable when exposed to networks
 * `CLICKHOUSE_ENABLED`: Enable/disable ClickHouse functionality
   * Default: `"true"`
   * Set to `"false"` to disable ClickHouse tools when using chDB only
@@ -409,6 +474,17 @@ CLICKHOUSE_PASSWORD=clickhouse
 CLICKHOUSE_MCP_SERVER_TRANSPORT=http
 CLICKHOUSE_MCP_BIND_HOST=0.0.0.0  # Bind to all interfaces
 CLICKHOUSE_MCP_BIND_PORT=4200  # Custom port (default: 8000)
+CLICKHOUSE_MCP_AUTH_TOKEN=your-generated-token  # Required for HTTP/SSE
+```
+
+For local development with HTTP transport (authentication disabled):
+
+```env
+CLICKHOUSE_HOST=localhost
+CLICKHOUSE_USER=default
+CLICKHOUSE_PASSWORD=clickhouse
+CLICKHOUSE_MCP_SERVER_TRANSPORT=http
+CLICKHOUSE_MCP_AUTH_DISABLED=true  # Only for local development!
 ```
 
 When using HTTP transport, the server will run on the configured port (default 8000). For example, with the above configuration:
