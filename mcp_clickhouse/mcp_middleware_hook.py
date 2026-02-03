@@ -19,6 +19,8 @@ def setup_middleware(mcp):
                 logger.warning(f"Middleware module '{middleware_module}' does not have a 'setup_middleware' function")
         except ImportError as e:
             logger.error(f"Failed to import middleware module '{middleware_module}': {e}")
+            raise e
         except Exception as e:
             logger.error(f"Failed to load middleware: {e}")
+            raise e
     return mcp
