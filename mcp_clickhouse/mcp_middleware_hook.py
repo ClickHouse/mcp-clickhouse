@@ -23,4 +23,3 @@ def setup_middleware(mcp):
         except Exception as e:
             logger.error(f"Failed to load middleware: {e}")
             raise e
-    return mcp
