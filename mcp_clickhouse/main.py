@@ -1,6 +1,6 @@
 from .mcp_server import mcp
 from .mcp_env import get_mcp_config, TransportType
-from .mpc_middleware_hook import setup_middleware
+from .mcp_middleware_hook import setup_middleware
 
 
 def main():
