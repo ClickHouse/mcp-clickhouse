@@ -461,13 +461,16 @@ def run_select_query(query: str):
 
 def create_clickhouse_client():
     client_config = get_config().get_client_config()
-    logger.info(
+    log_msg = (
         f"Creating ClickHouse client connection to {client_config['host']}:{client_config['port']} "
         f"as {client_config['username']} "
         f"(secure={client_config['secure']}, verify={client_config['verify']}, "
         f"connect_timeout={client_config['connect_timeout']}s, "
         f"send_receive_timeout={client_config['send_receive_timeout']}s)"
     )
+    if "server_host_name" in client_config:
+        log_msg += f" (server_host_name={client_config['server_host_name']})"
+    logger.info(log_msg)
 
     try:
         client = clickhouse_connect.get_client(**client_config)
