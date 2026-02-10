@@ -27,11 +27,19 @@ __all__ = [
     "list_tables",
     "run_select_query",
     "create_clickhouse_client",
-    "create_chdb_client",
-    "run_chdb_select_query",
-    "chdb_initial_prompt",
     "table_pagination_cache",
     "fetch_table_names_from_system",
     "get_paginated_table_data",
     "create_page_token",
 ]
+
+# chdb exports are optional — chdb is only available on Linux/macOS
+try:
+    import chdb  # noqa: F401
+    __all__ += [
+        "create_chdb_client",
+        "run_chdb_select_query",
+        "chdb_initial_prompt",
+    ]
+except ImportError:
+    pass
