@@ -81,3 +81,16 @@ def test_interface_https_with_custom_port(monkeypatch: pytest.MonkeyPatch):
     assert client_config["interface"] == "https"
     assert client_config["secure"] is True
     assert client_config["port"] == 9443
+
+
+def test_role_configuration(monkeypatch: pytest.MonkeyPatch):
+    """Test that role is correctly configured when CLICKHOUSE_ROLE is set."""
+    monkeypatch.setenv("CLICKHOUSE_HOST", "localhost")
+    monkeypatch.setenv("CLICKHOUSE_USER", "test")
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "test")
+    monkeypatch.setenv("CLICKHOUSE_ROLE", "analytics_reader")
+
+    config = ClickHouseConfig()
+    client_config = config.get_client_config()
+
+    assert client_config["settings"]["role"] == "analytics_reader"

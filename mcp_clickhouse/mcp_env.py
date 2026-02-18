@@ -36,6 +36,7 @@ class ClickHouseConfig:
         CLICKHOUSE_PASSWORD: The password for authentication
 
     Optional environment variables (with defaults):
+        CLICKHOUSE_ROLE: The role to use for authentication (default: None)
         CLICKHOUSE_PORT: The port number (default: 8443 if secure=True, 8123 if secure=False)
         CLICKHOUSE_SECURE: Enable HTTPS (default: true)
         CLICKHOUSE_VERIFY: Verify SSL certificates (default: true)
@@ -86,6 +87,11 @@ class ClickHouseConfig:
     def password(self) -> str:
         """Get the ClickHouse password."""
         return os.environ["CLICKHOUSE_PASSWORD"]
+
+    @property
+    def role(self) -> Optional[str]:
+        """Get the ClickHouse role."""
+        return os.getenv("CLICKHOUSE_ROLE")
 
     @property
     def database(self) -> Optional[str]:
@@ -165,6 +171,10 @@ class ClickHouseConfig:
             "send_receive_timeout": self.send_receive_timeout,
             "client_name": "mcp_clickhouse",
         }
+
+        # Add optional role if set
+        if self.role:
+            config.setdefault("settings", {})["role"] = self.role
 
         # Add optional database if set
         if self.database:
@@ -281,6 +291,10 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
         CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
+        CLICKHOUSE_MCP_AUTH_TOKEN: Authentication token for HTTP/SSE transports (required
+            unless CLICKHOUSE_MCP_AUTH_DISABLED=true)
+        CLICKHOUSE_MCP_AUTH_DISABLED: Disable authentication (default: false, use
+            only for development)
     """
 
     @property
@@ -302,6 +316,16 @@ class MCPServerConfig:
     @property
     def query_timeout(self) -> int:
         return int(os.getenv("CLICKHOUSE_MCP_QUERY_TIMEOUT", "30"))
+
+    @property
+    def auth_token(self) -> Optional[str]:
+        """Get the authentication token for HTTP/SSE transports."""
+        return os.getenv("CLICKHOUSE_MCP_AUTH_TOKEN", None)
+
+    @property
+    def auth_disabled(self) -> bool:
+        """Get whether authentication is disabled."""
+        return os.getenv("CLICKHOUSE_MCP_AUTH_DISABLED", "false").lower() == "true"
 
 
 _MCP_CONFIG_INSTANCE = None
