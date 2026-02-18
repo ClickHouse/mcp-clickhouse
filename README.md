@@ -14,6 +14,7 @@ An MCP server for ClickHouse.
   * Execute SQL queries on your ClickHouse cluster.
   * Input: `sql` (string): The SQL query to execute.
   * All ClickHouse queries are run with `readonly = 1` to ensure they are safe.
+  * **Recommendation:** Use a read-only agent (or a ClickHouse user with only read permissions) for production.
 
 * `list_databases`
   * List all databases on your ClickHouse cluster.
@@ -51,6 +52,8 @@ curl http://localhost:8000/health
 ```
 
 ## Security
+
+**Read-only agent:** Using a read-only agent (or a ClickHouse user restricted to read-only access) is recommended when connecting this MCP server to your cluster.
 
 ### Authentication for HTTP/SSE Transports
 
