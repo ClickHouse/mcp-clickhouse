@@ -419,14 +419,14 @@ def list_tables(
     }
 
 
-def _validate_query_for_drop(query: str) -> None:
-    """Validate that DROP operations are allowed.
+def _validate_query_for_destructive_ops(query: str) -> None:
+    """Validate that destructive operations (DROP, TRUNCATE) are allowed.
 
     Args:
         query: The SQL query to validate
 
     Raises:
-        ToolError: If the query contains DROP operations but CLICKHOUSE_ALLOW_DROP is not set
+        ToolError: If the query contains destructive operations but CLICKHOUSE_ALLOW_DROP is not set
     """
     config = get_config()
 
@@ -438,12 +438,12 @@ def _validate_query_for_drop(query: str) -> None:
     if config.allow_drop:
         return
 
-    # Simple pattern matching for DROP operations
-    drop_pattern = r'\bDROP\s+(TABLE|DATABASE|VIEW|DICTIONARY)\b'
-    if re.search(drop_pattern, query, re.IGNORECASE):
+    # Simple pattern matching for destructive operations
+    destructive_pattern = r'\b(DROP\s+(TABLE|DATABASE|VIEW|DICTIONARY)|TRUNCATE\s+TABLE)\b'
+    if re.search(destructive_pattern, query, re.IGNORECASE):
         raise ToolError(
-            "DROP operations are not allowed. "
-            "Set CLICKHOUSE_ALLOW_DROP=true to enable DROP TABLE/DATABASE operations. "
+            "Destructive operations (DROP, TRUNCATE) are not allowed. "
+            "Set CLICKHOUSE_ALLOW_DROP=true to enable these operations. "
             "This is a safety feature to prevent accidental data deletion."
         )
 
@@ -451,7 +451,7 @@ def _validate_query_for_drop(query: str) -> None:
 def execute_query(query: str):
     client = create_clickhouse_client()
     try:
-        _validate_query_for_drop(query)
+        _validate_query_for_destructive_ops(query)
 
         query_settings = build_query_settings(client)
         res = client.query(query, settings=query_settings)
@@ -691,7 +691,7 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
         description=(
             "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
             "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML operations. "
-            "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow DROP operations."
+            "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow destructive operations (DROP, TRUNCATE)."
         )
     ))
     logger.info("ClickHouse tools registered")

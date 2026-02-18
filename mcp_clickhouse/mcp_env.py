@@ -46,7 +46,7 @@ class ClickHouseConfig:
         CLICKHOUSE_PROXY_PATH: Path to be added to the host URL. For instance, for servers behind an HTTP proxy (default: None)
         CLICKHOUSE_ENABLED: Enable ClickHouse server (default: true)
         CLICKHOUSE_ALLOW_WRITE_ACCESS: Allow write operations (DDL and DML) (default: false)
-        CLICKHOUSE_ALLOW_DROP: Allow DROP operations when writes are also enabled (default: false)
+        CLICKHOUSE_ALLOW_DROP: Allow destructive operations (DROP, TRUNCATE) when writes are also enabled (default: false)
     """
 
     def __init__(self):

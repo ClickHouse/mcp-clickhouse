@@ -238,11 +238,11 @@ You can also enable both ClickHouse and chDB simultaneously:
 
 By default, this MCP enforces read-only queries so that accidental mutations cannot happen during exploration. To allow DDL or INSERT/UPDATE statements, set the `CLICKHOUSE_ALLOW_WRITE_ACCESS` environment variable to `true`. The server keeps enforcing read-only mode if the ClickHouse instance itself disallows writes.
 
-### DROP Operation Protection
+### Destructive Operation Protection
 
-Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), DROP operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY) require an additional opt-in flag for safety. This prevents accidental data deletion during AI exploration.
+Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), destructive operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY, TRUNCATE TABLE) require an additional opt-in flag for safety. This prevents accidental data deletion during AI exploration.
 
-To enable DROP operations, set both flags:
+To enable destructive operations, set both flags:
 ```json
 "env": {
   "CLICKHOUSE_ALLOW_WRITE_ACCESS": "true",
@@ -252,7 +252,7 @@ To enable DROP operations, set both flags:
 
 This two-tier approach ensures that accidental drops are very difficult:
 - **Write operations** (INSERT, UPDATE, CREATE) require `CLICKHOUSE_ALLOW_WRITE_ACCESS=true`
-- **Destructive operations** (DROP) additionally require `CLICKHOUSE_ALLOW_DROP=true`
+- **Destructive operations** (DROP, TRUNCATE) additionally require `CLICKHOUSE_ALLOW_DROP=true`
 
 ### Running Without uv (Using System Python)
 
@@ -423,10 +423,10 @@ The following environment variables are used to configure the ClickHouse and chD
   * Default: `"false"`
   * Set to `"true"` to allow DDL (CREATE, ALTER, DROP) and DML (INSERT, UPDATE, DELETE) operations
   * When disabled (default), queries run with `readonly=1` setting to prevent data modifications
-* `CLICKHOUSE_ALLOW_DROP`: Allow DROP operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY)
+* `CLICKHOUSE_ALLOW_DROP`: Allow destructive operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY, TRUNCATE TABLE)
   * Default: `"false"`
   * Only takes effect when `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` is also set
-  * Set to `"true"` to explicitly allow destructive DROP operations
+  * Set to `"true"` to explicitly allow destructive DROP and TRUNCATE operations
   * This is a safety feature to prevent accidental data deletion during AI exploration
 
 #### chDB Variables

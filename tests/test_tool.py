@@ -266,7 +266,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
             run_query(drop_query)
 
         error_msg = str(context.exception)
-        self.assertIn("DROP operations are not allowed", error_msg)
+        self.assertIn("Destructive operations (DROP, TRUNCATE) are not allowed", error_msg)
         self.assertIn("CLICKHOUSE_ALLOW_DROP=true", error_msg)
 
     @patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "true", "CLICKHOUSE_ALLOW_DROP": "false"})
@@ -282,7 +282,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
             run_query(drop_query)
 
         error_msg = str(context.exception)
-        self.assertIn("DROP operations are not allowed", error_msg)
+        self.assertIn("Destructive operations (DROP, TRUNCATE) are not allowed", error_msg)
         self.assertIn("CLICKHOUSE_ALLOW_DROP=true", error_msg)
 
         self.client.command(f"DROP DATABASE IF EXISTS {temp_db}")
@@ -334,6 +334,29 @@ class TestClickhouseDropProtection(unittest.TestCase):
         self.assertIn("create_test", table_names)
 
         self.client.command(f"DROP TABLE {self.test_db}.create_test")
+
+    @patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "true", "CLICKHOUSE_ALLOW_DROP": "false"})
+    def test_truncate_blocked_when_drop_flag_not_set(self):
+        """Test that TRUNCATE TABLE is blocked when CLICKHOUSE_ALLOW_DROP=false."""
+        truncate_query = f"TRUNCATE TABLE {self.test_db}.{self.test_table}"
+
+        with self.assertRaises(ToolError) as context:
+            run_query(truncate_query)
+
+        error_msg = str(context.exception)
+        self.assertIn("Destructive operations (DROP, TRUNCATE) are not allowed", error_msg)
+        self.assertIn("CLICKHOUSE_ALLOW_DROP=true", error_msg)
+
+    def test_truncate_allowed_when_drop_flag_set(self):
+        """Test that TRUNCATE works when CLICKHOUSE_ALLOW_DROP=true."""
+        # Re-insert data so truncate has something to remove
+        self.client.command(
+            f"INSERT INTO {self.test_db}.{self.test_table} (id, value) VALUES (99, 'to_truncate')"
+        )
+
+        truncate_query = f"TRUNCATE TABLE {self.test_db}.{self.test_table}"
+        result = run_query(truncate_query)
+        self.assertIsInstance(result, dict)
 
 
 class TestClickhouseReadOnlyMode(unittest.TestCase):
