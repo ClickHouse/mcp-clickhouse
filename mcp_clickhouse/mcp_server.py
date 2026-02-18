@@ -1,5 +1,6 @@
 import logging
 import json
+import re
 from typing import Optional, List, Any, Dict
 import concurrent.futures
 import atexit
@@ -418,7 +419,72 @@ def list_tables(
     }
 
 
+# SQL statements that are allowed through run_select_query.
+# Everything else (INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE,
+# RENAME, ATTACH, DETACH, GRANT, REVOKE, KILL, OPTIMIZE, SYSTEM, SET, etc.)
+# is blocked as a defense-in-depth measure on top of the readonly setting.
+ALLOWED_QUERY_PREFIXES = re.compile(
+    r"^\s*(SELECT|SHOW|DESCRIBE|DESC|EXPLAIN|EXISTS|WITH)\b",
+    re.IGNORECASE,
+)
+
+# Statements that must never pass through, even inside sub-expressions.
+# Checked after stripping comments to prevent bypass via comment injection.
+DANGEROUS_KEYWORDS = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|RENAME|ATTACH|DETACH|"
+    r"GRANT|REVOKE|KILL|OPTIMIZE|SYSTEM|EXCHANGE|MOVE)\b",
+    re.IGNORECASE,
+)
+
+# Pattern to strip SQL comments (both -- line comments and /* block comments */)
+SQL_COMMENT_PATTERN = re.compile(
+    r"--[^\n]*|/\*.*?\*/",
+    re.DOTALL,
+)
+
+
+def validate_query_is_readonly(query: str) -> None:
+    """Validate that a query is a read-only operation.
+
+    This is a defense-in-depth measure. The ClickHouse readonly setting is the
+    primary safeguard, but it can be misconfigured at the server level. This
+    function provides application-level validation to reject obviously
+    destructive SQL before it ever reaches ClickHouse.
+
+    Raises:
+        ToolError: If the query appears to contain a non-SELECT statement.
+    """
+    # Strip comments to prevent bypass via comment injection
+    # e.g. "SELECT 1; /* */ DROP TABLE foo"
+    stripped = SQL_COMMENT_PATTERN.sub(" ", query)
+
+    # Check the query starts with an allowed statement type
+    if not ALLOWED_QUERY_PREFIXES.match(stripped):
+        raise ToolError(
+            "Only SELECT, SHOW, DESCRIBE, EXPLAIN, EXISTS, and WITH queries are allowed. "
+            "This tool is read-only by design."
+        )
+
+    # Check for dangerous keywords anywhere in the query.
+    # This catches multi-statement injection like "SELECT 1; DROP TABLE foo"
+    # and sub-query abuse. Legitimate uses of these words as identifiers
+    # should be quoted (backticks or double quotes), which won't match \b word
+    # boundaries.
+    #
+    # We need to exclude these keywords when they appear inside string
+    # literals (single-quoted values). Strip single-quoted strings first.
+    no_strings = re.sub(r"'[^']*'", "''", stripped)
+
+    match = DANGEROUS_KEYWORDS.search(no_strings)
+    if match:
+        raise ToolError(
+            f"Query contains a disallowed statement: {match.group(0).upper()}. "
+            "Only read-only queries are permitted through this tool."
+        )
+
+
 def execute_query(query: str):
+    validate_query_is_readonly(query)
     client = create_clickhouse_client()
     try:
         read_only = get_readonly_setting(client)
