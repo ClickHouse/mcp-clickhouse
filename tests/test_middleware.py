@@ -52,7 +52,7 @@ class TestMiddlewareLoading:
                 mock_mcp = Mock()
                 with pytest.raises(ImportError):
                     setup_middleware(mock_mcp)
-                    assert not mock_mcp.add_middleware.called
+                assert not mock_mcp.add_middleware.called
 
     def test_middleware_setup_error(self):
         """Test handling of errors during setup."""
@@ -62,10 +62,9 @@ class TestMiddlewareLoading:
             mock_module.setup_middleware = Mock(side_effect=Exception("Setup failed"))
 
             with patch("importlib.import_module", return_value=mock_module):
-                # Simulate the middleware loading logic
                 with pytest.raises(Exception, match="Setup failed"):
                     setup_middleware(mock_mcp)
-                    assert not mock_mcp.add_middleware.called
+                assert not mock_mcp.add_middleware.called
 
 
 class TestMiddlewareIntegration:
