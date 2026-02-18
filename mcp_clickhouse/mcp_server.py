@@ -457,6 +457,8 @@ def execute_query(query: str):
         res = client.query(query, settings=query_settings)
         logger.info(f"Query returned {len(res.result_rows)} rows")
         return {"columns": res.column_names, "rows": res.result_rows}
+    except ToolError:
+        raise
     except Exception as err:
         logger.error(f"Error executing query: {err}")
         raise ToolError(f"Query execution failed: {str(err)}")
