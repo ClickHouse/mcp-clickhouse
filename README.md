@@ -417,6 +417,14 @@ The following environment variables are used to configure the ClickHouse and chD
   * Default: `"true"`
   * Set to `"false"` to disable ClickHouse tools when using chDB only
 
+#### Middleware Variables
+
+* `MCP_MIDDLEWARE_MODULE`: Python module name containing custom middleware to inject into the MCP server
+  * Default: None (no middleware loaded)
+  * Set to the module name (without `.py` extension) of your middleware module
+  * The module must provide a `setup_middleware(mcp)` function
+  * See [Custom Middleware](#custom-middleware) for details and examples
+
 #### chDB Variables
 
 * `CHDB_ENABLED`: Enable/disable chDB functionality
