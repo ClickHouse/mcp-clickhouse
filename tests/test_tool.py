@@ -371,6 +371,7 @@ class TestClickhouseReadOnlyMode(unittest.TestCase):
         """Set up the environment before tests."""
         cls.env_patcher = patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "false"})
         cls.env_patcher.start()
+        cls.addClassCleanup(cls.env_patcher.stop)
 
         cls.client = create_clickhouse_client()
         cls.test_db = "test_readonly_db"
@@ -390,7 +391,6 @@ class TestClickhouseReadOnlyMode(unittest.TestCase):
     def tearDownClass(cls):
         """Clean up the environment after tests."""
         cls.client.command(f"DROP DATABASE IF EXISTS {cls.test_db}")
-        cls.env_patcher.stop()
 
     def test_insert_blocked_in_readonly_mode(self):
         """Test that INSERT queries fail when CLICKHOUSE_ALLOW_WRITE_ACCESS=false."""
