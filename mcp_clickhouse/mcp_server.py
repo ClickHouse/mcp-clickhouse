@@ -439,7 +439,7 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         return
 
     # Simple pattern matching for destructive operations
-    destructive_pattern = r'\b(DROP\s+(TABLE|DATABASE|VIEW|DICTIONARY)|TRUNCATE\s+TABLE)\b'
+    destructive_pattern = r'\b(DROP\s+(\S+\s+)*(TABLE|DATABASE|VIEW|DICTIONARY)|TRUNCATE\s+TABLE)\b'
     if re.search(destructive_pattern, query, re.IGNORECASE):
         raise ToolError(
             "Destructive operations (DROP, TRUNCATE) are not allowed. "
