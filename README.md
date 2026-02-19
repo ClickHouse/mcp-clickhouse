@@ -320,6 +320,88 @@ Note: Make sure to use the full path to the Python executable or the `mcp-clickh
 - `which python3` for the Python executable
 - `which mcp-clickhouse` for the installed script
 
+## Custom Middleware
+
+You can add custom middleware to the MCP server without modifying the source code. FastMCP provides a middleware system that allows you to intercept and process MCP protocol messages (tool calls, resource reads, prompts, etc.).
+
+### How to Use
+
+1. Create a Python module with middleware classes extending `Middleware` and a `setup_middleware(mcp)` function:
+
+```python
+# my_middleware.py
+import logging
+from fastmcp.server.middleware import Middleware, MiddlewareContext, CallNext
+
+logger = logging.getLogger("my-middleware")
+
+class LoggingMiddleware(Middleware):
+    """Log all tool calls."""
+    
+    async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
+        tool_name = context.message.name if hasattr(context.message, 'name') else 'unknown'
+        logger.info(f"Calling tool: {tool_name}")
+        result = await call_next(context)
+        logger.info(f"Tool {tool_name} completed")
+        return result
+
+def setup_middleware(mcp):
+    """Register middleware with the MCP server."""
+    mcp.add_middleware(LoggingMiddleware())
+```
+
+2. Set the `MCP_MIDDLEWARE_MODULE` environment variable to the module name (without `.py` extension):
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": ["run", "--with", "mcp-clickhouse", "--python", "3.10", "mcp-clickhouse"],
+      "env": {
+        "CLICKHOUSE_HOST": "<clickhouse-host>",
+        "CLICKHOUSE_USER": "<clickhouse-user>",
+        "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "MCP_MIDDLEWARE_MODULE": "my_middleware"
+      }
+    }
+  }
+}
+```
+
+3. Ensure your middleware module is in Python's import path (e.g., in the same directory where the MCP server runs, or installed as a package).
+
+### Example Middleware
+
+An example middleware module is provided in `example_middleware.py` showing common patterns:
+- Logging all MCP requests
+- Logging tool calls specifically
+- Measuring request processing time
+
+To use the example:
+```json
+"env": {
+  "MCP_MIDDLEWARE_MODULE": "example_middleware"
+}
+```
+
+### Middleware Capabilities
+
+The `Middleware` base class provides hooks for different MCP operations:
+
+- `on_message(context, call_next)` - Called for all messages
+- `on_request(context, call_next)` - Called for all requests
+- `on_notification(context, call_next)` - Called for all notifications
+- `on_call_tool(context, call_next)` - Called when a tool is executed
+- `on_read_resource(context, call_next)` - Called when a resource is read
+- `on_get_prompt(context, call_next)` - Called when a prompt is retrieved
+- `on_list_tools(context, call_next)` - Called when listing tools
+- `on_list_resources(context, call_next)` - Called when listing resources
+- `on_list_resource_templates(context, call_next)` - Called when listing resource templates
+- `on_list_prompts(context, call_next)` - Called when listing prompts
+
+Each hook receives a `MiddlewareContext` object containing the message and metadata, and a `call_next` function to continue the pipeline.
+
 ## Development
 
 1. In `test-services` directory run `docker compose up -d` to start the ClickHouse cluster.
@@ -428,6 +510,14 @@ The following environment variables are used to configure the ClickHouse and chD
   * Only takes effect when `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` is also set
   * Set to `"true"` to explicitly allow destructive DROP and TRUNCATE operations
   * This is a safety feature to prevent accidental data deletion during AI exploration
+
+#### Middleware Variables
+
+* `MCP_MIDDLEWARE_MODULE`: Python module name containing custom middleware to inject into the MCP server
+  * Default: None (no middleware loaded)
+  * Set to the module name (without `.py` extension) of your middleware module
+  * The module must provide a `setup_middleware(mcp)` function
+  * See [Custom Middleware](#custom-middleware) for details and examples
 
 #### chDB Variables
 
