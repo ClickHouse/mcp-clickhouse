@@ -7,7 +7,10 @@ import os
 import uuid
 
 import clickhouse_connect
-import chdb.session as chs
+try:
+    import chdb.session as chs
+except ImportError:
+    chs = None
 from clickhouse_connect.driver.binding import format_query_value
 from dotenv import load_dotenv
 from fastmcp import FastMCP
