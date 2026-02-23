@@ -193,7 +193,7 @@ async def test_run_select_query_success(mcp_server, setup_test_database):
 
     async with Client(mcp_server) as client:
         query = f"SELECT id, name, age FROM {test_db}.{test_table} ORDER BY id"
-        result = await client.call_tool("run_select_query", {"query": query})
+        result = await client.call_tool("run_query", {"query": query})
 
         query_result = json.loads(result.content[0].text)
 
@@ -219,7 +219,7 @@ async def test_run_select_query_with_aggregation(mcp_server, setup_test_database
 
     async with Client(mcp_server) as client:
         query = f"SELECT COUNT(*) as count, AVG(age) as avg_age FROM {test_db}.{test_table}"
-        result = await client.call_tool("run_select_query", {"query": query})
+        result = await client.call_tool("run_query", {"query": query})
 
         query_result = json.loads(result.content[0].text)
 
@@ -247,7 +247,7 @@ async def test_run_select_query_with_join(mcp_server, setup_test_database):
             COUNT(DISTINCT event_type) as event_types_count
         FROM {test_db}.{test_table2}
         """
-        result = await client.call_tool("run_select_query", {"query": query})
+        result = await client.call_tool("run_query", {"query": query})
 
         query_result = json.loads(result.content[0].text)
         assert query_result["rows"][0][0] == 3  # login, logout, purchase
@@ -264,7 +264,7 @@ async def test_run_select_query_error(mcp_server, setup_test_database):
 
         # Should raise ToolError
         with pytest.raises(ToolError) as exc_info:
-            await client.call_tool("run_select_query", {"query": query})
+            await client.call_tool("run_query", {"query": query})
 
         assert "Query execution failed" in str(exc_info.value)
 
@@ -278,7 +278,7 @@ async def test_run_select_query_syntax_error(mcp_server):
 
         # Should raise ToolError
         with pytest.raises(ToolError) as exc_info:
-            await client.call_tool("run_select_query", {"query": query})
+            await client.call_tool("run_query", {"query": query})
 
         assert "Query execution failed" in str(exc_info.value)
 
@@ -364,7 +364,7 @@ async def test_concurrent_queries(mcp_server, setup_test_database):
 
         # Execute all queries concurrently
         results = await asyncio.gather(
-            *[client.call_tool("run_select_query", {"query": query}) for query in queries]
+            *[client.call_tool("run_query", {"query": query}) for query in queries]
         )
 
         # Verify all queries succeeded
