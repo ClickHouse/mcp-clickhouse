@@ -337,7 +337,7 @@ logger = logging.getLogger("my-middleware")
 
 class LoggingMiddleware(Middleware):
     """Log all tool calls."""
-
+    
     async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
         tool_name = context.message.name if hasattr(context.message, 'name') else 'unknown'
         logger.info(f"Calling tool: {tool_name}")
