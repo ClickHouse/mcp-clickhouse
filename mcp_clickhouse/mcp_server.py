@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import json
 from typing import Optional, List, Any, Dict
@@ -464,7 +465,7 @@ def execute_query(query: str):
         raise ToolError(f"Query execution failed: {str(err)}")
 
 
-def run_query(query: str):
+async def run_query(query: str):
     """Execute a SQL query against ClickHouse.
 
     Queries run in read-only mode by default. Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true
@@ -475,7 +476,9 @@ def run_query(query: str):
         future = QUERY_EXECUTOR.submit(execute_query, query)
         try:
             timeout_secs = get_mcp_config().query_timeout
-            result = future.result(timeout=timeout_secs)
+            result = await asyncio.wait_for(
+                asyncio.wrap_future(future), timeout=timeout_secs
+            )
             # Check if we received an error structure from execute_query
             if isinstance(result, dict) and "error" in result:
                 logger.warning(f"Query failed: {result['error']}")
@@ -486,7 +489,7 @@ def run_query(query: str):
                     "message": f"Query failed: {result['error']}",
                 }
             return result
-        except concurrent.futures.TimeoutError:
+        except asyncio.TimeoutError:
             logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
             raise ToolError(f"Query timed out after {timeout_secs} seconds")
@@ -629,14 +632,16 @@ def execute_chdb_query(query: str):
         return {"error": str(err)}
 
 
-def run_chdb_select_query(query: str):
+async def run_chdb_select_query(query: str):
     """Run SQL in chDB, an in-process ClickHouse engine"""
     logger.info(f"Executing chDB SELECT query: {query}")
     try:
         future = QUERY_EXECUTOR.submit(execute_chdb_query, query)
         try:
             timeout_secs = get_mcp_config().query_timeout
-            result = future.result(timeout=timeout_secs)
+            result = await asyncio.wait_for(
+                asyncio.wrap_future(future), timeout=timeout_secs
+            )
             # Check if we received an error structure from execute_chdb_query
             if isinstance(result, dict) and "error" in result:
                 logger.warning(f"chDB query failed: {result['error']}")
@@ -645,7 +650,7 @@ def run_chdb_select_query(query: str):
                     "message": f"chDB query failed: {result['error']}",
                 }
             return result
-        except concurrent.futures.TimeoutError:
+        except asyncio.TimeoutError:
             logger.warning(
                 f"chDB query timed out after {timeout_secs} seconds: {query}"
             )
