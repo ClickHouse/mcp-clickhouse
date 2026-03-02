@@ -404,13 +404,14 @@ Each hook receives a `MiddlewareContext` object containing the message and metad
 
 ### Dynamic Client Configuration via Context State
 
-Middleware can override ClickHouse client configuration on a per-request basis by setting the `clickhouse_client_config_overrides` context state. The server merges these overrides with the base configuration from environment variables.
+Middleware can override ClickHouse client configuration on a per-request basis using the `CLIENT_CONFIG_OVERRIDES_KEY` context state key. The server merges these overrides with the base configuration from environment variables.
 
 ```python
 from fastmcp.server.dependencies import get_context
+from mcp_clickhouse.mcp_server import CLIENT_CONFIG_OVERRIDES_KEY
 
 ctx = get_context()
-ctx.set_state("clickhouse_client_config_overrides", {
+ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, {
     "connect_timeout": 60,
     "send_receive_timeout": 120
 })

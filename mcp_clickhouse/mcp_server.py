@@ -59,6 +59,7 @@ class Table:
 
 
 MCP_SERVER_NAME = "mcp-clickhouse"
+CLIENT_CONFIG_OVERRIDES_KEY = "clickhouse_client_config_overrides"
 
 # Configure logging
 logging.basicConfig(
@@ -503,9 +504,9 @@ def create_clickhouse_client():
 
     try:
         ctx = get_context()
-        session_config_overrides = ctx.get_state("clickhouse_client_config_overrides")
+        session_config_overrides = ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY)
         if session_config_overrides:
-            logger.info(f"Applying session-specific ClickHouse client config overrides {session_config_overrides}")
+            logger.debug(f"Applying session-specific ClickHouse client config overrides: {list(session_config_overrides.keys())}")
             client_config.update(session_config_overrides)
     except RuntimeError:
         # If we're outside a request context, just proceed with the default config
