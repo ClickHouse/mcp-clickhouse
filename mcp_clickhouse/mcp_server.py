@@ -505,7 +505,9 @@ def create_clickhouse_client():
     try:
         ctx = get_context()
         session_config_overrides = ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY)
-        if session_config_overrides:
+        if session_config_overrides and not isinstance(session_config_overrides, dict):
+            logger.warning(f"{CLIENT_CONFIG_OVERRIDES_KEY} must be a dict, got {type(session_config_overrides).__name__}. Ignoring.")
+        elif session_config_overrides:
             logger.debug(f"Applying session-specific ClickHouse client config overrides: {list(session_config_overrides.keys())}")
             client_config.update(session_config_overrides)
     except RuntimeError:
