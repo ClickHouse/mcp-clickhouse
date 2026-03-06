@@ -402,6 +402,23 @@ The `Middleware` base class provides hooks for different MCP operations:
 
 Each hook receives a `MiddlewareContext` object containing the message and metadata, and a `call_next` function to continue the pipeline.
 
+### Dynamic Client Configuration via Context State
+
+Middleware can override ClickHouse client configuration on a per-request basis using the `CLIENT_CONFIG_OVERRIDES_KEY` context state key. The server merges these overrides with the base configuration from environment variables.
+
+```python
+from fastmcp.server.dependencies import get_context
+from mcp_clickhouse.mcp_server import CLIENT_CONFIG_OVERRIDES_KEY
+
+ctx = get_context()
+ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, {
+    "connect_timeout": 60,
+    "send_receive_timeout": 120
+})
+```
+
+This enables advanced use cases like dynamic timeout adjustments, tenant-specific routing, or per-user connection settings.
+
 ## Development
 
 1. In `test-services` directory run `docker compose up -d` to start the ClickHouse cluster.
