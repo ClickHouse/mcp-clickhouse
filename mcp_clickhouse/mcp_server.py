@@ -308,7 +308,7 @@ def list_tables(
     page_token: Optional[str] = None,
     page_size: int = 50,
     include_detailed_columns: bool = True,
-) -> Dict[str, Any]:
+) -> str:
     """List available ClickHouse tables in a database, including schema, comment,
     row count, and column count.
 
@@ -323,7 +323,7 @@ def list_tables(
             all column information. This reduces payload size for large schemas.
 
     Returns:
-        A dictionary containing:
+        A JSON string containing:
         - tables: List of table information (as dictionaries)
         - next_page_token: Token for the next page, or None if no more pages
         - total_tables: Total number of tables matching the filters
@@ -383,11 +383,11 @@ def list_tables(
                 len(table_names),
                 next_page_token,
             )
-            return {
+            return json.dumps({
                 "tables": [asdict(table) for table in tables],
                 "next_page_token": next_page_token,
                 "total_tables": len(table_names),
-            }
+            }, default=str)
 
     table_names = fetch_table_names_from_system(client, database, like, not_like)
 
@@ -414,11 +414,11 @@ def list_tables(
         next_page_token,
     )
 
-    return {
+    return json.dumps({
         "tables": [asdict(table) for table in tables],
         "next_page_token": next_page_token,
         "total_tables": len(table_names),
-    }
+    }, default=str)
 
 
 def _validate_query_for_destructive_ops(query: str) -> None:
@@ -458,7 +458,7 @@ def execute_query(query: str):
         query_settings = build_query_settings(client)
         res = client.query(query, settings=query_settings)
         logger.info(f"Query returned {len(res.result_rows)} rows")
-        return {"columns": res.column_names, "rows": res.result_rows}
+        return json.dumps({"columns": res.column_names, "rows": res.result_rows}, default=str)
     except ToolError:
         raise
     except Exception as err:
@@ -478,15 +478,6 @@ def run_query(query: str):
         try:
             timeout_secs = get_mcp_config().query_timeout
             result = future.result(timeout=timeout_secs)
-            # Check if we received an error structure from execute_query
-            if isinstance(result, dict) and "error" in result:
-                logger.warning(f"Query failed: {result['error']}")
-                # MCP requires structured responses; string error messages can cause
-                # serialization issues leading to BrokenResourceError
-                return {
-                    "status": "error",
-                    "message": f"Query failed: {result['error']}",
-                }
             return result
         except concurrent.futures.TimeoutError:
             logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
@@ -655,23 +646,23 @@ def run_chdb_select_query(query: str):
             # Check if we received an error structure from execute_chdb_query
             if isinstance(result, dict) and "error" in result:
                 logger.warning(f"chDB query failed: {result['error']}")
-                return {
+                return json.dumps({
                     "status": "error",
                     "message": f"chDB query failed: {result['error']}",
-                }
-            return result
+                }, default=str)
+            return json.dumps(result, default=str) if isinstance(result, (dict, list)) else result
         except concurrent.futures.TimeoutError:
             logger.warning(
                 f"chDB query timed out after {timeout_secs} seconds: {query}"
             )
             future.cancel()
-            return {
+            return json.dumps({
                 "status": "error",
                 "message": f"chDB query timed out after {timeout_secs} seconds",
-            }
+            })
     except Exception as e:
         logger.error(f"Unexpected error in run_chdb_select_query: {e}")
-        return {"status": "error", "message": f"Unexpected error: {e}"}
+        return json.dumps({"status": "error", "message": f"Unexpected error: {e}"})
 
 
 def chdb_initial_prompt() -> str:
