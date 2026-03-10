@@ -8,7 +8,6 @@ import re
 import uuid
 
 import clickhouse_connect
-import chdb.session as chs
 from clickhouse_connect.driver.binding import format_query_value
 from dotenv import load_dotenv
 from fastmcp import FastMCP
@@ -689,6 +688,7 @@ def _init_chdb_client():
         client_config = get_chdb_config().get_client_config()
         data_path = client_config["data_path"]
         logger.info(f"Creating chDB client with data_path={data_path}")
+        import chdb.session as chs
         client = chs.Session(path=data_path)
         logger.info(f"Successfully connected to chDB with data_path={data_path}")
         return client
