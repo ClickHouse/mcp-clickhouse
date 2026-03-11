@@ -1,4 +1,5 @@
 import unittest
+import importlib.util
 
 from dotenv import load_dotenv
 
@@ -7,6 +8,7 @@ from mcp_clickhouse import create_chdb_client, run_chdb_select_query
 load_dotenv()
 
 
+@unittest.skipUnless(importlib.util.find_spec("chdb") is not None, "requires chdb extra")
 class TestChDBTools(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
