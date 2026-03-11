@@ -1,6 +1,7 @@
 # ClickHouse MCP Server
 
 [![PyPI - Version](https://img.shields.io/pypi/v/mcp-clickhouse)](https://pypi.org/project/mcp-clickhouse)
+[![AgentAudit Security](https://agentaudit.dev/api/badge/mcp-clickhouse)](https://agentaudit.dev/packages/mcp-clickhouse)
 
 An MCP server for ClickHouse.
 
