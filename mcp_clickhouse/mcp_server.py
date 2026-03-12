@@ -497,7 +497,7 @@ def run_query(query: str):
         logger.error("Unexpected error in run_query: %s", str(e))
         raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
 
-def run_query_with_params(query: str, params: Dict[str, Any]|None=None):
+def run_query_with_params(query: str, params: Dict[str, Any] | None = None):
     """Execute a SQL query against ClickHouse with parameters.
 
     Queries run in read-only mode by default. Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true
