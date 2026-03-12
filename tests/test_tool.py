@@ -6,7 +6,7 @@ from unittest.mock import patch
 from dotenv import load_dotenv
 from fastmcp.exceptions import ToolError
 
-from mcp_clickhouse import create_clickhouse_client, list_databases, list_tables, run_query
+from mcp_clickhouse import create_clickhouse_client, list_databases, list_tables, run_query, run_query_with_params
 
 load_dotenv()
 
@@ -86,6 +86,29 @@ class TestClickhouseTools(unittest.TestCase):
             run_query(query)
 
         self.assertIn("Query execution failed", str(context.exception))
+
+    def test_run_query_with_params_success(self):
+        """Test running a SELECT query with parameters successfully."""
+        query = f"SELECT * FROM {self.test_db}.{self.test_table} WHERE id = {{id_param:UInt32}}"
+        params = {"id_param": 1}
+        result = run_query_with_params(query, params)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(len(result["rows"]), 1)
+        self.assertEqual(result["rows"][0][0], 1)
+        self.assertEqual(result["rows"][0][1], "Alice")
+
+    def test_run_query_with_params_failure(self):
+        """Test running a SELECT query with parameters with an error."""
+        query = f"SELECT * FROM {self.test_db}.non_existent_table WHERE id = {{id_param:UInt32}}"
+        params = {"id_param": 1}
+
+        # Should raise ToolError
+        with self.assertRaises(ToolError) as context:
+            run_query_with_params(query, params)
+            
+        self.assertIn("Query execution failed", str(context.exception))
+
+
 
     def test_table_and_column_comments(self):
         """Test that table and column comments are correctly retrieved."""

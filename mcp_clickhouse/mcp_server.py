@@ -449,13 +449,13 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         )
 
 
-def execute_query(query: str):
+def execute_query(query: str, params: Dict[str, Any] | None = None):
     client = create_clickhouse_client()
     try:
         _validate_query_for_destructive_ops(query)
 
         query_settings = build_query_settings(client)
-        res = client.query(query, settings=query_settings)
+        res = client.query(query, settings=query_settings, parameters=params)
         logger.info(f"Query returned {len(res.result_rows)} rows")
         return {"columns": res.column_names, "rows": res.result_rows}
     except ToolError:
@@ -474,6 +474,44 @@ def run_query(query: str):
     logger.info(f"Executing query: {query}")
     try:
         future = QUERY_EXECUTOR.submit(execute_query, query)
+        try:
+            timeout_secs = get_mcp_config().query_timeout
+            result = future.result(timeout=timeout_secs)
+            # Check if we received an error structure from execute_query
+            if isinstance(result, dict) and "error" in result:
+                logger.warning(f"Query failed: {result['error']}")
+                # MCP requires structured responses; string error messages can cause
+                # serialization issues leading to BrokenResourceError
+                return {
+                    "status": "error",
+                    "message": f"Query failed: {result['error']}",
+                }
+            return result
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
+            future.cancel()
+            raise ToolError(f"Query timed out after {timeout_secs} seconds")
+    except ToolError:
+        raise
+    except Exception as e:
+        logger.error("Unexpected error in run_query: %s", str(e))
+        raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
+
+def run_query_with_params(query: str, params: Dict[str, Any] | None = None):
+    """Execute a SQL query against ClickHouse with parameters.
+
+    Queries run in read-only mode by default. Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true
+    to allow DDL and DML statements when your ClickHouse server permits them.
+    
+    Args:
+        query: The SQL query to execute, with placeholders for parameters (e.g. SELECT * FROM my_table WHERE id = {id_param:UInt32} and name = {name_param:String})
+        params: A dictionary of parameter names to values to substitute into the query eg: {"id_param": 123,"name_param": "Alice"}
+        
+
+    """
+    logger.info(f"Executing query: {query} with params: {len(params) if params else 0}")
+    try:
+        future = QUERY_EXECUTOR.submit(execute_query, query, params)
         try:
             timeout_secs = get_mcp_config().query_timeout
             result = future.result(timeout=timeout_secs)
@@ -705,6 +743,16 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
         run_query,
         description=(
             "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
+            "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML operations. "
+            "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow destructive operations (DROP, TRUNCATE)."
+        )
+    ))
+    mcp.add_tool(Tool.from_function(
+        run_query_with_params,
+        description=(
+            "Execute SQL queries in ClickHouse with parameters. "
+            "The SQL should contain placeholders {key:clickhouse_data_type} and the parameters are a dict {key:py_value} "
+            "Queries run in read-only mode by default. "
             "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML operations. "
             "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow destructive operations (DROP, TRUNCATE)."
         )
