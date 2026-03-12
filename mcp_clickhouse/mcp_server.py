@@ -725,3 +725,7 @@ if os.getenv("CHDB_ENABLED", "false").lower() == "true":
     )
     mcp.add_prompt(chdb_prompt)
     logger.info("chDB tools and prompts registered")
+
+
+# ASGI application for HTTP deployment (e.g., uvicorn mcp_clickhouse.mcp_server:app)
+app = mcp.http_app()
