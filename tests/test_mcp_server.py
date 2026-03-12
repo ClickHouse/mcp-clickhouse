@@ -213,6 +213,32 @@ async def test_run_select_query_success(mcp_server, setup_test_database):
 
 
 @pytest.mark.asyncio
+async def test_run_select_query_with_params_success(mcp_server, setup_test_database):
+    """Test running a successful SELECT query with parameters."""
+    test_db, test_table, _ = setup_test_database
+
+    async with Client(mcp_server) as client:
+        query = f"SELECT id, name, age FROM {test_db}.{test_table} WHERE id = {{id_param:UInt32}} ORDER BY id"
+        params = {"id_param": 1}
+        result = await client.call_tool("run_query_with_params", {"query": query, "params": params})
+
+        query_result = json.loads(result.content[0].text)
+
+        # Check structure
+        assert "columns" in query_result
+        assert "rows" in query_result
+
+        # Check columns
+        assert query_result["columns"] == ["id", "name", "age"]
+
+        # Check rows
+        assert len(query_result["rows"]) == 1
+        assert query_result["rows"][0] == [1, "Alice", 30]
+
+
+
+
+@pytest.mark.asyncio
 async def test_run_select_query_with_aggregation(mcp_server, setup_test_database):
     """Test running a SELECT query with aggregation."""
     test_db, test_table, _ = setup_test_database
@@ -230,8 +256,26 @@ async def test_run_select_query_with_aggregation(mcp_server, setup_test_database
 
 
 @pytest.mark.asyncio
+async def test_run_select_query_with_params_with_aggregation(mcp_server, setup_test_database):
+    """Test running a SELECT query with aggregation."""
+    test_db, test_table, _ = setup_test_database
+
+    async with Client(mcp_server) as client:
+        query = f"SELECT COUNT(*) as count, AVG(age) as avg_age FROM {test_db}.{test_table} WHERE age >= {{age_param:UInt8}}"
+        params = {"age_param": 30} #ded if you are >30 :shrug:
+        result = await client.call_tool("run_query_with_params", {"query": query, "params": params})
+
+        query_result = json.loads(result.content[0].text)
+
+        assert query_result["columns"] == ["count", "avg_age"]
+        assert len(query_result["rows"]) == 1
+        assert query_result["rows"][0][0] == 2  # count
+        assert query_result["rows"][0][1] == 32.5  # average age
+
+
+@pytest.mark.asyncio
 async def test_run_select_query_with_join(mcp_server, setup_test_database):
-    """Test running a SELECT query with JOIN."""
+    """Test running a SELECT query with JOIN.""" ##TODO: make this test actually do a join instead of just counting rows in the second table
     test_db, test_table, test_table2 = setup_test_database
 
     async with Client(mcp_server) as client:
@@ -253,6 +297,7 @@ async def test_run_select_query_with_join(mcp_server, setup_test_database):
         assert query_result["rows"][0][0] == 3  # login, logout, purchase
 
 
+
 @pytest.mark.asyncio
 async def test_run_select_query_error(mcp_server, setup_test_database):
     """Test running a SELECT query that results in an error."""
@@ -270,6 +315,22 @@ async def test_run_select_query_error(mcp_server, setup_test_database):
 
 
 @pytest.mark.asyncio
+async def test_run_select_query_with_param_error(mcp_server, setup_test_database):
+    """Test running a SELECT query that results in an error."""
+    test_db, _, _ = setup_test_database
+
+    async with Client(mcp_server) as client:
+        # Query non-existent table
+        query = f"SELECT * FROM {test_db}.non_existent_table WHERE {{id_param:UInt32}} > 2"
+
+        # Should raise ToolError
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool("run_query_with_params", {"query": query, "params": {'id_param': 1}})
+
+        assert "Query execution failed" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 async def test_run_select_query_syntax_error(mcp_server):
     """Test running a SELECT query with syntax error."""
     async with Client(mcp_server) as client:
@@ -279,6 +340,51 @@ async def test_run_select_query_syntax_error(mcp_server):
         # Should raise ToolError
         with pytest.raises(ToolError) as exc_info:
             await client.call_tool("run_query", {"query": query})
+
+        assert "Query execution failed" in str(exc_info.value)
+
+@pytest.mark.asyncio
+async def test_run_select_query_with_params_syntax_error(mcp_server):
+    """Test running a SELECT query with syntax error."""
+    async with Client(mcp_server) as client:
+        # Invalid SQL syntax
+        query = "SELECT FROM WHERE {id_param:UInt32}"
+
+        # Should raise ToolError
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool("run_query_with_params", {"query": query, "params": {'id_param': 1}})
+
+        assert "Query execution failed" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_run_select_query_with_params_type_mismatch(mcp_server, setup_test_database):
+    """Test running a SELECT query with a type mismathc error."""
+    
+    test_db, test_table, _ = setup_test_database
+    async with Client(mcp_server) as client:
+        # Invalid SQL syntax
+        query = f"SELECT id, name, age FROM {test_db}.{test_table} WHERE id = {{id_param:Array(String)}} ORDER BY id"
+
+        # Should raise ToolError
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool("run_query_with_params", {"query": query, "params": {'id_param': 1}})
+
+        assert "Query execution failed" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_run_select_query_with_params_incorrect_placeholders(mcp_server, setup_test_database):
+    """Test running a SELECT query with a type mismathc error."""
+    
+    test_db, test_table, _ = setup_test_database
+    async with Client(mcp_server) as client:
+        # Invalid SQL syntax
+        query = f"SELECT id, name, age FROM {test_db}.{test_table} WHERE id = {{id_param:UInt16}} ORDER BY id"
+
+        # Should raise ToolError
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool("run_query_with_params", {"query": query, "params": {'inexistent_id_param': 1}})
 
         assert "Query execution failed" in str(exc_info.value)
 
