@@ -517,15 +517,19 @@ def create_clickhouse_client():
         # If we're outside a request context, just proceed with the default config
         pass
 
+    config_fields = [
+        f"secure={client_config['secure']}",
+        f"verify={client_config['verify']}",
+        f"connect_timeout={client_config['connect_timeout']}s",
+        f"send_receive_timeout={client_config['send_receive_timeout']}s",
+    ]
+    if "server_host_name" in client_config:
+        config_fields.append(f"server_host_name={client_config['server_host_name']}")
     log_msg = (
         f"Creating ClickHouse client connection to {client_config['host']}:{client_config['port']} "
         f"as {client_config['username']} "
-        f"(secure={client_config['secure']}, verify={client_config['verify']}, "
-        f"connect_timeout={client_config['connect_timeout']}s, "
-        f"send_receive_timeout={client_config['send_receive_timeout']}s)"
+        f"({', '.join(config_fields)})"
     )
-    if "server_host_name" in client_config:
-        log_msg += f" (server_host_name={client_config['server_host_name']})"
     logger.info(log_msg)
 
     try:
