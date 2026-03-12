@@ -9,7 +9,6 @@ import re
 import uuid
 
 import clickhouse_connect
-import chdb.session as chs
 from clickhouse_connect.driver.binding import format_query_value
 from dotenv import load_dotenv
 from fastmcp import FastMCP
@@ -17,6 +16,7 @@ from cachetools import TTLCache
 from fastmcp.tools import Tool
 from fastmcp.prompts import Prompt
 from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_context
 from dataclasses import dataclass, field, asdict, is_dataclass
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
@@ -59,6 +59,7 @@ class Table:
 
 
 MCP_SERVER_NAME = "mcp-clickhouse"
+CLIENT_CONFIG_OVERRIDES_KEY = "clickhouse_client_config_overrides"
 
 # Configure logging
 logging.basicConfig(
@@ -502,6 +503,19 @@ async def run_query(query: str):
 
 def create_clickhouse_client():
     client_config = get_config().get_client_config()
+
+    try:
+        ctx = get_context()
+        session_config_overrides = ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY)
+        if session_config_overrides and not isinstance(session_config_overrides, dict):
+            logger.warning(f"{CLIENT_CONFIG_OVERRIDES_KEY} must be a dict, got {type(session_config_overrides).__name__}. Ignoring.")
+        elif session_config_overrides:
+            logger.debug(f"Applying session-specific ClickHouse client config overrides: {list(session_config_overrides.keys())}")
+            client_config.update(session_config_overrides)
+    except RuntimeError:
+        # If we're outside a request context, just proceed with the default config
+        pass
+
     logger.info(
         f"Creating ClickHouse client connection to {client_config['host']}:{client_config['port']} "
         f"as {client_config['username']} "
@@ -679,6 +693,7 @@ def _init_chdb_client():
         client_config = get_chdb_config().get_client_config()
         data_path = client_config["data_path"]
         logger.info(f"Creating chDB client with data_path={data_path}")
+        import chdb.session as chs
         client = chs.Session(path=data_path)
         logger.info(f"Successfully connected to chDB with data_path={data_path}")
         return client
