@@ -10,10 +10,10 @@ An MCP server for ClickHouse.
 
 ### ClickHouse Tools
 
-* `run_select_query`
+* `run_query`
   * Execute SQL queries on your ClickHouse cluster.
-  * Input: `sql` (string): The SQL query to execute.
-  * All ClickHouse queries are run with `readonly = 1` to ensure they are safe.
+  * Input: `query` (string): The SQL query to execute.
+  * Queries run in read-only mode by default (`CLICKHOUSE_ALLOW_WRITE_ACCESS=false`), but writes can be enabled explicitly if needed.
 
 * `list_databases`
   * List all databases on your ClickHouse cluster.
@@ -35,7 +35,7 @@ An MCP server for ClickHouse.
 
 * `run_chdb_select_query`
   * Execute SQL queries using [chDB](https://github.com/chdb-io/chdb)'s embedded ClickHouse engine.
-  * Input: `sql` (string): The SQL query to execute.
+  * Input: `query` (string): The SQL query to execute.
   * Query data directly from various sources (files, URLs, databases) without ETL processes.
 
 ### Health Check Endpoint
@@ -234,6 +234,26 @@ You can also enable both ClickHouse and chDB simultaneously:
 
 4. Restart Claude Desktop to apply the changes.
 
+### Optional Write Access
+
+By default, this MCP enforces read-only queries so that accidental mutations cannot happen during exploration. To allow DDL or INSERT/UPDATE statements, set the `CLICKHOUSE_ALLOW_WRITE_ACCESS` environment variable to `true`. The server keeps enforcing read-only mode if the ClickHouse instance itself disallows writes.
+
+### Destructive Operation Protection
+
+Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), destructive operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY, TRUNCATE TABLE) require an additional opt-in flag for safety. This prevents accidental data deletion during AI exploration.
+
+To enable destructive operations, set both flags:
+```json
+"env": {
+  "CLICKHOUSE_ALLOW_WRITE_ACCESS": "true",
+  "CLICKHOUSE_ALLOW_DROP": "true"
+}
+```
+
+This two-tier approach ensures that accidental drops are very difficult:
+- **Write operations** (INSERT, UPDATE, CREATE) require `CLICKHOUSE_ALLOW_WRITE_ACCESS=true`
+- **Destructive operations** (DROP, TRUNCATE) additionally require `CLICKHOUSE_ALLOW_DROP=true`
+
 ### Running Without uv (Using System Python)
 
 If you prefer to use the system Python installation instead of uv, you can install the package from PyPI and run it directly:
@@ -299,6 +319,105 @@ Alternatively, you can use the installed script directly:
 Note: Make sure to use the full path to the Python executable or the `mcp-clickhouse` script if they are not in your system PATH. You can find the paths using:
 - `which python3` for the Python executable
 - `which mcp-clickhouse` for the installed script
+
+## Custom Middleware
+
+You can add custom middleware to the MCP server without modifying the source code. FastMCP provides a middleware system that allows you to intercept and process MCP protocol messages (tool calls, resource reads, prompts, etc.).
+
+### How to Use
+
+1. Create a Python module with middleware classes extending `Middleware` and a `setup_middleware(mcp)` function:
+
+```python
+# my_middleware.py
+import logging
+from fastmcp.server.middleware import Middleware, MiddlewareContext, CallNext
+
+logger = logging.getLogger("my-middleware")
+
+class LoggingMiddleware(Middleware):
+    """Log all tool calls."""
+    
+    async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
+        tool_name = context.message.name if hasattr(context.message, 'name') else 'unknown'
+        logger.info(f"Calling tool: {tool_name}")
+        result = await call_next(context)
+        logger.info(f"Tool {tool_name} completed")
+        return result
+
+def setup_middleware(mcp):
+    """Register middleware with the MCP server."""
+    mcp.add_middleware(LoggingMiddleware())
+```
+
+2. Set the `MCP_MIDDLEWARE_MODULE` environment variable to the module name (without `.py` extension):
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": ["run", "--with", "mcp-clickhouse", "--python", "3.10", "mcp-clickhouse"],
+      "env": {
+        "CLICKHOUSE_HOST": "<clickhouse-host>",
+        "CLICKHOUSE_USER": "<clickhouse-user>",
+        "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "MCP_MIDDLEWARE_MODULE": "my_middleware"
+      }
+    }
+  }
+}
+```
+
+3. Ensure your middleware module is in Python's import path (e.g., in the same directory where the MCP server runs, or installed as a package).
+
+### Example Middleware
+
+An example middleware module is provided in `example_middleware.py` showing common patterns:
+- Logging all MCP requests
+- Logging tool calls specifically
+- Measuring request processing time
+
+To use the example:
+```json
+"env": {
+  "MCP_MIDDLEWARE_MODULE": "example_middleware"
+}
+```
+
+### Middleware Capabilities
+
+The `Middleware` base class provides hooks for different MCP operations:
+
+- `on_message(context, call_next)` - Called for all messages
+- `on_request(context, call_next)` - Called for all requests
+- `on_notification(context, call_next)` - Called for all notifications
+- `on_call_tool(context, call_next)` - Called when a tool is executed
+- `on_read_resource(context, call_next)` - Called when a resource is read
+- `on_get_prompt(context, call_next)` - Called when a prompt is retrieved
+- `on_list_tools(context, call_next)` - Called when listing tools
+- `on_list_resources(context, call_next)` - Called when listing resources
+- `on_list_resource_templates(context, call_next)` - Called when listing resource templates
+- `on_list_prompts(context, call_next)` - Called when listing prompts
+
+Each hook receives a `MiddlewareContext` object containing the message and metadata, and a `call_next` function to continue the pipeline.
+
+### Dynamic Client Configuration via Context State
+
+Middleware can override ClickHouse client configuration on a per-request basis using the `CLIENT_CONFIG_OVERRIDES_KEY` context state key. The server merges these overrides with the base configuration from environment variables.
+
+```python
+from fastmcp.server.dependencies import get_context
+from mcp_clickhouse.mcp_server import CLIENT_CONFIG_OVERRIDES_KEY
+
+ctx = get_context()
+ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, {
+    "connect_timeout": 60,
+    "send_receive_timeout": 120
+})
+```
+
+This enables advanced use cases like dynamic timeout adjustments, tenant-specific routing, or per-user connection settings.
 
 ## Development
 
@@ -402,6 +521,23 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_ENABLED`: Enable/disable ClickHouse functionality
   * Default: `"true"`
   * Set to `"false"` to disable ClickHouse tools when using chDB only
+* `CLICKHOUSE_ALLOW_WRITE_ACCESS`: Allow write operations (DDL and DML)
+  * Default: `"false"`
+  * Set to `"true"` to allow DDL (CREATE, ALTER, DROP) and DML (INSERT, UPDATE, DELETE) operations
+  * When disabled (default), queries run with `readonly=1` setting to prevent data modifications
+* `CLICKHOUSE_ALLOW_DROP`: Allow destructive operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY, TRUNCATE TABLE)
+  * Default: `"false"`
+  * Only takes effect when `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` is also set
+  * Set to `"true"` to explicitly allow destructive DROP and TRUNCATE operations
+  * This is a safety feature to prevent accidental data deletion during AI exploration
+
+#### Middleware Variables
+
+* `MCP_MIDDLEWARE_MODULE`: Python module name containing custom middleware to inject into the MCP server
+  * Default: None (no middleware loaded)
+  * Set to the module name (without `.py` extension) of your middleware module
+  * The module must provide a `setup_middleware(mcp)` function
+  * See [Custom Middleware](#custom-middleware) for details and examples
 
 #### chDB Variables
 
