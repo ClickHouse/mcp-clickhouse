@@ -466,18 +466,6 @@ def execute_query(query: str):
         raise ToolError(f"Query execution failed: {str(err)}")
 
 
-def _process_clickhouse_result(result):
-    if isinstance(result, dict) and "error" in result:
-        logger.warning(f"Query failed: {result['error']}")
-        # MCP requires structured responses; string error messages can cause
-        # serialization issues leading to BrokenResourceError
-        return {
-            "status": "error",
-            "message": f"Query failed: {result['error']}",
-        }
-    return result
-
-
 def run_query(query: str):
     """Execute a SQL query against ClickHouse.
 
@@ -489,8 +477,7 @@ def run_query(query: str):
         future = QUERY_EXECUTOR.submit(execute_query, query)
         timeout_secs = get_mcp_config().query_timeout
         try:
-            result = future.result(timeout=timeout_secs)
-            return _process_clickhouse_result(result)
+            return future.result(timeout=timeout_secs)
         except concurrent.futures.TimeoutError:
             logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
@@ -509,10 +496,9 @@ async def run_query_async(query: str):
         future = QUERY_EXECUTOR.submit(execute_query, query)
         timeout_secs = get_mcp_config().query_timeout
         try:
-            result = await asyncio.wait_for(
+            return await asyncio.wait_for(
                 asyncio.wrap_future(future), timeout=timeout_secs
             )
-            return _process_clickhouse_result(result)
         except asyncio.TimeoutError:
             logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
