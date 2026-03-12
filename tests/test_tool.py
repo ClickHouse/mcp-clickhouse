@@ -1,4 +1,3 @@
-import asyncio
 import json
 import os
 import unittest
@@ -8,11 +7,6 @@ from dotenv import load_dotenv
 from fastmcp.exceptions import ToolError
 
 from mcp_clickhouse import create_clickhouse_client, list_databases, list_tables, run_query
-
-
-def _run_query_sync(query: str):
-    """Helper to call the async run_query from synchronous test methods."""
-    return asyncio.run(run_query(query))
 
 load_dotenv()
 
@@ -77,7 +71,7 @@ class TestClickhouseTools(unittest.TestCase):
     def test_run_query_success(self):
         """Test running a SELECT query successfully."""
         query = f"SELECT * FROM {self.test_db}.{self.test_table}"
-        result = _run_query_sync(query)
+        result = run_query(query)
         self.assertIsInstance(result, dict)
         self.assertEqual(len(result["rows"]), 2)
         self.assertEqual(result["rows"][0][0], 1)
@@ -89,7 +83,7 @@ class TestClickhouseTools(unittest.TestCase):
 
         # Should raise ToolError
         with self.assertRaises(ToolError) as context:
-            _run_query_sync(query)
+            run_query(query)
 
         self.assertIn("Query execution failed", str(context.exception))
 
@@ -171,18 +165,18 @@ class TestClickhouseWriteMode(unittest.TestCase):
             ) ENGINE = MergeTree()
             ORDER BY id
         """
-        result = _run_query_sync(create_query)
+        result = run_query(create_query)
         self.assertIsInstance(result, dict)
 
         insert_query = f"""
             INSERT INTO {self.test_db}.{self.test_table} (id, value)
             VALUES (1, 'test_value')
         """
-        result = _run_query_sync(insert_query)
+        result = run_query(insert_query)
         self.assertIsInstance(result, dict)
 
         select_query = f"SELECT * FROM {self.test_db}.{self.test_table}"
-        result = _run_query_sync(select_query)
+        result = run_query(select_query)
         self.assertEqual(len(result["rows"]), 1)
         self.assertEqual(result["rows"][0][0], 1)
         self.assertEqual(result["rows"][0][1], "test_value")
@@ -198,7 +192,7 @@ class TestClickhouseWriteMode(unittest.TestCase):
             ) ENGINE = MergeTree()
             ORDER BY id
         """
-        result = _run_query_sync(create_query)
+        result = run_query(create_query)
         self.assertIsInstance(result, dict)
 
         result = list_tables(self.test_db)
@@ -220,7 +214,7 @@ class TestClickhouseWriteMode(unittest.TestCase):
             ALTER TABLE {self.test_db}.alter_test
             ADD COLUMN name String
         """
-        result = _run_query_sync(alter_query)
+        result = run_query(alter_query)
         self.assertIsInstance(result, dict)
 
         result = list_tables(self.test_db, like="alter_test")
@@ -269,7 +263,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
 
         # Should raise ToolError due to DROP protection
         with self.assertRaises(ToolError) as context:
-            _run_query_sync(drop_query)
+            run_query(drop_query)
 
         error_msg = str(context.exception)
         self.assertIn("Destructive operations (DROP, TRUNCATE) are not allowed", error_msg)
@@ -285,7 +279,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
 
         # Should raise ToolError due to DROP protection
         with self.assertRaises(ToolError) as context:
-            _run_query_sync(drop_query)
+            run_query(drop_query)
 
         error_msg = str(context.exception)
         self.assertIn("Destructive operations (DROP, TRUNCATE) are not allowed", error_msg)
@@ -306,7 +300,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
 
         # Should succeed
         drop_query = f"DROP TABLE {self.test_db}.{temp_table}"
-        result = _run_query_sync(drop_query)
+        result = run_query(drop_query)
         self.assertIsInstance(result, dict)
 
     @patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "true", "CLICKHOUSE_ALLOW_DROP": "false"})
@@ -316,11 +310,11 @@ class TestClickhouseDropProtection(unittest.TestCase):
             INSERT INTO {self.test_db}.{self.test_table} (id, value)
             VALUES (1, 'test_value')
         """
-        result = _run_query_sync(insert_query)
+        result = run_query(insert_query)
         self.assertIsInstance(result, dict)
 
         select_query = f"SELECT * FROM {self.test_db}.{self.test_table}"
-        result = _run_query_sync(select_query)
+        result = run_query(select_query)
         self.assertGreaterEqual(len(result["rows"]), 1)
 
     @patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "true", "CLICKHOUSE_ALLOW_DROP": "false"})
@@ -332,7 +326,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
             ) ENGINE = MergeTree()
             ORDER BY id
         """
-        result = _run_query_sync(create_query)
+        result = run_query(create_query)
         self.assertIsInstance(result, dict)
 
         result = list_tables(self.test_db)
@@ -347,7 +341,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
         truncate_query = f"TRUNCATE TABLE {self.test_db}.{self.test_table}"
 
         with self.assertRaises(ToolError) as context:
-            _run_query_sync(truncate_query)
+            run_query(truncate_query)
 
         error_msg = str(context.exception)
         self.assertIn("Destructive operations (DROP, TRUNCATE) are not allowed", error_msg)
@@ -361,7 +355,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
         )
 
         truncate_query = f"TRUNCATE TABLE {self.test_db}.{self.test_table}"
-        result = _run_query_sync(truncate_query)
+        result = run_query(truncate_query)
         self.assertIsInstance(result, dict)
 
 
@@ -406,7 +400,7 @@ class TestClickhouseReadOnlyMode(unittest.TestCase):
         """
 
         with self.assertRaises(ToolError) as context:
-            _run_query_sync(insert_query)
+            run_query(insert_query)
 
         error_msg = str(context.exception)
         self.assertIn("Query execution failed", error_msg)
@@ -425,7 +419,7 @@ class TestClickhouseReadOnlyMode(unittest.TestCase):
         """
 
         with self.assertRaises(ToolError) as context:
-            _run_query_sync(create_query)
+            run_query(create_query)
 
         error_msg = str(context.exception)
         self.assertIn("Query execution failed", error_msg)
@@ -442,7 +436,7 @@ class TestClickhouseReadOnlyMode(unittest.TestCase):
         """
 
         with self.assertRaises(ToolError) as context:
-            _run_query_sync(alter_query)
+            run_query(alter_query)
 
         error_msg = str(context.exception)
         self.assertIn("Query execution failed", error_msg)
@@ -454,7 +448,7 @@ class TestClickhouseReadOnlyMode(unittest.TestCase):
     def test_select_allowed_in_readonly_mode(self):
         """Test that SELECT queries work normally in read-only mode."""
         select_query = f"SELECT * FROM {self.test_db}.{self.test_table}"
-        result = _run_query_sync(select_query)
+        result = run_query(select_query)
 
         self.assertIsInstance(result, dict)
         self.assertIn("columns", result)
