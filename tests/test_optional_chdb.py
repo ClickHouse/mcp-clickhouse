@@ -89,5 +89,7 @@ async def test_health_check_hides_internal_chdb_init_error_details():
         response = await mcp_server.health_check(request)
 
     assert response.status_code == 503
-    assert b"check server logs for details" in response.body
-    assert b"/tmp/private.db" not in response.body
+    body = response.body.lower()
+    assert b"initialization failed" in body
+    assert b"check server logs for details" in body
+    assert b"/tmp/private.db" not in body
