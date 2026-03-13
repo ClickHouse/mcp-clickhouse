@@ -127,7 +127,10 @@ async def health_check(request: Request) -> PlainTextResponse:
             if chdb_config.enabled and _chdb_client is not None:
                 return PlainTextResponse("OK - MCP server running with chDB enabled")
             elif chdb_config.enabled and _chdb_error_message:
-                return PlainTextResponse(f"ERROR - {_chdb_error_message}", status_code=503)
+                return PlainTextResponse(
+                    "ERROR. chDB initialization failed. Check server logs for details.",
+                    status_code=503,
+                )
             else:
                 # Both ClickHouse and chDB are disabled - this is an error
                 return PlainTextResponse(

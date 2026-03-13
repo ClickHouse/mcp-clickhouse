@@ -674,7 +674,7 @@ uv run ruff check . # run linting
 docker compose up -d test_services # start ClickHouse
 uv run pytest -v tests
 uv run pytest -v tests/test_tool.py # ClickHouse only
-uv run --extra chdb pytest -v tests/test_chdb_tool.py # chDB only
+CHDB_ENABLED=true uv run --extra chdb pytest -v tests/test_chdb_tool.py # chDB only
 ```
 
 ## YouTube Overview
