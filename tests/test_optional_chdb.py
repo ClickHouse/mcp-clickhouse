@@ -12,7 +12,9 @@ def test_init_chdb_client_surfaces_optional_dependency_message():
 
     def raising_import(name, globals=None, locals=None, fromlist=(), level=0):
         if name == "chdb.session":
-            raise ImportError("No module named 'chdb'")
+            error = ModuleNotFoundError("No module named 'chdb'")
+            error.name = "chdb"
+            raise error
         return real_import(name, globals, locals, fromlist, level)
 
     with (
@@ -23,6 +25,25 @@ def test_init_chdb_client_surfaces_optional_dependency_message():
 
     assert client is None
     assert "mcp-clickhouse[chdb]" in mcp_server._chdb_error_message
+
+
+def test_init_chdb_client_treats_other_import_errors_as_init_failures():
+    real_import = builtins.__import__
+
+    def raising_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "chdb.session":
+            raise ImportError("dlopen(/tmp/chdb.so) failed")
+        return real_import(name, globals, locals, fromlist, level)
+
+    with (
+        patch.dict("os.environ", {"CHDB_ENABLED": "true"}, clear=False),
+        patch("builtins.__import__", side_effect=raising_import),
+    ):
+        client = mcp_server._init_chdb_client()
+
+    assert client is None
+    assert "Failed to initialize chDB client" in mcp_server._chdb_error_message
+    assert "mcp-clickhouse[chdb]" not in mcp_server._chdb_error_message
 
 
 def test_create_chdb_client_surfaces_optional_dependency_message():

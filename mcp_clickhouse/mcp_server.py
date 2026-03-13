@@ -704,12 +704,20 @@ def _init_chdb_client():
         _chdb_error_message = None
         logger.info(f"Successfully connected to chDB with data_path={data_path}")
         return client
-    except ImportError:
-        _chdb_error_message = (
-            "chDB support requires the optional dependency. "
-            "Install mcp-clickhouse[chdb] to enable chDB features."
-        )
-        logger.warning(_chdb_error_message)
+    except ModuleNotFoundError as e:
+        if e.name in {"chdb", "chdb.session"}:
+            _chdb_error_message = (
+                "chDB support requires the optional dependency. "
+                "Install mcp-clickhouse[chdb] to enable chDB features."
+            )
+            logger.warning(_chdb_error_message)
+            return None
+        _chdb_error_message = f"Failed to initialize chDB client: {e}"
+        logger.error(_chdb_error_message)
+        return None
+    except ImportError as e:
+        _chdb_error_message = f"Failed to initialize chDB client: {e}"
+        logger.error(_chdb_error_message)
         return None
     except Exception as e:
         _chdb_error_message = f"Failed to initialize chDB client: {e}"

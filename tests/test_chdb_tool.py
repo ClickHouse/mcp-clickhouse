@@ -15,10 +15,29 @@ class TestChDBTools(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Set up the environment before chDB tests."""
+        cls._previous_chdb_enabled = os.environ.get("CHDB_ENABLED")
+        cls._previous_chdb_client = mcp_server._chdb_client
+        cls._previous_chdb_error_message = mcp_server._chdb_error_message
+
         os.environ["CHDB_ENABLED"] = "true"
         if mcp_server._chdb_client is None:
             mcp_server._chdb_client = mcp_server._init_chdb_client()
         cls.client = mcp_server.create_chdb_client()
+        cls._created_client = cls._previous_chdb_client is None and cls.client is mcp_server._chdb_client
+
+    @classmethod
+    def tearDownClass(cls):
+        """Restore module and environment state after chDB tests."""
+        if getattr(cls, "_created_client", False):
+            cls.client.close()
+
+        mcp_server._chdb_client = cls._previous_chdb_client
+        mcp_server._chdb_error_message = cls._previous_chdb_error_message
+
+        if cls._previous_chdb_enabled is None:
+            os.environ.pop("CHDB_ENABLED", None)
+        else:
+            os.environ["CHDB_ENABLED"] = cls._previous_chdb_enabled
 
     def test_run_chdb_select_query_simple(self):
         """Test running a simple SELECT query in chDB."""
