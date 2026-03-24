@@ -1,10 +1,14 @@
 from .mcp_server import mcp
 from .mcp_env import get_mcp_config, TransportType
+from .mcp_middleware_hook import setup_middleware
 
 
 def main():
     mcp_config = get_mcp_config()
     transport = mcp_config.server_transport
+
+    # Setup any custom middleware
+    setup_middleware(mcp)
 
     # For HTTP and SSE transports, we need to specify host and port
     http_transports = [TransportType.HTTP.value, TransportType.SSE.value]

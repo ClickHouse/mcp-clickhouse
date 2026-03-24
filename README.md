@@ -10,10 +10,10 @@ An MCP server for ClickHouse.
 
 ### ClickHouse Tools
 
-* `run_select_query`
+* `run_query`
   * Execute SQL queries on your ClickHouse cluster.
-  * Input: `sql` (string): The SQL query to execute.
-  * All ClickHouse queries are run with `readonly = 1` to ensure they are safe.
+  * Input: `query` (string): The SQL query to execute.
+  * Queries run in read-only mode by default (`CLICKHOUSE_ALLOW_WRITE_ACCESS=false`), but writes can be enabled explicitly if needed.
 
 * `list_databases`
   * List all databases on your ClickHouse cluster.
@@ -35,7 +35,7 @@ An MCP server for ClickHouse.
 
 * `run_chdb_select_query`
   * Execute SQL queries using [chDB](https://github.com/chdb-io/chdb)'s embedded ClickHouse engine.
-  * Input: `sql` (string): The SQL query to execute.
+  * Input: `query` (string): The SQL query to execute.
   * Query data directly from various sources (files, URLs, databases) without ETL processes.
 
 ### Health Check Endpoint
@@ -49,6 +49,58 @@ Example:
 curl http://localhost:8000/health
 # Response: OK - Connected to ClickHouse 24.3.1
 ```
+
+## Security
+
+### Authentication for HTTP/SSE Transports
+
+When using HTTP or SSE transport, authentication is **required by default**. The `stdio` transport (default) does not require authentication as it only communicates via standard input/output.
+
+#### Setting Up Authentication
+
+1. Generate a secure token (can be any random string):
+   ```bash
+   # Using uuidgen (macOS/Linux)
+   uuidgen
+
+   # Using openssl
+   openssl rand -hex 32
+   ```
+
+2. Configure the server with the token:
+   ```bash
+   export CLICKHOUSE_MCP_AUTH_TOKEN="your-generated-token"
+   ```
+
+3. Configure your MCP client to include the token in requests:
+
+   For Claude Desktop with HTTP/SSE transport:
+   ```json
+   {
+     "mcpServers": {
+       "mcp-clickhouse": {
+         "url": "http://127.0.0.1:8000",
+         "headers": {
+           "Authorization": "Bearer your-generated-token"
+         }
+       }
+     }
+   }
+   ```
+
+   For command-line tools:
+   ```bash
+   curl -H "Authorization: Bearer your-generated-token" http://localhost:8000/health
+   ```
+
+#### Development Mode (Disabling Authentication)
+
+For local development and testing only, you can disable authentication by setting:
+```bash
+export CLICKHOUSE_MCP_AUTH_DISABLED=true
+```
+
+**WARNING:** Only use this for local development. Do not disable authentication when the server is exposed to any network.
 
 ## Configuration
 
@@ -182,6 +234,26 @@ You can also enable both ClickHouse and chDB simultaneously:
 
 4. Restart Claude Desktop to apply the changes.
 
+### Optional Write Access
+
+By default, this MCP enforces read-only queries so that accidental mutations cannot happen during exploration. To allow DDL or INSERT/UPDATE statements, set the `CLICKHOUSE_ALLOW_WRITE_ACCESS` environment variable to `true`. The server keeps enforcing read-only mode if the ClickHouse instance itself disallows writes.
+
+### Destructive Operation Protection
+
+Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), destructive operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY, TRUNCATE TABLE) require an additional opt-in flag for safety. This prevents accidental data deletion during AI exploration.
+
+To enable destructive operations, set both flags:
+```json
+"env": {
+  "CLICKHOUSE_ALLOW_WRITE_ACCESS": "true",
+  "CLICKHOUSE_ALLOW_DROP": "true"
+}
+```
+
+This two-tier approach ensures that accidental drops are very difficult:
+- **Write operations** (INSERT, UPDATE, CREATE) require `CLICKHOUSE_ALLOW_WRITE_ACCESS=true`
+- **Destructive operations** (DROP, TRUNCATE) additionally require `CLICKHOUSE_ALLOW_DROP=true`
+
 ### Running Without uv (Using System Python)
 
 If you prefer to use the system Python installation instead of uv, you can install the package from PyPI and run it directly:
@@ -248,6 +320,105 @@ Note: Make sure to use the full path to the Python executable or the `mcp-clickh
 - `which python3` for the Python executable
 - `which mcp-clickhouse` for the installed script
 
+## Custom Middleware
+
+You can add custom middleware to the MCP server without modifying the source code. FastMCP provides a middleware system that allows you to intercept and process MCP protocol messages (tool calls, resource reads, prompts, etc.).
+
+### How to Use
+
+1. Create a Python module with middleware classes extending `Middleware` and a `setup_middleware(mcp)` function:
+
+```python
+# my_middleware.py
+import logging
+from fastmcp.server.middleware import Middleware, MiddlewareContext, CallNext
+
+logger = logging.getLogger("my-middleware")
+
+class LoggingMiddleware(Middleware):
+    """Log all tool calls."""
+    
+    async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
+        tool_name = context.message.name if hasattr(context.message, 'name') else 'unknown'
+        logger.info(f"Calling tool: {tool_name}")
+        result = await call_next(context)
+        logger.info(f"Tool {tool_name} completed")
+        return result
+
+def setup_middleware(mcp):
+    """Register middleware with the MCP server."""
+    mcp.add_middleware(LoggingMiddleware())
+```
+
+2. Set the `MCP_MIDDLEWARE_MODULE` environment variable to the module name (without `.py` extension):
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": ["run", "--with", "mcp-clickhouse", "--python", "3.10", "mcp-clickhouse"],
+      "env": {
+        "CLICKHOUSE_HOST": "<clickhouse-host>",
+        "CLICKHOUSE_USER": "<clickhouse-user>",
+        "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "MCP_MIDDLEWARE_MODULE": "my_middleware"
+      }
+    }
+  }
+}
+```
+
+3. Ensure your middleware module is in Python's import path (e.g., in the same directory where the MCP server runs, or installed as a package).
+
+### Example Middleware
+
+An example middleware module is provided in `example_middleware.py` showing common patterns:
+- Logging all MCP requests
+- Logging tool calls specifically
+- Measuring request processing time
+
+To use the example:
+```json
+"env": {
+  "MCP_MIDDLEWARE_MODULE": "example_middleware"
+}
+```
+
+### Middleware Capabilities
+
+The `Middleware` base class provides hooks for different MCP operations:
+
+- `on_message(context, call_next)` - Called for all messages
+- `on_request(context, call_next)` - Called for all requests
+- `on_notification(context, call_next)` - Called for all notifications
+- `on_call_tool(context, call_next)` - Called when a tool is executed
+- `on_read_resource(context, call_next)` - Called when a resource is read
+- `on_get_prompt(context, call_next)` - Called when a prompt is retrieved
+- `on_list_tools(context, call_next)` - Called when listing tools
+- `on_list_resources(context, call_next)` - Called when listing resources
+- `on_list_resource_templates(context, call_next)` - Called when listing resource templates
+- `on_list_prompts(context, call_next)` - Called when listing prompts
+
+Each hook receives a `MiddlewareContext` object containing the message and metadata, and a `call_next` function to continue the pipeline.
+
+### Dynamic Client Configuration via Context State
+
+Middleware can override ClickHouse client configuration on a per-request basis using the `CLIENT_CONFIG_OVERRIDES_KEY` context state key. The server merges these overrides with the base configuration from environment variables.
+
+```python
+from fastmcp.server.dependencies import get_context
+from mcp_clickhouse.mcp_server import CLIENT_CONFIG_OVERRIDES_KEY
+
+ctx = get_context()
+ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, {
+    "connect_timeout": 60,
+    "send_receive_timeout": 120
+})
+```
+
+This enables advanced use cases like dynamic timeout adjustments, tenant-specific routing, or per-user connection settings.
+
 ## Development
 
 1. In `test-services` directory run `docker compose up -d` to start the ClickHouse cluster.
@@ -269,14 +440,18 @@ CLICKHOUSE_PASSWORD=clickhouse
 
 5. To test with HTTP transport and the health check endpoint:
    ```bash
-   # Using default port 8000
-   CLICKHOUSE_MCP_SERVER_TRANSPORT=http python -m mcp_clickhouse.main
+   # For development, disable authentication
+   CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_AUTH_DISABLED=true python -m mcp_clickhouse.main
 
-   # Or with a custom port
-   CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_BIND_PORT=4200 python -m mcp_clickhouse.main
+   # Or with authentication (generate a token first)
+   CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_AUTH_TOKEN="your-token" python -m mcp_clickhouse.main
 
    # Then in another terminal:
-   curl http://localhost:8000/health  # or http://localhost:4200/health for custom port
+   # Without auth (if disabled):
+   curl http://localhost:8000/health
+
+   # With auth:
+   curl -H "Authorization: Bearer your-token" http://localhost:8000/health
    ```
 
 ### Environment Variables
@@ -331,9 +506,35 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for SELECT tools
   * Default: `"30"`
   * Increase this if you see `Query timed out after ...` errors for heavy queries
+* `CLICKHOUSE_MCP_AUTH_TOKEN`: Authentication token for HTTP/SSE transports
+  * Default: None
+  * **Required** when using HTTP or SSE transport (unless `CLICKHOUSE_MCP_AUTH_DISABLED=true`)
+  * Generate using `uuidgen` or `openssl rand -hex 32`
+  * Clients must send this token in the `Authorization: Bearer <token>` header
+* `CLICKHOUSE_MCP_AUTH_DISABLED`: Disable authentication for HTTP/SSE transports
+  * Default: `"false"` (authentication is enabled)
+  * Set to `"true"` to disable authentication for local development/testing only
+  * **WARNING:** Only use for local development. Do not disable when exposed to networks
 * `CLICKHOUSE_ENABLED`: Enable/disable ClickHouse functionality
   * Default: `"true"`
   * Set to `"false"` to disable ClickHouse tools when using chDB only
+* `CLICKHOUSE_ALLOW_WRITE_ACCESS`: Allow write operations (DDL and DML)
+  * Default: `"false"`
+  * Set to `"true"` to allow DDL (CREATE, ALTER, DROP) and DML (INSERT, UPDATE, DELETE) operations
+  * When disabled (default), queries run with `readonly=1` setting to prevent data modifications
+* `CLICKHOUSE_ALLOW_DROP`: Allow destructive operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY, TRUNCATE TABLE)
+  * Default: `"false"`
+  * Only takes effect when `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` is also set
+  * Set to `"true"` to explicitly allow destructive DROP and TRUNCATE operations
+  * This is a safety feature to prevent accidental data deletion during AI exploration
+
+#### Middleware Variables
+
+* `MCP_MIDDLEWARE_MODULE`: Python module name containing custom middleware to inject into the MCP server
+  * Default: None (no middleware loaded)
+  * Set to the module name (without `.py` extension) of your middleware module
+  * The module must provide a `setup_middleware(mcp)` function
+  * See [Custom Middleware](#custom-middleware) for details and examples
 
 ##### mTLS (Mutual TLS) Variables
 
@@ -482,6 +683,17 @@ CLICKHOUSE_PASSWORD=clickhouse
 CLICKHOUSE_MCP_SERVER_TRANSPORT=http
 CLICKHOUSE_MCP_BIND_HOST=0.0.0.0  # Bind to all interfaces
 CLICKHOUSE_MCP_BIND_PORT=4200  # Custom port (default: 8000)
+CLICKHOUSE_MCP_AUTH_TOKEN=your-generated-token  # Required for HTTP/SSE
+```
+
+For local development with HTTP transport (authentication disabled):
+
+```env
+CLICKHOUSE_HOST=localhost
+CLICKHOUSE_USER=default
+CLICKHOUSE_PASSWORD=clickhouse
+CLICKHOUSE_MCP_SERVER_TRANSPORT=http
+CLICKHOUSE_MCP_AUTH_DISABLED=true  # Only for local development!
 ```
 
 When using HTTP transport, the server will run on the configured port (default 8000). For example, with the above configuration:

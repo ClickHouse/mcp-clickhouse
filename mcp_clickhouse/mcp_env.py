@@ -49,6 +49,8 @@ class ClickHouseConfig:
         CLICKHOUSE_CLIENT_CERT: Path to client certificate file for mTLS authentication (default: None)
         CLICKHOUSE_CLIENT_CERT_KEY: Path to client private key file for mTLS authentication (default: None)
         CLICKHOUSE_TLS_MODE: TLS mode for client certificate usage - "mutual", "proxy", or "strict" (default: None)
+        CLICKHOUSE_ALLOW_WRITE_ACCESS: Allow write operations (DDL and DML) (default: false)
+        CLICKHOUSE_ALLOW_DROP: Allow destructive operations (DROP, TRUNCATE) when writes are also enabled (default: false)
     """
 
     def __init__(self):
@@ -175,6 +177,23 @@ class ClickHouseConfig:
         Default: None (auto-detected by clickhouse-connect)
         """
         return os.getenv("CLICKHOUSE_TLS_MODE")
+    def allow_write_access(self) -> bool:
+        """Get whether write operations (DDL and DML) are allowed.
+
+        Default: False
+        """
+        return os.getenv("CLICKHOUSE_ALLOW_WRITE_ACCESS", "false").lower() == "true"
+
+    @property
+    def allow_drop(self) -> bool:
+        """Get whether DROP operations (DROP TABLE, DROP DATABASE) are allowed.
+
+        This setting provides an additional safety layer when write access is enabled.
+        Even with CLICKHOUSE_ALLOW_WRITE_ACCESS=true, DROP operations require this flag.
+
+        Default: False
+        """
+        return os.getenv("CLICKHOUSE_ALLOW_DROP", "false").lower() == "true"
 
     def get_client_config(self) -> dict:
         """Get the configuration dictionary for clickhouse_connect client.
@@ -327,6 +346,10 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
         CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
+        CLICKHOUSE_MCP_AUTH_TOKEN: Authentication token for HTTP/SSE transports (required
+            unless CLICKHOUSE_MCP_AUTH_DISABLED=true)
+        CLICKHOUSE_MCP_AUTH_DISABLED: Disable authentication (default: false, use
+            only for development)
     """
 
     @property
@@ -348,6 +371,16 @@ class MCPServerConfig:
     @property
     def query_timeout(self) -> int:
         return int(os.getenv("CLICKHOUSE_MCP_QUERY_TIMEOUT", "30"))
+
+    @property
+    def auth_token(self) -> Optional[str]:
+        """Get the authentication token for HTTP/SSE transports."""
+        return os.getenv("CLICKHOUSE_MCP_AUTH_TOKEN", None)
+
+    @property
+    def auth_disabled(self) -> bool:
+        """Get whether authentication is disabled."""
+        return os.getenv("CLICKHOUSE_MCP_AUTH_DISABLED", "false").lower() == "true"
 
 
 _MCP_CONFIG_INSTANCE = None
