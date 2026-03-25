@@ -291,6 +291,7 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
         CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
+        CLICKHOUSE_MCP_MAX_WORKERS: Maximum thread pool workers for query execution (default: 10)
         CLICKHOUSE_MCP_AUTH_TOKEN: Authentication token for HTTP/SSE transports (required
             unless CLICKHOUSE_MCP_AUTH_DISABLED=true)
         CLICKHOUSE_MCP_AUTH_DISABLED: Disable authentication (default: false, use
@@ -316,6 +317,14 @@ class MCPServerConfig:
     @property
     def query_timeout(self) -> int:
         return int(os.getenv("CLICKHOUSE_MCP_QUERY_TIMEOUT", "30"))
+
+    @property
+    def max_workers(self) -> int:
+        """Maximum thread pool workers for query execution.
+
+        Default: 10
+        """
+        return int(os.getenv("CLICKHOUSE_MCP_MAX_WORKERS", "10"))
 
     @property
     def auth_token(self) -> Optional[str]:
