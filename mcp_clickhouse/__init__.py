@@ -3,9 +3,7 @@ import os
 from .mcp_server import (
     create_clickhouse_client,
     _clear_client_cache,
-    _evict_cached_client,
     _resolve_client_config,
-    _is_connection_error,
     list_databases,
     list_tables,
     run_query,
