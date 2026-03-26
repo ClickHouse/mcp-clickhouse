@@ -457,7 +457,7 @@ def execute_query(query: str):
         query_settings = build_query_settings(client)
         res = client.query(query, settings=query_settings)
         logger.info(f"Query returned {len(res.result_rows)} rows")
-        return {"columns": res.column_names, "rows": res.result_rows}
+        return json.dumps({"columns": res.column_names, "rows": res.result_rows}, default=str)
     except ToolError:
         raise
     except Exception as err:
@@ -482,10 +482,10 @@ def run_query(query: str):
                 logger.warning(f"Query failed: {result['error']}")
                 # MCP requires structured responses; string error messages can cause
                 # serialization issues leading to BrokenResourceError
-                return {
+                return json.dumps({
                     "status": "error",
                     "message": f"Query failed: {result['error']}",
-                }
+                })
             return result
         except concurrent.futures.TimeoutError:
             logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
