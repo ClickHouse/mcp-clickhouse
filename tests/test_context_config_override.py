@@ -5,12 +5,12 @@ from unittest.mock import patch, MagicMock
 
 from fastmcp import Client
 from fastmcp.server.middleware import Middleware, MiddlewareContext, CallNext
-from fastmcp.server.dependencies import get_context
 
 from mcp_clickhouse.mcp_server import (
     mcp,
     create_clickhouse_client,
     CLIENT_CONFIG_OVERRIDES_KEY,
+    _client_config_overrides_var,
 )
 
 
@@ -21,52 +21,51 @@ class ConfigOverrideMiddleware(Middleware):
         self.overrides = overrides
 
     async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
-        ctx = get_context()
-        ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, self.overrides)
-        return await call_next(context)
+        token = _client_config_overrides_var.set(self.overrides)
+        try:
+            return await call_next(context)
+        finally:
+            _client_config_overrides_var.reset(token)
 
 
 class TestConfigOverrideUnit:
     """Unit tests for the config override merge logic in create_clickhouse_client."""
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    @patch("mcp_clickhouse.mcp_server.get_context")
-    def test_overrides_merged_into_client_config(self, mock_get_context, mock_cc):
-        """Verify overrides from context state are merged into the client config."""
-        mock_ctx = MagicMock()
-        mock_ctx.get_state.return_value = {"connect_timeout": 99, "send_receive_timeout": 199}
-        mock_get_context.return_value = mock_ctx
+    def test_overrides_merged_into_client_config(self, mock_cc):
+        """Verify overrides from ContextVar are merged into the client config."""
         mock_cc.get_client.return_value = MagicMock(server_version="24.1")
 
-        create_clickhouse_client()
+        token = _client_config_overrides_var.set(
+            {"connect_timeout": 99, "send_receive_timeout": 199}
+        )
+        try:
+            create_clickhouse_client()
+        finally:
+            _client_config_overrides_var.reset(token)
 
         call_kwargs = mock_cc.get_client.call_args[1]
         assert call_kwargs["connect_timeout"] == 99
         assert call_kwargs["send_receive_timeout"] == 199
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    @patch("mcp_clickhouse.mcp_server.get_context")
-    def test_empty_overrides_no_change(self, mock_get_context, mock_cc):
+    def test_empty_overrides_no_change(self, mock_cc):
         """Empty overrides dict should not alter the base config."""
-        mock_ctx = MagicMock()
-        mock_ctx.get_state.return_value = {}
-        mock_get_context.return_value = mock_ctx
         mock_cc.get_client.return_value = MagicMock(server_version="24.1")
 
-        create_clickhouse_client()
+        token = _client_config_overrides_var.set({})
+        try:
+            create_clickhouse_client()
+        finally:
+            _client_config_overrides_var.reset(token)
 
         call_kwargs = mock_cc.get_client.call_args[1]
-        # Base config values from env should pass through unchanged
         assert "host" in call_kwargs
         assert "username" in call_kwargs
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    @patch("mcp_clickhouse.mcp_server.get_context")
-    def test_no_overrides_in_context(self, mock_get_context, mock_cc):
-        """When context state has no overrides, base config is used as-is."""
-        mock_ctx = MagicMock()
-        mock_ctx.get_state.return_value = None
-        mock_get_context.return_value = mock_ctx
+    def test_no_overrides_in_context(self, mock_cc):
+        """When ContextVar has no overrides (default None), base config is used."""
         mock_cc.get_client.return_value = MagicMock(server_version="24.1")
 
         create_clickhouse_client()
@@ -75,16 +74,21 @@ class TestConfigOverrideUnit:
         assert "host" in call_kwargs
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    def test_no_request_context_falls_back_to_defaults(self, mock_cc):
-        """Outside a request context (RuntimeError), base config is used."""
+    def test_username_override(self, mock_cc):
+        """Verify username can be overridden for per-user credential passthrough."""
         mock_cc.get_client.return_value = MagicMock(server_version="24.1")
 
-        # get_context is NOT mocked, so it will raise RuntimeError
-        # since there's no active FastMCP request context
-        create_clickhouse_client()
+        token = _client_config_overrides_var.set(
+            {"username": "other_user", "password": "other_pass"}
+        )
+        try:
+            create_clickhouse_client()
+        finally:
+            _client_config_overrides_var.reset(token)
 
         call_kwargs = mock_cc.get_client.call_args[1]
-        assert "host" in call_kwargs
+        assert call_kwargs["username"] == "other_user"
+        assert call_kwargs["password"] == "other_pass"
 
 
 @pytest.fixture
