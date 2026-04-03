@@ -1,5 +1,6 @@
 import logging
 import json
+import contextvars
 from typing import Optional, List, Any, Dict
 import concurrent.futures
 import atexit
@@ -60,14 +61,45 @@ class Table:
 MCP_SERVER_NAME = "mcp-clickhouse"
 CLIENT_CONFIG_OVERRIDES_KEY = "clickhouse_client_config_overrides"
 
+# ContextVar for per-request client config overrides. This is used instead of
+# FastMCP's async ctx.get_state/set_state because create_clickhouse_client is
+# a sync function called from a ThreadPoolExecutor worker thread.
+# Middleware should set this via _client_config_overrides_var.set({...}).
+_client_config_overrides_var: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "client_config_overrides", default=None
+)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(MCP_SERVER_NAME)
 
-QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10)
-atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
+_thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+atexit.register(lambda: _thread_pool.shutdown(wait=True))
+
+
+class _ContextPropagatingExecutor:
+    """Wrapper around ThreadPoolExecutor that propagates contextvars to worker threads.
+
+    ThreadPoolExecutor.submit does not copy the current context into worker threads,
+    so ContextVar values set in the async middleware are invisible to sync functions
+    running in the pool. This wrapper uses contextvars.copy_context().run() to ensure
+    the calling context is available in the worker.
+    """
+
+    def __init__(self, executor: concurrent.futures.ThreadPoolExecutor):
+        self._executor = executor
+
+    def submit(self, fn, *args, **kwargs):
+        ctx = contextvars.copy_context()
+        return self._executor.submit(ctx.run, fn, *args, **kwargs)
+
+    def shutdown(self, **kwargs):
+        return self._executor.shutdown(**kwargs)
+
+
+QUERY_EXECUTOR = _ContextPropagatingExecutor(_thread_pool)
 
 load_dotenv()
 
@@ -501,17 +533,13 @@ def run_query(query: str):
 def create_clickhouse_client():
     client_config = get_config().get_client_config()
 
-    try:
-        ctx = get_context()
-        session_config_overrides = ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY)
-        if session_config_overrides and not isinstance(session_config_overrides, dict):
-            logger.warning(f"{CLIENT_CONFIG_OVERRIDES_KEY} must be a dict, got {type(session_config_overrides).__name__}. Ignoring.")
-        elif session_config_overrides:
-            logger.debug(f"Applying session-specific ClickHouse client config overrides: {list(session_config_overrides.keys())}")
-            client_config.update(session_config_overrides)
-    except RuntimeError:
-        # If we're outside a request context, just proceed with the default config
-        pass
+    # Check for per-request config overrides set by middleware via the ContextVar.
+    session_config_overrides = _client_config_overrides_var.get()
+    if session_config_overrides and not isinstance(session_config_overrides, dict):
+        logger.warning(f"{CLIENT_CONFIG_OVERRIDES_KEY} must be a dict, got {type(session_config_overrides).__name__}. Ignoring.")
+    elif session_config_overrides:
+        logger.debug(f"Applying session-specific ClickHouse client config overrides: {list(session_config_overrides.keys())}")
+        client_config.update(session_config_overrides)
 
     logger.info(
         f"Creating ClickHouse client connection to {client_config['host']}:{client_config['port']} "
