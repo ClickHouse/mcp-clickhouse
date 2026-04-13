@@ -96,6 +96,8 @@ if mcp_config.server_transport in http_transports:
         )
 
 mcp = FastMCP(name=MCP_SERVER_NAME, auth=auth_provider)
+_chdb_client = None
+_chdb_error_message: Optional[str] = None
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -122,8 +124,13 @@ async def health_check(request: Request) -> PlainTextResponse:
         if not clickhouse_enabled:
             # If ClickHouse is disabled, check chDB status
             chdb_config = get_chdb_config()
-            if chdb_config.enabled:
+            if chdb_config.enabled and _chdb_client is not None:
                 return PlainTextResponse("OK - MCP server running with chDB enabled")
+            elif chdb_config.enabled and _chdb_error_message:
+                return PlainTextResponse(
+                    "ERROR. chDB initialization failed. Check server logs for details.",
+                    status_code=503,
+                )
             else:
                 # Both ClickHouse and chDB are disabled - this is an error
                 return PlainTextResponse(
@@ -617,6 +624,8 @@ def create_chdb_client():
     """Create a chDB client connection."""
     if not get_chdb_config().enabled:
         raise ValueError("chDB is not enabled. Set CHDB_ENABLED=true to enable it.")
+    if _chdb_client is None:
+        raise RuntimeError(_chdb_error_message or "chDB client is not available.")
     return _chdb_client
 
 
@@ -680,9 +689,11 @@ def chdb_initial_prompt() -> str:
 
 def _init_chdb_client():
     """Initialize the global chDB client instance."""
+    global _chdb_error_message
     try:
         if not get_chdb_config().enabled:
             logger.info("chDB is disabled, skipping client initialization")
+            _chdb_error_message = None
             return None
 
         client_config = get_chdb_config().get_client_config()
@@ -690,11 +701,54 @@ def _init_chdb_client():
         logger.info(f"Creating chDB client with data_path={data_path}")
         import chdb.session as chs
         client = chs.Session(path=data_path)
+        _chdb_error_message = None
         logger.info(f"Successfully connected to chDB with data_path={data_path}")
         return client
-    except Exception as e:
-        logger.error(f"Failed to initialize chDB client: {e}")
+    except ModuleNotFoundError as e:
+        if e.name in {"chdb", "chdb.session"}:
+            _chdb_error_message = (
+                "chDB support requires the optional dependency. "
+                "Install mcp-clickhouse[chdb] to enable chDB features."
+            )
+            logger.warning(_chdb_error_message)
+            return None
+        _chdb_error_message = f"Failed to initialize chDB client: {e}"
+        logger.error(_chdb_error_message)
         return None
+    except ImportError as e:
+        _chdb_error_message = f"Failed to initialize chDB client: {e}"
+        logger.error(_chdb_error_message)
+        return None
+    except Exception as e:
+        _chdb_error_message = f"Failed to initialize chDB client: {e}"
+        logger.error(_chdb_error_message)
+        return None
+
+
+def _register_chdb_tools():
+    """Register chDB tools when the feature is enabled and available.
+
+    Note: This function is not idempotent. Calling it multiple times will
+    register duplicate tools. It is intended to be called once at module load.
+    """
+    global _chdb_client
+    if not get_chdb_config().enabled:
+        return
+
+    _chdb_client = _init_chdb_client()
+    if _chdb_client is None:
+        logger.warning("chDB is enabled but unavailable; skipping chDB tool registration")
+        return
+
+    atexit.register(_chdb_client.close)
+    mcp.add_tool(Tool.from_function(run_chdb_select_query))
+    chdb_prompt = Prompt.from_function(
+        chdb_initial_prompt,
+        name="chdb_initial_prompt",
+        description="This prompt helps users understand how to interact and perform common operations in chDB",
+    )
+    mcp.add_prompt(chdb_prompt)
+    logger.info("chDB tools and prompts registered")
 
 
 # Register tools based on configuration
@@ -712,16 +766,4 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
     logger.info("ClickHouse tools registered")
 
 
-if os.getenv("CHDB_ENABLED", "false").lower() == "true":
-    _chdb_client = _init_chdb_client()
-    if _chdb_client:
-        atexit.register(lambda: _chdb_client.close())
-
-    mcp.add_tool(Tool.from_function(run_chdb_select_query))
-    chdb_prompt = Prompt.from_function(
-        chdb_initial_prompt,
-        name="chdb_initial_prompt",
-        description="This prompt helps users understand how to interact and perform common operations in chDB",
-    )
-    mcp.add_prompt(chdb_prompt)
-    logger.info("chDB tools and prompts registered")
+_register_chdb_tools()

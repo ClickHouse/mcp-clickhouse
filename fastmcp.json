@@ -8,8 +8,7 @@
     "dependencies": [
       "clickhouse-connect",
       "python-dotenv",
-      "truststore",
-      "chdb"
+      "truststore"
     ]
   }
 }
