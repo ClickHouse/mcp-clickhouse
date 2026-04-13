@@ -4,9 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-## 0.3.0 - 2026-03-09
+## 0.3.0 - 2026-04-13
 
 ### Added
+- Lazy-load chdb to avoid ~80-100 MB memory overhead when the feature is disabled. ([#144](https://github.com/ClickHouse/mcp-clickhouse/pull/144))
+- Made chdb an optional dependency for Windows compatibility. ([#145](https://github.com/ClickHouse/mcp-clickhouse/pull/145))
 - Optional write access mode via `CLICKHOUSE_WRITE_ACCESS` environment variable, with built-in DROP and TRUNCATE protection. ([#93](https://github.com/ClickHouse/mcp-clickhouse/pull/93))
 - Client config override support through MCP Context session states, enabling dynamic connection switching at runtime. ([#115](https://github.com/ClickHouse/mcp-clickhouse/pull/115))
 - Custom middleware injection via `CLICKHOUSE_MCP_MIDDLEWARE` environment variable for hooking into the MCP server lifecycle. Includes an example middleware module. ([#114](https://github.com/ClickHouse/mcp-clickhouse/pull/114))
