@@ -4,9 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-## 0.3.0 - 2026-04-13
+## 0.3.0 - 2026-04-14
 
 ### Added
+- SNI override support via `CLICKHOUSE_SNI` environment variable for connections behind proxies or load balancers. ([#127](https://github.com/ClickHouse/mcp-clickhouse/pull/127))
 - Lazy-load chdb to avoid ~80-100 MB memory overhead when the feature is disabled. ([#144](https://github.com/ClickHouse/mcp-clickhouse/pull/144))
 - Made chdb an optional dependency for Windows compatibility. ([#145](https://github.com/ClickHouse/mcp-clickhouse/pull/145))
 - Optional write access mode via `CLICKHOUSE_WRITE_ACCESS` environment variable, with built-in DROP and TRUNCATE protection. ([#93](https://github.com/ClickHouse/mcp-clickhouse/pull/93))
