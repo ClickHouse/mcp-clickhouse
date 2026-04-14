@@ -7,7 +7,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
-     "fastmcp>=2.0.0",
+     "fastmcp>=2.0.0,<3.0.0",
      "python-dotenv>=1.0.1",
      "clickhouse-connect>=0.8.16",
      "truststore>=0.10",
