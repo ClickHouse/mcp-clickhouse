@@ -48,6 +48,8 @@ class ClickHouseConfig:
         CLICKHOUSE_ENABLED: Enable ClickHouse server (default: true)
         CLICKHOUSE_ALLOW_WRITE_ACCESS: Allow write operations (DDL and DML) (default: false)
         CLICKHOUSE_ALLOW_DROP: Allow destructive operations (DROP, TRUNCATE) when writes are also enabled (default: false)
+        CLICKHOUSE_CLIENT_CERT: Path to TLS client certificate for mTLS authentication (default: None)
+        CLICKHOUSE_CLIENT_CERT_KEY: Path to TLS client private key for mTLS authentication (default: None)
     """
 
     def __init__(self):
@@ -86,8 +88,11 @@ class ClickHouseConfig:
 
     @property
     def password(self) -> str:
-        """Get the ClickHouse password."""
-        return os.environ["CLICKHOUSE_PASSWORD"]
+        """Get the ClickHouse password.
+
+        Returns empty string when not set and client certificates are configured.
+        """
+        return os.getenv("CLICKHOUSE_PASSWORD", "")
 
     @property
     def role(self) -> Optional[str]:
@@ -159,6 +164,16 @@ class ClickHouseConfig:
         """
         return os.getenv("CLICKHOUSE_ALLOW_DROP", "false").lower() == "true"
 
+    @property
+    def client_cert(self) -> Optional[str]:
+        """Get the path to the TLS client certificate for mTLS authentication."""
+        return os.getenv("CLICKHOUSE_CLIENT_CERT")
+
+    @property
+    def client_cert_key(self) -> Optional[str]:
+        """Get the path to the TLS client private key for mTLS authentication."""
+        return os.getenv("CLICKHOUSE_CLIENT_CERT_KEY")
+
     def get_client_config(self) -> dict:
         """Get the configuration dictionary for clickhouse_connect client.
 
@@ -191,6 +206,10 @@ class ClickHouseConfig:
 
         if self.server_host_name:
             config["server_host_name"] = self.server_host_name
+        if self.client_cert:
+            config["client_cert"] = self.client_cert
+        if self.client_cert_key:
+            config["client_cert_key"] = self.client_cert_key
 
         return config
 
@@ -201,9 +220,12 @@ class ClickHouseConfig:
             ValueError: If any required environment variable is missing.
         """
         missing_vars = []
-        for var in ["CLICKHOUSE_HOST", "CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD"]:
+        for var in ["CLICKHOUSE_HOST", "CLICKHOUSE_USER"]:
             if var not in os.environ:
                 missing_vars.append(var)
+
+        if "CLICKHOUSE_PASSWORD" not in os.environ and not self.client_cert:
+            missing_vars.append("CLICKHOUSE_PASSWORD")
 
         if missing_vars:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
