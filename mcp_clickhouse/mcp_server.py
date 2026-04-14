@@ -1,28 +1,28 @@
-import logging
-import json
-from typing import Optional, List, Any, Dict
-import concurrent.futures
 import atexit
+import concurrent.futures
+import json
+import logging
 import os
 import re
 import uuid
+from dataclasses import asdict, dataclass, field, is_dataclass
+from typing import Any, Dict, List, Optional
 
 import clickhouse_connect
+from cachetools import TTLCache
 from clickhouse_connect.driver.binding import format_query_value
 from dotenv import load_dotenv
 from fastmcp import FastMCP
-from cachetools import TTLCache
-from fastmcp.tools import Tool
-from fastmcp.prompts import Prompt
 from fastmcp.exceptions import ToolError
+from fastmcp.prompts import Prompt
+from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from fastmcp.server.dependencies import get_context
-from dataclasses import dataclass, field, asdict, is_dataclass
+from fastmcp.tools import Tool
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from mcp_clickhouse.mcp_env import get_config, get_chdb_config, get_mcp_config, TransportType
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
-from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
 
 
 @dataclass
@@ -96,6 +96,8 @@ if mcp_config.server_transport in http_transports:
         )
 
 mcp = FastMCP(name=MCP_SERVER_NAME, auth=auth_provider)
+_chdb_client = None
+_chdb_error_message: Optional[str] = None
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -122,8 +124,13 @@ async def health_check(request: Request) -> PlainTextResponse:
         if not clickhouse_enabled:
             # If ClickHouse is disabled, check chDB status
             chdb_config = get_chdb_config()
-            if chdb_config.enabled:
+            if chdb_config.enabled and _chdb_client is not None:
                 return PlainTextResponse("OK - MCP server running with chDB enabled")
+            elif chdb_config.enabled and _chdb_error_message:
+                return PlainTextResponse(
+                    "ERROR. chDB initialization failed. Check server logs for details.",
+                    status_code=503,
+                )
             else:
                 # Both ClickHouse and chDB are disabled - this is an error
                 return PlainTextResponse(
@@ -440,7 +447,7 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         return
 
     # Simple pattern matching for destructive operations
-    destructive_pattern = r'\b(DROP\s+(\S+\s+)*(TABLE|DATABASE|VIEW|DICTIONARY)|TRUNCATE\s+TABLE)\b'
+    destructive_pattern = r"\b(DROP\s+(\S+\s+)*(TABLE|DATABASE|VIEW|DICTIONARY)|TRUNCATE\s+TABLE)\b"
     if re.search(destructive_pattern, query, re.IGNORECASE):
         raise ToolError(
             "Destructive operations (DROP, TRUNCATE) are not allowed. "
@@ -505,21 +512,32 @@ def create_clickhouse_client():
         ctx = get_context()
         session_config_overrides = ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY)
         if session_config_overrides and not isinstance(session_config_overrides, dict):
-            logger.warning(f"{CLIENT_CONFIG_OVERRIDES_KEY} must be a dict, got {type(session_config_overrides).__name__}. Ignoring.")
+            logger.warning(
+                f"{CLIENT_CONFIG_OVERRIDES_KEY} must be a dict, got {type(session_config_overrides).__name__}. Ignoring."
+            )
         elif session_config_overrides:
-            logger.debug(f"Applying session-specific ClickHouse client config overrides: {list(session_config_overrides.keys())}")
+            logger.debug(
+                f"Applying session-specific ClickHouse client config overrides: {list(session_config_overrides.keys())}"
+            )
             client_config.update(session_config_overrides)
     except RuntimeError:
         # If we're outside a request context, just proceed with the default config
         pass
 
-    logger.info(
+    config_fields = [
+        f"secure={client_config['secure']}",
+        f"verify={client_config['verify']}",
+        f"connect_timeout={client_config['connect_timeout']}s",
+        f"send_receive_timeout={client_config['send_receive_timeout']}s",
+    ]
+    if "server_host_name" in client_config:
+        config_fields.append(f"server_host_name={client_config['server_host_name']}")
+    log_msg = (
         f"Creating ClickHouse client connection to {client_config['host']}:{client_config['port']} "
         f"as {client_config['username']} "
-        f"(secure={client_config['secure']}, verify={client_config['verify']}, "
-        f"connect_timeout={client_config['connect_timeout']}s, "
-        f"send_receive_timeout={client_config['send_receive_timeout']}s)"
+        f"({', '.join(config_fields)})"
     )
+    logger.info(log_msg)
 
     try:
         client = clickhouse_connect.get_client(**client_config)
@@ -617,6 +635,8 @@ def create_chdb_client():
     """Create a chDB client connection."""
     if not get_chdb_config().enabled:
         raise ValueError("chDB is not enabled. Set CHDB_ENABLED=true to enable it.")
+    if _chdb_client is None:
+        raise RuntimeError(_chdb_error_message or "chDB client is not available.")
     return _chdb_client
 
 
@@ -660,9 +680,7 @@ def run_chdb_select_query(query: str):
                 }
             return result
         except concurrent.futures.TimeoutError:
-            logger.warning(
-                f"chDB query timed out after {timeout_secs} seconds: {query}"
-            )
+            logger.warning(f"chDB query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
             return {
                 "status": "error",
@@ -680,43 +698,59 @@ def chdb_initial_prompt() -> str:
 
 def _init_chdb_client():
     """Initialize the global chDB client instance."""
+    global _chdb_error_message
     try:
         if not get_chdb_config().enabled:
             logger.info("chDB is disabled, skipping client initialization")
+            _chdb_error_message = None
             return None
 
         client_config = get_chdb_config().get_client_config()
         data_path = client_config["data_path"]
         logger.info(f"Creating chDB client with data_path={data_path}")
         import chdb.session as chs
+
         client = chs.Session(path=data_path)
+        _chdb_error_message = None
         logger.info(f"Successfully connected to chDB with data_path={data_path}")
         return client
+    except ModuleNotFoundError as e:
+        if e.name in {"chdb", "chdb.session"}:
+            _chdb_error_message = (
+                "chDB support requires the optional dependency. "
+                "Install mcp-clickhouse[chdb] to enable chDB features."
+            )
+            logger.warning(_chdb_error_message)
+            return None
+        _chdb_error_message = f"Failed to initialize chDB client: {e}"
+        logger.error(_chdb_error_message)
+        return None
+    except ImportError as e:
+        _chdb_error_message = f"Failed to initialize chDB client: {e}"
+        logger.error(_chdb_error_message)
+        return None
     except Exception as e:
-        logger.error(f"Failed to initialize chDB client: {e}")
+        _chdb_error_message = f"Failed to initialize chDB client: {e}"
+        logger.error(_chdb_error_message)
         return None
 
 
-# Register tools based on configuration
-if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
-    mcp.add_tool(Tool.from_function(list_databases))
-    mcp.add_tool(Tool.from_function(list_tables))
-    mcp.add_tool(Tool.from_function(
-        run_query,
-        description=(
-            "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
-            "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML operations. "
-            "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow destructive operations (DROP, TRUNCATE)."
-        )
-    ))
-    logger.info("ClickHouse tools registered")
+def _register_chdb_tools():
+    """Register chDB tools when the feature is enabled and available.
 
+    Note: This function is not idempotent. Calling it multiple times will
+    register duplicate tools. It is intended to be called once at module load.
+    """
+    global _chdb_client
+    if not get_chdb_config().enabled:
+        return
 
-if os.getenv("CHDB_ENABLED", "false").lower() == "true":
     _chdb_client = _init_chdb_client()
-    if _chdb_client:
-        atexit.register(lambda: _chdb_client.close())
+    if _chdb_client is None:
+        logger.warning("chDB is enabled but unavailable; skipping chDB tool registration")
+        return
 
+    atexit.register(_chdb_client.close)
     mcp.add_tool(Tool.from_function(run_chdb_select_query))
     chdb_prompt = Prompt.from_function(
         chdb_initial_prompt,
@@ -725,3 +759,23 @@ if os.getenv("CHDB_ENABLED", "false").lower() == "true":
     )
     mcp.add_prompt(chdb_prompt)
     logger.info("chDB tools and prompts registered")
+
+
+# Register tools based on configuration
+if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
+    mcp.add_tool(Tool.from_function(list_databases))
+    mcp.add_tool(Tool.from_function(list_tables))
+    mcp.add_tool(
+        Tool.from_function(
+            run_query,
+            description=(
+                "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
+                "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML operations. "
+                "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow destructive operations (DROP, TRUNCATE)."
+            ),
+        )
+    )
+    logger.info("ClickHouse tools registered")
+
+
+_register_chdb_tools()
