@@ -1,28 +1,28 @@
-import logging
-import json
-from typing import Optional, List, Any, Dict
-import concurrent.futures
 import atexit
+import concurrent.futures
+import json
+import logging
 import os
 import re
 import uuid
+from dataclasses import asdict, dataclass, field, is_dataclass
+from typing import Any, Dict, List, Optional
 
 import clickhouse_connect
+from cachetools import TTLCache
 from clickhouse_connect.driver.binding import format_query_value
 from dotenv import load_dotenv
 from fastmcp import FastMCP
-from cachetools import TTLCache
-from fastmcp.tools import Tool
-from fastmcp.prompts import Prompt
 from fastmcp.exceptions import ToolError
+from fastmcp.prompts import Prompt
+from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from fastmcp.server.dependencies import get_context
-from dataclasses import dataclass, field, asdict, is_dataclass
+from fastmcp.tools import Tool
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from mcp_clickhouse.mcp_env import get_config, get_chdb_config, get_mcp_config, TransportType
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
-from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
 
 
 @dataclass
@@ -447,7 +447,7 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         return
 
     # Simple pattern matching for destructive operations
-    destructive_pattern = r'\b(DROP\s+(\S+\s+)*(TABLE|DATABASE|VIEW|DICTIONARY)|TRUNCATE\s+TABLE)\b'
+    destructive_pattern = r"\b(DROP\s+(\S+\s+)*(TABLE|DATABASE|VIEW|DICTIONARY)|TRUNCATE\s+TABLE)\b"
     if re.search(destructive_pattern, query, re.IGNORECASE):
         raise ToolError(
             "Destructive operations (DROP, TRUNCATE) are not allowed. "
@@ -512,21 +512,32 @@ def create_clickhouse_client():
         ctx = get_context()
         session_config_overrides = ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY)
         if session_config_overrides and not isinstance(session_config_overrides, dict):
-            logger.warning(f"{CLIENT_CONFIG_OVERRIDES_KEY} must be a dict, got {type(session_config_overrides).__name__}. Ignoring.")
+            logger.warning(
+                f"{CLIENT_CONFIG_OVERRIDES_KEY} must be a dict, got {type(session_config_overrides).__name__}. Ignoring."
+            )
         elif session_config_overrides:
-            logger.debug(f"Applying session-specific ClickHouse client config overrides: {list(session_config_overrides.keys())}")
+            logger.debug(
+                f"Applying session-specific ClickHouse client config overrides: {list(session_config_overrides.keys())}"
+            )
             client_config.update(session_config_overrides)
     except RuntimeError:
         # If we're outside a request context, just proceed with the default config
         pass
 
-    logger.info(
+    config_fields = [
+        f"secure={client_config['secure']}",
+        f"verify={client_config['verify']}",
+        f"connect_timeout={client_config['connect_timeout']}s",
+        f"send_receive_timeout={client_config['send_receive_timeout']}s",
+    ]
+    if "server_host_name" in client_config:
+        config_fields.append(f"server_host_name={client_config['server_host_name']}")
+    log_msg = (
         f"Creating ClickHouse client connection to {client_config['host']}:{client_config['port']} "
         f"as {client_config['username']} "
-        f"(secure={client_config['secure']}, verify={client_config['verify']}, "
-        f"connect_timeout={client_config['connect_timeout']}s, "
-        f"send_receive_timeout={client_config['send_receive_timeout']}s)"
+        f"({', '.join(config_fields)})"
     )
+    logger.info(log_msg)
 
     try:
         client = clickhouse_connect.get_client(**client_config)
@@ -669,9 +680,7 @@ def run_chdb_select_query(query: str):
                 }
             return result
         except concurrent.futures.TimeoutError:
-            logger.warning(
-                f"chDB query timed out after {timeout_secs} seconds: {query}"
-            )
+            logger.warning(f"chDB query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
             return {
                 "status": "error",
@@ -700,6 +709,7 @@ def _init_chdb_client():
         data_path = client_config["data_path"]
         logger.info(f"Creating chDB client with data_path={data_path}")
         import chdb.session as chs
+
         client = chs.Session(path=data_path)
         _chdb_error_message = None
         logger.info(f"Successfully connected to chDB with data_path={data_path}")
@@ -755,14 +765,16 @@ def _register_chdb_tools():
 if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
     mcp.add_tool(Tool.from_function(list_databases))
     mcp.add_tool(Tool.from_function(list_tables))
-    mcp.add_tool(Tool.from_function(
-        run_query,
-        description=(
-            "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
-            "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML operations. "
-            "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow destructive operations (DROP, TRUNCATE)."
+    mcp.add_tool(
+        Tool.from_function(
+            run_query,
+            description=(
+                "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
+                "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML operations. "
+                "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow destructive operations (DROP, TRUNCATE)."
+            ),
         )
-    ))
+    )
     logger.info("ClickHouse tools registered")
 
 
