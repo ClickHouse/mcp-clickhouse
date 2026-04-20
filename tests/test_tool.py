@@ -71,7 +71,7 @@ class TestClickhouseTools(unittest.TestCase):
     def test_run_query_success(self):
         """Test running a SELECT query successfully."""
         query = f"SELECT * FROM {self.test_db}.{self.test_table}"
-        result = run_query(query)
+        result = json.loads(run_query(query))
         self.assertIsInstance(result, dict)
         self.assertEqual(len(result["rows"]), 2)
         self.assertEqual(result["rows"][0][0], 1)
@@ -165,18 +165,18 @@ class TestClickhouseWriteMode(unittest.TestCase):
             ) ENGINE = MergeTree()
             ORDER BY id
         """
-        result = run_query(create_query)
+        result = json.loads(run_query(create_query))
         self.assertIsInstance(result, dict)
 
         insert_query = f"""
             INSERT INTO {self.test_db}.{self.test_table} (id, value)
             VALUES (1, 'test_value')
         """
-        result = run_query(insert_query)
+        result = json.loads(run_query(insert_query))
         self.assertIsInstance(result, dict)
 
         select_query = f"SELECT * FROM {self.test_db}.{self.test_table}"
-        result = run_query(select_query)
+        result = json.loads(run_query(select_query))
         self.assertEqual(len(result["rows"]), 1)
         self.assertEqual(result["rows"][0][0], 1)
         self.assertEqual(result["rows"][0][1], "test_value")
@@ -192,7 +192,7 @@ class TestClickhouseWriteMode(unittest.TestCase):
             ) ENGINE = MergeTree()
             ORDER BY id
         """
-        result = run_query(create_query)
+        result = json.loads(run_query(create_query))
         self.assertIsInstance(result, dict)
 
         result = list_tables(self.test_db)
@@ -214,7 +214,7 @@ class TestClickhouseWriteMode(unittest.TestCase):
             ALTER TABLE {self.test_db}.alter_test
             ADD COLUMN name String
         """
-        result = run_query(alter_query)
+        result = json.loads(run_query(alter_query))
         self.assertIsInstance(result, dict)
 
         result = list_tables(self.test_db, like="alter_test")
@@ -300,7 +300,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
 
         # Should succeed
         drop_query = f"DROP TABLE {self.test_db}.{temp_table}"
-        result = run_query(drop_query)
+        result = json.loads(run_query(drop_query))
         self.assertIsInstance(result, dict)
 
     @patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "true", "CLICKHOUSE_ALLOW_DROP": "false"})
@@ -310,11 +310,11 @@ class TestClickhouseDropProtection(unittest.TestCase):
             INSERT INTO {self.test_db}.{self.test_table} (id, value)
             VALUES (1, 'test_value')
         """
-        result = run_query(insert_query)
+        result = json.loads(run_query(insert_query))
         self.assertIsInstance(result, dict)
 
         select_query = f"SELECT * FROM {self.test_db}.{self.test_table}"
-        result = run_query(select_query)
+        result = json.loads(run_query(select_query))
         self.assertGreaterEqual(len(result["rows"]), 1)
 
     @patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "true", "CLICKHOUSE_ALLOW_DROP": "false"})
@@ -326,7 +326,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
             ) ENGINE = MergeTree()
             ORDER BY id
         """
-        result = run_query(create_query)
+        result = json.loads(run_query(create_query))
         self.assertIsInstance(result, dict)
 
         result = list_tables(self.test_db)
@@ -355,7 +355,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
         )
 
         truncate_query = f"TRUNCATE TABLE {self.test_db}.{self.test_table}"
-        result = run_query(truncate_query)
+        result = json.loads(run_query(truncate_query))
         self.assertIsInstance(result, dict)
 
 
@@ -448,7 +448,7 @@ class TestClickhouseReadOnlyMode(unittest.TestCase):
     def test_select_allowed_in_readonly_mode(self):
         """Test that SELECT queries work normally in read-only mode."""
         select_query = f"SELECT * FROM {self.test_db}.{self.test_table}"
-        result = run_query(select_query)
+        result = json.loads(run_query(select_query))
 
         self.assertIsInstance(result, dict)
         self.assertIn("columns", result)
