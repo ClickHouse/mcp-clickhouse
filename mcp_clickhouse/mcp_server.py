@@ -476,17 +476,7 @@ def run_query(query: str):
         future = QUERY_EXECUTOR.submit(execute_query, query)
         try:
             timeout_secs = get_mcp_config().query_timeout
-            result = future.result(timeout=timeout_secs)
-            # Check if we received an error structure from execute_query
-            if isinstance(result, dict) and "error" in result:
-                logger.warning(f"Query failed: {result['error']}")
-                # MCP requires structured responses; string error messages can cause
-                # serialization issues leading to BrokenResourceError
-                return json.dumps({
-                    "status": "error",
-                    "message": f"Query failed: {result['error']}",
-                })
-            return result
+            return future.result(timeout=timeout_secs)
         except concurrent.futures.TimeoutError:
             logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
