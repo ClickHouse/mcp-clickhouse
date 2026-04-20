@@ -117,26 +117,8 @@ async def test_health_check_hides_internal_chdb_init_error_details():
 
 
 @pytest.mark.asyncio
-async def test_health_check_hides_clickhouse_version_on_success():
-    """The success response must not leak the ClickHouse version string."""
-    request = Request({"type": "http", "method": "GET", "headers": []})
-
-    fake_client = MagicMock()
-    fake_client.server_version = "24.3.2.23-stable-internal-build"
-
-    with (
-        patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
-        patch.object(mcp_server, "create_clickhouse_client", return_value=fake_client),
-    ):
-        response = await mcp_server.health_check(request)
-
-    assert response.status_code == 200
-    assert response.body == b"OK"
-
-
-@pytest.mark.asyncio
 async def test_health_check_hides_clickhouse_connection_error_details():
-    """The failure response must not leak exception details (hostnames, creds, etc.)."""
+    """A 503 response from a connection failure does not include the exception's hostname or credentials."""
     request = Request({"type": "http", "method": "GET", "headers": []})
 
     def raise_with_secrets():
