@@ -1,5 +1,4 @@
 import pytest
-from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 
 from mcp_clickhouse.mcp_env import MCPServerConfig
 from mcp_clickhouse.mcp_server import _resolve_auth
@@ -99,16 +98,15 @@ def test_resolve_auth_disabled_passes_explicit_none(monkeypatch: pytest.MonkeyPa
     assert _resolve_auth(MCPServerConfig()) == {"auth": None}
 
 
-def test_resolve_auth_static_token_takes_precedence_over_oauth(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """With both static token and FASTMCP_SERVER_AUTH set, returns the static verifier."""
+def test_resolve_auth_rejects_multiple_modes(monkeypatch: pytest.MonkeyPatch):
+    """Configuring more than one auth mode raises ValueError."""
     _clear_auth_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret")
     monkeypatch.setenv("FASTMCP_SERVER_AUTH", "fastmcp.server.auth.providers.jwt.JWTVerifier")
 
-    assert isinstance(_resolve_auth(MCPServerConfig()).get("auth"), StaticTokenVerifier)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _resolve_auth(MCPServerConfig())
 
 
 def test_resolve_auth_http_without_any_mode_raises(monkeypatch: pytest.MonkeyPatch):

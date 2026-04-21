@@ -101,10 +101,7 @@ Startup fails if none of these are configured for HTTP/SSE transports.
    }
    ```
 
-   For command-line tools:
-   ```bash
-   curl -H "Authorization: Bearer your-generated-token" http://localhost:8000/health
-   ```
+   Note: the `/health` endpoint is intentionally unauthenticated (see [Health Check Endpoint](#health-check-endpoint) above). To verify that bearer-token auth is actually rejecting unauthenticated requests, hit the MCP endpoint itself e.g. with the MCP Inspector, or by POSTing a JSON-RPC request to `/mcp` with and without the `Authorization` header and confirming the unauthenticated call returns `401`.
 
 #### OAuth / OIDC via FastMCP
 
@@ -480,11 +477,7 @@ CLICKHOUSE_PASSWORD=clickhouse
    CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_AUTH_TOKEN="your-token" python -m mcp_clickhouse.main
 
    # Then in another terminal:
-   # Without auth (if disabled):
    curl http://localhost:8000/health
-
-   # With auth:
-   curl -H "Authorization: Bearer your-token" http://localhost:8000/health
    ```
 
 ### Environment Variables

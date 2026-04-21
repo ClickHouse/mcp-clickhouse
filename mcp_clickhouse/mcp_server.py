@@ -84,6 +84,28 @@ def _resolve_auth(mcp_config) -> Dict[str, Any]:
     if mcp_config.server_transport not in _HTTP_TRANSPORTS:
         return {}
 
+    configured = {
+        "CLICKHOUSE_MCP_AUTH_DISABLED": mcp_config.auth_disabled,
+        "CLICKHOUSE_MCP_AUTH_TOKEN": bool(mcp_config.auth_token),
+        "FASTMCP_SERVER_AUTH": bool(os.getenv("FASTMCP_SERVER_AUTH")),
+    }
+    active = [name for name, is_set in configured.items() if is_set]
+
+    if len(active) > 1:
+        raise ValueError(
+            "Multiple authentication modes configured for HTTP/SSE transport: "
+            f"{', '.join(active)}. These are mutually exclusive; unset all but one."
+        )
+
+    if not active:
+        raise ValueError(
+            "Authentication is required for HTTP/SSE transports. Configure exactly one of:\n"
+            "  - CLICKHOUSE_MCP_AUTH_TOKEN=<token>   (static bearer token)\n"
+            "  - FASTMCP_SERVER_AUTH=<class-path>    (FastMCP auth provider, full class path;\n"
+            "       e.g. fastmcp.server.auth.providers.azure.AzureProvider)\n"
+            "  - CLICKHOUSE_MCP_AUTH_DISABLED=true   (disables auth; development only)"
+        )
+
     if mcp_config.auth_disabled:
         logger.warning("WARNING: MCP SERVER AUTHENTICATION IS DISABLED")
         logger.warning("Only use this for local development/testing.")
@@ -98,19 +120,11 @@ def _resolve_auth(mcp_config) -> Dict[str, Any]:
         logger.info("Authentication enabled for HTTP/SSE transport (static bearer token)")
         return {"auth": verifier}
 
-    fastmcp_provider = os.getenv("FASTMCP_SERVER_AUTH")
-    if fastmcp_provider:
-        logger.info("Authentication delegated to FastMCP provider: %s", fastmcp_provider)
-        # Return empty kwargs so FastMCP auto-loads from FASTMCP_SERVER_AUTH_* env vars.
-        return {}
-
-    raise ValueError(
-        "Authentication is required for HTTP/SSE transports. Configure one of:\n"
-        "  - CLICKHOUSE_MCP_AUTH_TOKEN=<token>   (static bearer token)\n"
-        "  - FASTMCP_SERVER_AUTH=<class-path>    (FastMCP auth provider, full class path;\n"
-        "       e.g. fastmcp.server.auth.providers.azure.AzureProvider)\n"
-        "  - CLICKHOUSE_MCP_AUTH_DISABLED=true   (disables auth; development only)"
+    logger.info(
+        "Authentication delegated to FastMCP provider: %s", os.getenv("FASTMCP_SERVER_AUTH")
     )
+    # Return empty kwargs so FastMCP auto-loads from FASTMCP_SERVER_AUTH_* env vars.
+    return {}
 
 
 mcp = FastMCP(name=MCP_SERVER_NAME, **_resolve_auth(get_mcp_config()))
