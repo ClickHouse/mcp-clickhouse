@@ -40,6 +40,7 @@ class ClickHouseConfig:
         CLICKHOUSE_PORT: The port number (default: 8443 if secure=True, 8123 if secure=False)
         CLICKHOUSE_SECURE: Enable HTTPS (default: true)
         CLICKHOUSE_VERIFY: Verify SSL certificates (default: true)
+        CLICKHOUSE_SERVER_HOST_NAME: Server hostname for SNI override and certificate validation (default: None)
         CLICKHOUSE_CONNECT_TIMEOUT: Connection timeout in seconds (default: 30)
         CLICKHOUSE_SEND_RECEIVE_TIMEOUT: Send/receive timeout in seconds (default: 300)
         CLICKHOUSE_DATABASE: Default database to use (default: None)
@@ -115,6 +116,11 @@ class ClickHouseConfig:
         return os.getenv("CLICKHOUSE_VERIFY", "true").lower() == "true"
 
     @property
+    def server_host_name(self) -> Optional[str]:
+        """Get the server hostname for SNI override."""
+        return os.getenv("CLICKHOUSE_SERVER_HOST_NAME")
+
+    @property
     def connect_timeout(self) -> int:
         """Get the connection timeout in seconds.
 
@@ -182,6 +188,9 @@ class ClickHouseConfig:
 
         if self.proxy_path:
             config["proxy_path"] = self.proxy_path
+
+        if self.server_host_name:
+            config["server_host_name"] = self.server_host_name
 
         return config
 
