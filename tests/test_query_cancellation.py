@@ -1,6 +1,7 @@
 """Tests for query ID tracking and server-side cancellation."""
 
 import concurrent.futures
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -111,49 +112,72 @@ class TestCancelQuery:
         """_cancel_query should issue KILL QUERY via the cached client."""
         mock_client = MagicMock()
         cache_key = (("host", "localhost"), ("port", 8443))
+        query_id = str(uuid.uuid4())
 
         # Set up cached client and active query
         with _client_cache_lock:
             _client_cache[cache_key] = (mock_client, 0)
         with _active_queries_lock:
-            _active_queries["kill-test-id"] = (cache_key, "SELECT sleep(60)")
+            _active_queries[query_id] = (cache_key, "SELECT sleep(60)")
 
-        _cancel_query("kill-test-id")
+        _cancel_query(query_id)
 
-        mock_client.command.assert_called_once_with("KILL QUERY WHERE query_id = 'kill-test-id'")
+        mock_client.command.assert_called_once_with(
+            f"KILL QUERY WHERE query_id = '{query_id}'"
+        )
         # Should be removed from active queries
         with _active_queries_lock:
-            assert "kill-test-id" not in _active_queries
+            assert query_id not in _active_queries
 
     def test_cancel_noop_for_completed_query(self):
         """_cancel_query should be a no-op if the query already completed."""
         # No entry in _active_queries
-        _cancel_query("nonexistent-id")  # Should not raise
+        _cancel_query(str(uuid.uuid4()))  # Should not raise
 
     def test_cancel_warns_without_cached_client(self):
         """_cancel_query should log warning if no cached client is available."""
         cache_key = (("host", "gone"),)
+        query_id = str(uuid.uuid4())
         with _active_queries_lock:
-            _active_queries["orphan-id"] = (cache_key, "SELECT 1")
+            _active_queries[query_id] = (cache_key, "SELECT 1")
 
         # No client in cache for this key
-        _cancel_query("orphan-id")  # Should not raise
+        _cancel_query(query_id)  # Should not raise
 
         with _active_queries_lock:
-            assert "orphan-id" not in _active_queries
+            assert query_id not in _active_queries
 
     def test_cancel_failure_does_not_raise(self):
         """_cancel_query should swallow exceptions from KILL QUERY."""
         mock_client = MagicMock()
         mock_client.command.side_effect = Exception("Permission denied")
         cache_key = (("host", "localhost"),)
+        query_id = str(uuid.uuid4())
 
         with _client_cache_lock:
             _client_cache[cache_key] = (mock_client, 0)
         with _active_queries_lock:
-            _active_queries["fail-id"] = (cache_key, "SELECT 1")
+            _active_queries[query_id] = (cache_key, "SELECT 1")
 
-        _cancel_query("fail-id")  # Should not raise
+        _cancel_query(query_id)  # Should not raise
+
+    def test_cancel_rejects_non_uuid_query_id(self):
+        """A non-UUID query_id must be refused before any KILL QUERY is issued."""
+        mock_client = MagicMock()
+        cache_key = (("host", "localhost"),)
+        hostile = "foo'; DROP TABLE x; --"
+
+        with _client_cache_lock:
+            _client_cache[cache_key] = (mock_client, 0)
+        with _active_queries_lock:
+            _active_queries[hostile] = (cache_key, "SELECT 1")
+
+        _cancel_query(hostile)
+
+        mock_client.command.assert_not_called()
+        # The active-query entry is always popped first, so it's gone either way.
+        with _active_queries_lock:
+            assert hostile not in _active_queries
 
 
 class TestRunQueryTimeout:
@@ -177,7 +201,6 @@ class TestRunQueryTimeout:
         mock_future = MagicMock()
         mock_future.result.side_effect = concurrent.futures.TimeoutError()
         mock_executor.submit.return_value = mock_future
-        mock_executor._work_queue.qsize.return_value = 0
 
         with pytest.raises(ToolError, match="timed out"):
             run_query("SELECT sleep(999)")

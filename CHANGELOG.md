@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+- Client connection reuse across tool calls via a config-keyed cache, eliminating per-call connection overhead. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+- Server-side query cancellation: timed-out queries now issue `KILL QUERY` on the ClickHouse server instead of leaving zombie workers consuming threads and server resources. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+- `CLICKHOUSE_MCP_MAX_WORKERS` environment variable to configure the query worker thread pool size (default: `10`). ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+
+### Changed
+- `CLICKHOUSE_SEND_RECEIVE_TIMEOUT` is now auto-capped to `CLICKHOUSE_MCP_QUERY_TIMEOUT + 5` unless explicitly set, so HTTP reads unblock shortly after an MCP timeout fires. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+
+### Fixed
+- Session config overrides from PR #115 are now resolved on the request thread where the FastMCP context is available, so overrides are correctly applied to queries dispatched to the worker pool. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+
 ## 0.3.0 - 2026-04-14
 
 ### Added

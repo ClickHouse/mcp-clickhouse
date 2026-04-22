@@ -15,6 +15,7 @@ from mcp_clickhouse.mcp_server import (
     _client_cache_lock,
     _config_to_cache_key,
     _resolve_client_config,
+    _shutdown,
     create_clickhouse_client,
     execute_query,
 )
@@ -265,3 +266,100 @@ class TestPingExceptionHandling:
         client2 = create_clickhouse_client()
         assert client2 is mock_client_new
         assert mock_cc.get_client.call_count == 2
+
+
+class TestCacheRaceHandling:
+    """Tests for identity-checked cache updates around the idle-ping path."""
+
+    def setup_method(self):
+        _clear_client_cache()
+
+    def teardown_method(self):
+        _clear_client_cache()
+
+    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
+    def test_ping_ok_yields_to_newer_cached_client(self, _mock_ctx, mock_cc):
+        """If another thread replaced the cached client during ping,
+        a successful ping must not resurrect our stale candidate."""
+        stale = MagicMock(server_version="24.1", name="stale")
+        replacement = MagicMock(server_version="24.2", name="replacement")
+        mock_cc.get_client.return_value = stale
+
+        # Seed the cache with stale and backdate so create_clickhouse_client
+        # takes the idle-ping path on the next call.
+        create_clickhouse_client()
+        with _client_cache_lock:
+            (key,) = list(_client_cache.keys())
+            _client_cache[key] = (stale, time.time() - 120)
+
+        # While pinging, simulate another thread replacing the entry.
+        def ping_and_replace():
+            with _client_cache_lock:
+                _client_cache[key] = (replacement, time.time())
+            return True
+
+        stale.ping.side_effect = ping_and_replace
+
+        result = create_clickhouse_client()
+
+        assert result is replacement
+        # Stale candidate must be closed; replacement must still be cached.
+        stale.close.assert_called_once()
+        with _client_cache_lock:
+            cached_client, _ = _client_cache[key]
+        assert cached_client is replacement
+
+    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
+    def test_ping_fail_preserves_newer_cached_client(self, _mock_ctx, mock_cc):
+        """A failed ping must not drop a replacement installed by another thread."""
+        stale = MagicMock(server_version="24.1", name="stale")
+        replacement = MagicMock(server_version="24.2", name="replacement")
+        # Second get_client call returns the newly created client in the
+        # fall-through path — it will get closed because the replacement wins.
+        fresh_create = MagicMock(server_version="24.3", name="fresh_create")
+        mock_cc.get_client.side_effect = [stale, fresh_create]
+
+        create_clickhouse_client()
+        with _client_cache_lock:
+            (key,) = list(_client_cache.keys())
+            _client_cache[key] = (stale, time.time() - 120)
+
+        def ping_and_replace():
+            with _client_cache_lock:
+                _client_cache[key] = (replacement, time.time())
+            return False  # ping fails
+
+        stale.ping.side_effect = ping_and_replace
+
+        result = create_clickhouse_client()
+
+        # Replacement wins because it's still cached when the tail block runs.
+        assert result is replacement
+        stale.close.assert_called_once()
+        # The freshly created client was closed by the post-create race check.
+        fresh_create.close.assert_called_once()
+        with _client_cache_lock:
+            cached_client, _ = _client_cache[key]
+        assert cached_client is replacement
+
+
+class TestShutdownOrdering:
+    """Tests that atexit shutdown closes the executor before the cache."""
+
+    @patch("mcp_clickhouse.mcp_server._clear_client_cache")
+    @patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR")
+    def test_executor_shutdown_runs_before_cache_clear(
+        self, mock_executor, mock_clear
+    ):
+        """The consolidated _shutdown callback must drain the executor first."""
+        call_order = []
+        mock_executor.shutdown.side_effect = lambda wait: call_order.append("executor")
+        mock_clear.side_effect = lambda: call_order.append("cache")
+
+        _shutdown()
+
+        assert call_order == ["executor", "cache"]
+        mock_executor.shutdown.assert_called_once_with(wait=True)
+        mock_clear.assert_called_once_with()

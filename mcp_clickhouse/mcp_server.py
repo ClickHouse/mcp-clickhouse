@@ -72,7 +72,6 @@ load_dotenv()
 
 _max_workers = get_mcp_config().max_workers
 QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers)
-atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
 
 # --- Client cache ---
 # Cache of ClickHouse clients keyed by frozen config, enabling client reuse
@@ -569,21 +568,27 @@ def _cancel_query(query_id: str):
 
     cache_key, _query_text = entry
     try:
+        safe_id = str(uuid.UUID(query_id))
+    except ValueError:
+        logger.warning("Refusing to KILL QUERY with non-UUID query_id: %r", query_id)
+        return
+
+    try:
         with _client_cache_lock:
             cached = _client_cache.get(cache_key)
         if cached is None:
             logger.warning(
                 "No cached client for query %s cancel — server-side query may still run",
-                query_id,
+                safe_id,
             )
             return
 
         client, _ = cached
-        logger.info("Cancelling query %s via KILL QUERY", query_id)
-        client.command(f"KILL QUERY WHERE query_id = '{query_id}'")
-        logger.info("Successfully cancelled query %s", query_id)
+        logger.info("Cancelling query %s via KILL QUERY", safe_id)
+        client.command(f"KILL QUERY WHERE query_id = '{safe_id}'")
+        logger.info("Successfully cancelled query %s", safe_id)
     except Exception as e:
-        logger.warning("Failed to cancel query %s: %s", query_id, e)
+        logger.warning("Failed to cancel query %s: %s", safe_id, e)
 
 
 def run_query(query: str):
@@ -599,14 +604,12 @@ def run_query(query: str):
     query_id = str(uuid.uuid4())
 
     try:
-        # Log pool utilization for observability using the pending work queue
-        pending = QUERY_EXECUTOR._work_queue.qsize()
         with _active_queries_lock:
             in_flight = len(_active_queries)
-        if in_flight + pending >= _max_workers:
+        if in_flight >= _max_workers:
             logger.warning(
-                "Thread pool saturated: %d in-flight + %d queued vs %d workers",
-                in_flight, pending, _max_workers,
+                "Thread pool saturated: %d in-flight vs %d workers",
+                in_flight, _max_workers,
             )
 
         future = QUERY_EXECUTOR.submit(execute_query, query, query_id, client_config)
@@ -739,18 +742,34 @@ def create_clickhouse_client(config: Optional[dict] = None):
         except Exception:
             alive = False
 
+        # Identity-check under the lock: another thread may have replaced
+        # the cached client while we were pinging — never overwrite or evict
+        # a newer entry based on stale candidate state.
         if alive:
             with _client_cache_lock:
-                # Re-check: another thread may have evicted while we pinged
-                if cache_key in _client_cache:
+                entry = _client_cache.get(cache_key)
+                if entry is not None and entry[0] is candidate:
                     _client_cache[cache_key] = (candidate, time.time())
                     logger.debug("Reusing cached client (ping OK after idle)")
                     return candidate
-                # Was evicted by another thread; fall through to create new
+                if entry is not None:
+                    current_client = entry[0]
+                    _client_cache[cache_key] = (current_client, time.time())
+                else:
+                    current_client = None
+            if current_client is not None:
+                try:
+                    candidate.close()
+                except Exception:
+                    pass
+                logger.debug("Reusing cached client (another thread replaced idle client)")
+                return current_client
         else:
             logger.warning("Cached client failed ping, creating new client")
             with _client_cache_lock:
-                _client_cache.pop(cache_key, None)
+                entry = _client_cache.get(cache_key)
+                if entry is not None and entry[0] is candidate:
+                    _client_cache.pop(cache_key, None)
             try:
                 candidate.close()
             except Exception:
@@ -814,7 +833,13 @@ def _clear_client_cache():
         _client_cache.clear()
 
 
-atexit.register(_clear_client_cache)
+def _shutdown():
+    # Order matters: drain workers before closing the clients they hold.
+    QUERY_EXECUTOR.shutdown(wait=True)
+    _clear_client_cache()
+
+
+atexit.register(_shutdown)
 
 
 def build_query_settings(client) -> dict[str, str]:
