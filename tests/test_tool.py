@@ -52,7 +52,7 @@ class TestClickhouseTools(unittest.TestCase):
 
     def test_list_tables_without_like(self):
         """Test listing tables without a 'LIKE' filter."""
-        result = list_tables(self.test_db)
+        result = json.loads(list_tables(self.test_db))
         self.assertIsInstance(result, dict)
         self.assertIn("tables", result)
         tables = result["tables"]
@@ -61,7 +61,7 @@ class TestClickhouseTools(unittest.TestCase):
 
     def test_list_tables_with_like(self):
         """Test listing tables with a 'LIKE' filter."""
-        result = list_tables(self.test_db, like=f"{self.test_table}%")
+        result = json.loads(list_tables(self.test_db, like=f"{self.test_table}%"))
         self.assertIsInstance(result, dict)
         self.assertIn("tables", result)
         tables = result["tables"]
@@ -89,7 +89,7 @@ class TestClickhouseTools(unittest.TestCase):
 
     def test_table_and_column_comments(self):
         """Test that table and column comments are correctly retrieved."""
-        result = list_tables(self.test_db)
+        result = json.loads(list_tables(self.test_db))
         self.assertIsInstance(result, dict)
         self.assertIn("tables", result)
         tables = result["tables"]
@@ -113,7 +113,7 @@ class TestClickhouseTools(unittest.TestCase):
         self.client.command(f"CREATE DATABASE IF NOT EXISTS {empty_db}")
 
         try:
-            result = list_tables(empty_db)
+            result = json.loads(list_tables(empty_db))
             self.assertIsInstance(result, dict)
             self.assertIn("tables", result)
             self.assertEqual(len(result["tables"]), 0)
@@ -124,7 +124,7 @@ class TestClickhouseTools(unittest.TestCase):
 
     def test_list_tables_with_not_like_filter_excluding_all(self):
         """Test listing tables with a NOT LIKE filter that excludes all tables."""
-        result = list_tables(self.test_db, not_like="%")
+        result = json.loads(list_tables(self.test_db, not_like="%"))
         self.assertIsInstance(result, dict)
         self.assertIn("tables", result)
         self.assertEqual(len(result["tables"]), 0)
@@ -195,7 +195,7 @@ class TestClickhouseWriteMode(unittest.TestCase):
         result = json.loads(run_query(create_query))
         self.assertIsInstance(result, dict)
 
-        result = list_tables(self.test_db)
+        result = json.loads(list_tables(self.test_db))
         table_names = [t["name"] for t in result["tables"]]
         self.assertIn("ddl_test", table_names)
 
@@ -217,7 +217,7 @@ class TestClickhouseWriteMode(unittest.TestCase):
         result = json.loads(run_query(alter_query))
         self.assertIsInstance(result, dict)
 
-        result = list_tables(self.test_db, like="alter_test")
+        result = json.loads(list_tables(self.test_db, like="alter_test"))
         self.assertEqual(len(result["tables"]), 1)
         column_names = [col["name"] for col in result["tables"][0]["columns"]]
         self.assertIn("name", column_names)
@@ -329,7 +329,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
         result = json.loads(run_query(create_query))
         self.assertIsInstance(result, dict)
 
-        result = list_tables(self.test_db)
+        result = json.loads(list_tables(self.test_db))
         table_names = [t["name"] for t in result["tables"]]
         self.assertIn("create_test", table_names)
 
