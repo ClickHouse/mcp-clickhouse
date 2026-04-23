@@ -156,7 +156,6 @@ def result_to_column(query_columns, result) -> List[Column]:
 
 
 def _serialize_tool_result(obj: Any) -> str:
-    # TODO: stringify ints outside JS safe range to preserve UInt64 precision
     return json.dumps(obj, default=str)
 
 
