@@ -153,7 +153,7 @@ def _serialize_tool_result(obj: Any) -> str:
     return json.dumps(obj, default=str)
 
 
-def list_databases():
+def list_databases() -> str:
     """List available ClickHouse databases"""
     logger.info("Listing all databases")
     client = create_clickhouse_client()
@@ -444,7 +444,7 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         )
 
 
-def execute_query(query: str):
+def execute_query(query: str) -> str:
     client = create_clickhouse_client()
     try:
         _validate_query_for_destructive_ops(query)
@@ -460,7 +460,7 @@ def execute_query(query: str):
         raise ToolError(f"Query execution failed: {str(err)}")
 
 
-def run_query(query: str):
+def run_query(query: str) -> str:
     """Execute a SQL query against ClickHouse.
 
     Queries run in read-only mode by default. Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true
