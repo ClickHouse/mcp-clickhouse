@@ -10,6 +10,9 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - `/health` endpoint is now unauthenticated across all auth modes (previously gated only under static-token mode, which was asymmetric and incompatible with redirect-based OAuth providers). Response bodies trimmed to `OK` / generic error strings to avoid leaking ClickHouse version information or connection exception details; underlying errors are logged server-side.
 
+### Fixed
+- Tool responses now return JSON-encoded strings, avoiding MCP protocol validation errors on successful queries. ([#154](https://github.com/ClickHouse/mcp-clickhouse/pull/154))
+
 ## 0.3.0 - 2026-04-14
 
 ### Added

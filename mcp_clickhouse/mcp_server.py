@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import uuid
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 import clickhouse_connect
@@ -182,17 +182,11 @@ def result_to_column(query_columns, result) -> List[Column]:
     return [Column(**dict(zip(query_columns, row))) for row in result]
 
 
-def to_json(obj: Any) -> str:
-    if is_dataclass(obj):
-        return json.dumps(asdict(obj), default=to_json)
-    elif isinstance(obj, list):
-        return [to_json(item) for item in obj]
-    elif isinstance(obj, dict):
-        return {key: to_json(value) for key, value in obj.items()}
-    return obj
+def _serialize_tool_result(obj: Any) -> str:
+    return json.dumps(obj, default=str)
 
 
-def list_databases():
+def list_databases() -> str:
     """List available ClickHouse databases"""
     logger.info("Listing all databases")
     client = create_clickhouse_client()
@@ -205,7 +199,7 @@ def list_databases():
         databases = [result]
 
     logger.info(f"Found {len(databases)} databases")
-    return json.dumps(databases)
+    return _serialize_tool_result(databases)
 
 
 # Store pagination state for list_tables with 1-hour expiry
@@ -341,7 +335,7 @@ def list_tables(
     page_token: Optional[str] = None,
     page_size: int = 50,
     include_detailed_columns: bool = True,
-) -> Dict[str, Any]:
+) -> str:
     """List available ClickHouse tables in a database, including schema, comment,
     row count, and column count.
 
@@ -356,7 +350,7 @@ def list_tables(
             all column information. This reduces payload size for large schemas.
 
     Returns:
-        A dictionary containing:
+        A JSON-encoded string of an object containing:
         - tables: List of table information (as dictionaries)
         - next_page_token: Token for the next page, or None if no more pages
         - total_tables: Total number of tables matching the filters
@@ -416,11 +410,11 @@ def list_tables(
                 len(table_names),
                 next_page_token,
             )
-            return {
+            return _serialize_tool_result({
                 "tables": [asdict(table) for table in tables],
                 "next_page_token": next_page_token,
                 "total_tables": len(table_names),
-            }
+            })
 
     table_names = fetch_table_names_from_system(client, database, like, not_like)
 
@@ -447,11 +441,11 @@ def list_tables(
         next_page_token,
     )
 
-    return {
+    return _serialize_tool_result({
         "tables": [asdict(table) for table in tables],
         "next_page_token": next_page_token,
         "total_tables": len(table_names),
-    }
+    })
 
 
 def _validate_query_for_destructive_ops(query: str) -> None:
@@ -483,7 +477,7 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         )
 
 
-def execute_query(query: str):
+def execute_query(query: str) -> str:
     client = create_clickhouse_client()
     try:
         _validate_query_for_destructive_ops(query)
@@ -491,7 +485,7 @@ def execute_query(query: str):
         query_settings = build_query_settings(client)
         res = client.query(query, settings=query_settings)
         logger.info(f"Query returned {len(res.result_rows)} rows")
-        return {"columns": res.column_names, "rows": res.result_rows}
+        return _serialize_tool_result({"columns": res.column_names, "rows": res.result_rows})
     except ToolError:
         raise
     except Exception as err:
@@ -499,7 +493,7 @@ def execute_query(query: str):
         raise ToolError(f"Query execution failed: {str(err)}")
 
 
-def run_query(query: str):
+def run_query(query: str) -> str:
     """Execute a SQL query against ClickHouse.
 
     Queries run in read-only mode by default. Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true
@@ -510,17 +504,7 @@ def run_query(query: str):
         future = QUERY_EXECUTOR.submit(execute_query, query)
         try:
             timeout_secs = get_mcp_config().query_timeout
-            result = future.result(timeout=timeout_secs)
-            # Check if we received an error structure from execute_query
-            if isinstance(result, dict) and "error" in result:
-                logger.warning(f"Query failed: {result['error']}")
-                # MCP requires structured responses; string error messages can cause
-                # serialization issues leading to BrokenResourceError
-                return {
-                    "status": "error",
-                    "message": f"Query failed: {result['error']}",
-                }
-            return result
+            return future.result(timeout=timeout_secs)
         except concurrent.futures.TimeoutError:
             logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
@@ -690,7 +674,7 @@ def execute_chdb_query(query: str):
         return {"error": str(err)}
 
 
-def run_chdb_select_query(query: str):
+def run_chdb_select_query(query: str) -> str:
     """Run SQL in chDB, an in-process ClickHouse engine"""
     logger.info(f"Executing chDB SELECT query: {query}")
     try:
@@ -701,21 +685,21 @@ def run_chdb_select_query(query: str):
             # Check if we received an error structure from execute_chdb_query
             if isinstance(result, dict) and "error" in result:
                 logger.warning(f"chDB query failed: {result['error']}")
-                return {
+                return _serialize_tool_result({
                     "status": "error",
                     "message": f"chDB query failed: {result['error']}",
-                }
-            return result
+                })
+            return _serialize_tool_result(result)
         except concurrent.futures.TimeoutError:
             logger.warning(f"chDB query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
-            return {
+            return _serialize_tool_result({
                 "status": "error",
                 "message": f"chDB query timed out after {timeout_secs} seconds",
-            }
+            })
     except Exception as e:
         logger.error(f"Unexpected error in run_chdb_select_query: {e}")
-        return {"status": "error", "message": f"Unexpected error: {e}"}
+        return _serialize_tool_result({"status": "error", "message": f"Unexpected error: {e}"})
 
 
 def chdb_initial_prompt() -> str:
