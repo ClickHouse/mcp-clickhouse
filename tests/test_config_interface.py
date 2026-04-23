@@ -94,3 +94,29 @@ def test_role_configuration(monkeypatch: pytest.MonkeyPatch):
     client_config = config.get_client_config()
 
     assert client_config["settings"]["role"] == "analytics_reader"
+
+
+def test_server_host_name_configuration(monkeypatch: pytest.MonkeyPatch):
+    """Test that server_host_name is included when CLICKHOUSE_SERVER_HOST_NAME is set."""
+    monkeypatch.setenv("CLICKHOUSE_HOST", "load-balancer.example.com")
+    monkeypatch.setenv("CLICKHOUSE_USER", "test")
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "test")
+    monkeypatch.setenv("CLICKHOUSE_SERVER_HOST_NAME", "server.example.com")
+
+    config = ClickHouseConfig()
+    client_config = config.get_client_config()
+
+    assert client_config["server_host_name"] == "server.example.com"
+
+
+def test_server_host_name_omitted_when_unset(monkeypatch: pytest.MonkeyPatch):
+    """Test that server_host_name is omitted when CLICKHOUSE_SERVER_HOST_NAME is not set."""
+    monkeypatch.setenv("CLICKHOUSE_HOST", "load-balancer.example.com")
+    monkeypatch.setenv("CLICKHOUSE_USER", "test")
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "test")
+    monkeypatch.delenv("CLICKHOUSE_SERVER_HOST_NAME", raising=False)
+
+    config = ClickHouseConfig()
+    client_config = config.get_client_config()
+
+    assert "server_host_name" not in client_config

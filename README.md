@@ -37,6 +37,7 @@ An MCP server for ClickHouse.
   * Execute SQL queries using [chDB](https://github.com/chdb-io/chdb)'s embedded ClickHouse engine.
   * Input: `query` (string): The SQL query to execute.
   * Query data directly from various sources (files, URLs, databases) without ETL processes.
+  * Requires the optional `chdb` extra: `pip install 'mcp-clickhouse[chdb]'`
 
 ### Health Check Endpoint
 
@@ -183,7 +184,7 @@ For chDB (embedded ClickHouse engine), add the following configuration:
       "args": [
         "run",
         "--with",
-        "mcp-clickhouse",
+        "mcp-clickhouse[chdb]",
         "--python",
         "3.10",
         "mcp-clickhouse"
@@ -208,7 +209,7 @@ You can also enable both ClickHouse and chDB simultaneously:
       "args": [
         "run",
         "--with",
-        "mcp-clickhouse",
+        "mcp-clickhouse[chdb]",
         "--python",
         "3.10",
         "mcp-clickhouse"
@@ -261,6 +262,11 @@ If you prefer to use the system Python installation instead of uv, you can insta
 1. Install the package using pip:
    ```bash
    python3 -m pip install mcp-clickhouse
+   ```
+
+   To install chDB support as well:
+   ```bash
+   python3 -m pip install 'mcp-clickhouse[chdb]'
    ```
 
    To upgrade to the latest version:
@@ -484,6 +490,9 @@ The following environment variables are used to configure the ClickHouse and chD
   * Default: `"true"`
   * Set to `"false"` to disable certificate verification (not recommended for production)
   * TLS certificates: The package uses your operating system trust store for TLS certificate verification via `truststore`. We call `truststore.inject_into_ssl()` at startup to ensure proper certificate handling. Python’s default SSL behavior is used as a fallback only if an unexpected error occurs.
+* `CLICKHOUSE_SERVER_HOST_NAME`: Server hostname for SNI override and certificate validation
+  * Default: None (uses the connection hostname)
+  * This is useful when connecting through proxies or load balancers where the certificate hostname differs from the connection hostname. When set, this hostname will be used for both SNI (Server Name Indication) during the TLS handshake and for certificate hostname validation.
 * `CLICKHOUSE_CONNECT_TIMEOUT`: Connection timeout in seconds
   * Default: `"30"`
   * Increase this value if you experience connection timeouts
@@ -541,6 +550,7 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CHDB_ENABLED`: Enable/disable chDB functionality
   * Default: `"false"`
   * Set to `"true"` to enable chDB tools
+  * Requires installing the optional extra: `mcp-clickhouse[chdb]`
 * `CHDB_DATA_PATH`: The path to the chDB data directory
   * Default: `":memory:"` (in-memory database)
   * Use `:memory:` for in-memory database
@@ -667,7 +677,7 @@ uv run ruff check . # run linting
 docker compose up -d test_services # start ClickHouse
 uv run pytest -v tests
 uv run pytest -v tests/test_tool.py # ClickHouse only
-uv run pytest -v tests/test_chdb_tool.py # chDB only
+CHDB_ENABLED=true uv run --extra chdb pytest -v tests/test_chdb_tool.py # chDB only
 ```
 
 ## YouTube Overview
