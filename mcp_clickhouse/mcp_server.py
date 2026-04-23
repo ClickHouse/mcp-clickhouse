@@ -71,51 +71,73 @@ atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
 
 load_dotenv()
 
-# Configure authentication for HTTP/SSE transports
-auth_provider = None
-mcp_config = get_mcp_config()
-http_transports = [TransportType.HTTP.value, TransportType.SSE.value]
+_HTTP_TRANSPORTS = (TransportType.HTTP.value, TransportType.SSE.value)
 
-if mcp_config.server_transport in http_transports:
+
+def _resolve_auth(mcp_config) -> Dict[str, Any]:
+    """Resolve FastMCP auth kwargs for the current transport.
+
+    An empty return dict omits the `auth` kwarg so FastMCP auto-detects its
+    provider from FASTMCP_SERVER_AUTH / FASTMCP_SERVER_AUTH_* env vars.
+    Returning {"auth": None} instead explicitly disables auth.
+    """
+    if mcp_config.server_transport not in _HTTP_TRANSPORTS:
+        return {}
+
+    configured = {
+        "CLICKHOUSE_MCP_AUTH_DISABLED": mcp_config.auth_disabled,
+        "CLICKHOUSE_MCP_AUTH_TOKEN": bool(mcp_config.auth_token),
+        "FASTMCP_SERVER_AUTH": bool(os.getenv("FASTMCP_SERVER_AUTH")),
+    }
+    active = [name for name, is_set in configured.items() if is_set]
+
+    if len(active) > 1:
+        raise ValueError(
+            "Multiple authentication modes configured for HTTP/SSE transport: "
+            f"{', '.join(active)}. These are mutually exclusive; unset all but one."
+        )
+
+    if not active:
+        raise ValueError(
+            "Authentication is required for HTTP/SSE transports. Configure exactly one of:\n"
+            "  - CLICKHOUSE_MCP_AUTH_TOKEN=<token>   (static bearer token)\n"
+            "  - FASTMCP_SERVER_AUTH=<class-path>    (FastMCP auth provider, full class path;\n"
+            "       e.g. fastmcp.server.auth.providers.azure.AzureProvider)\n"
+            "  - CLICKHOUSE_MCP_AUTH_DISABLED=true   (disables auth; development only)"
+        )
+
     if mcp_config.auth_disabled:
         logger.warning("WARNING: MCP SERVER AUTHENTICATION IS DISABLED")
         logger.warning("Only use this for local development/testing.")
         logger.warning("DO NOT expose to networks.")
-    elif mcp_config.auth_token:
-        auth_provider = StaticTokenVerifier(
+        return {"auth": None}
+
+    if mcp_config.auth_token:
+        verifier = StaticTokenVerifier(
             tokens={mcp_config.auth_token: {"client_id": "mcp-client", "scopes": []}},
             required_scopes=[],
         )
-        logger.info("Authentication enabled for HTTP/SSE transport")
-    else:
-        # No token configured and auth not disabled
-        raise ValueError(
-            "Authentication token required for HTTP/SSE transports. "
-            "Set CLICKHOUSE_MCP_AUTH_TOKEN environment variable or set "
-            "CLICKHOUSE_MCP_AUTH_DISABLED=true (for development only)."
-        )
+        logger.info("Authentication enabled for HTTP/SSE transport (static bearer token)")
+        return {"auth": verifier}
 
-mcp = FastMCP(name=MCP_SERVER_NAME, auth=auth_provider)
+    logger.info(
+        "Authentication delegated to FastMCP provider: %s", os.getenv("FASTMCP_SERVER_AUTH")
+    )
+    # Return empty kwargs so FastMCP auto-loads from FASTMCP_SERVER_AUTH_* env vars.
+    return {}
+
+
+mcp = FastMCP(name=MCP_SERVER_NAME, **_resolve_auth(get_mcp_config()))
 _chdb_client = None
 _chdb_error_message: Optional[str] = None
 
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request) -> PlainTextResponse:
-    """Health check endpoint for monitoring server status.
+    """Liveness probe. Intentionally unauthenticated and minimal.
 
-    Returns OK if the server is running and can connect to ClickHouse.
+    Debug via server logs.
     """
-    if auth_provider is not None:
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            return PlainTextResponse("Unauthorized", status_code=401)
-
-        token = auth_header[7:]
-        access_token = await auth_provider.verify_token(token)
-        if access_token is None:
-            return PlainTextResponse("Unauthorized", status_code=401)
-
     try:
         # Check if ClickHouse is enabled by trying to create config
         # If ClickHouse is disabled, this will succeed but connection will fail
@@ -125,26 +147,31 @@ async def health_check(request: Request) -> PlainTextResponse:
             # If ClickHouse is disabled, check chDB status
             chdb_config = get_chdb_config()
             if chdb_config.enabled and _chdb_client is not None:
-                return PlainTextResponse("OK - MCP server running with chDB enabled")
+                return PlainTextResponse("OK")
             elif chdb_config.enabled and _chdb_error_message:
                 return PlainTextResponse(
                     "ERROR. chDB initialization failed. Check server logs for details.",
                     status_code=503,
                 )
             else:
-                # Both ClickHouse and chDB are disabled - this is an error
+                logger.error(
+                    "Health check failed: both CLICKHOUSE_ENABLED=false and CHDB_ENABLED=false"
+                )
                 return PlainTextResponse(
-                    "ERROR - Both ClickHouse and chDB are disabled. At least one must be enabled.",
+                    "ERROR. Server misconfigured. Check server logs for details.",
                     status_code=503,
                 )
 
         # Try to create a client connection to verify ClickHouse connectivity
-        client = create_clickhouse_client()
-        version = client.server_version
-        return PlainTextResponse(f"OK - Connected to ClickHouse {version}")
-    except Exception as e:
-        # Return 503 Service Unavailable if we can't connect to ClickHouse
-        return PlainTextResponse(f"ERROR - Cannot connect to ClickHouse: {str(e)}", status_code=503)
+        create_clickhouse_client()
+        return PlainTextResponse("OK")
+    except Exception:
+        # Log the underlying error server-side, but don't leak details over the wire.
+        logger.exception("Health check failed: ClickHouse connection error")
+        return PlainTextResponse(
+            "ERROR. ClickHouse connection failed. Check server logs for details.",
+            status_code=503,
+        )
 
 
 def result_to_table(query_columns, result) -> List[Table]:

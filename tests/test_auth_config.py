@@ -1,6 +1,7 @@
 import pytest
 
 from mcp_clickhouse.mcp_env import MCPServerConfig
+from mcp_clickhouse.mcp_server import _resolve_auth
 
 
 def test_auth_token_configuration(monkeypatch: pytest.MonkeyPatch):
@@ -68,3 +69,50 @@ def test_auth_token_with_sse_transport(monkeypatch: pytest.MonkeyPatch):
     assert config.server_transport == "sse"
     assert config.auth_token == "sse-auth-token"
     assert config.auth_disabled is False
+
+
+def _clear_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in (
+        "CLICKHOUSE_MCP_AUTH_TOKEN",
+        "CLICKHOUSE_MCP_AUTH_DISABLED",
+        "FASTMCP_SERVER_AUTH",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_resolve_auth_oauth_omits_auth_kwarg(monkeypatch: pytest.MonkeyPatch):
+    """FASTMCP_SERVER_AUTH alone returns empty kwargs (no `auth` key)."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH", "fastmcp.server.auth.providers.jwt.JWTVerifier")
+
+    assert _resolve_auth(MCPServerConfig()) == {}
+
+
+def test_resolve_auth_disabled_passes_explicit_none(monkeypatch: pytest.MonkeyPatch):
+    """CLICKHOUSE_MCP_AUTH_DISABLED=true returns {"auth": None}, not {}."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
+
+    assert _resolve_auth(MCPServerConfig()) == {"auth": None}
+
+
+def test_resolve_auth_rejects_multiple_modes(monkeypatch: pytest.MonkeyPatch):
+    """Configuring more than one auth mode raises ValueError."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH", "fastmcp.server.auth.providers.jwt.JWTVerifier")
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _resolve_auth(MCPServerConfig())
+
+
+def test_resolve_auth_http_without_any_mode_raises(monkeypatch: pytest.MonkeyPatch):
+    """HTTP transport with no auth configured raises ValueError."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+
+    with pytest.raises(ValueError):
+        _resolve_auth(MCPServerConfig())
