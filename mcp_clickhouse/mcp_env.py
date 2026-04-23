@@ -300,10 +300,12 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
         CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
-        CLICKHOUSE_MCP_AUTH_TOKEN: Authentication token for HTTP/SSE transports (required
-            unless CLICKHOUSE_MCP_AUTH_DISABLED=true)
-        CLICKHOUSE_MCP_AUTH_DISABLED: Disable authentication (default: false, use
-            only for development)
+        CLICKHOUSE_MCP_AUTH_TOKEN: Static bearer token for HTTP/SSE transports.
+            One authentication mode must be configured for HTTP/SSE; the other two
+            options are FASTMCP_SERVER_AUTH (FastMCP OAuth/OIDC providers) and
+            CLICKHOUSE_MCP_AUTH_DISABLED=true.
+        CLICKHOUSE_MCP_AUTH_DISABLED: Disable authentication entirely (default: false,
+            development only)
     """
 
     @property

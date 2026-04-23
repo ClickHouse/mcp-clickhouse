@@ -42,13 +42,15 @@ An MCP server for ClickHouse.
 ### Health Check Endpoint
 
 When running with HTTP or SSE transport, a health check endpoint is available at `/health`. This endpoint:
-- Returns `200 OK` with the ClickHouse version if the server is healthy and can connect to ClickHouse
-- Returns `503 Service Unavailable` if the server cannot connect to ClickHouse
+- Returns `200 OK` (body: `OK`) if the server is healthy and can connect to ClickHouse
+- Returns `503 Service Unavailable` with a generic error message if the server cannot connect to ClickHouse
+
+The endpoint is intentionally unauthenticated so orchestrator probes (e.g. Kubernetes liveness/readiness, load balancers) can reach it without credentials. The response body is deliberately minimal to avoid leaking backend version strings or error details; debug failures via the server logs.
 
 Example:
 ```bash
 curl http://localhost:8000/health
-# Response: OK - Connected to ClickHouse 24.3.1
+# Response: OK
 ```
 
 ## Security
@@ -56,6 +58,16 @@ curl http://localhost:8000/health
 ### Authentication for HTTP/SSE Transports
 
 When using HTTP or SSE transport, authentication is **required by default**. The `stdio` transport (default) does not require authentication as it only communicates via standard input/output.
+
+Three authentication modes are supported. Pick one:
+
+| Mode                       | When to use                               | Env var                                                                                        |
+|----------------------------|-------------------------------------------|------------------------------------------------------------------------------------------------|
+| Static bearer token        | Simple deployments, internal services     | `CLICKHOUSE_MCP_AUTH_TOKEN`                                                                    |
+| OAuth / OIDC (via FastMCP) | Azure Entra, Google, GitHub, WorkOS, etc. | `FASTMCP_SERVER_AUTH=<provider-class-path>` (+ provider-specific `FASTMCP_SERVER_AUTH_*` vars) |
+| Disabled                   | Local development only                    | `CLICKHOUSE_MCP_AUTH_DISABLED=true`                                                            |
+
+Startup fails if none of these are configured for HTTP/SSE transports.
 
 #### Setting Up Authentication
 
@@ -89,10 +101,22 @@ When using HTTP or SSE transport, authentication is **required by default**. The
    }
    ```
 
-   For command-line tools:
-   ```bash
-   curl -H "Authorization: Bearer your-generated-token" http://localhost:8000/health
-   ```
+   Note: the `/health` endpoint is intentionally unauthenticated (see [Health Check Endpoint](#health-check-endpoint) above). To verify that bearer-token auth is actually rejecting unauthenticated requests, hit the MCP endpoint itself e.g. with the MCP Inspector, or by POSTing a JSON-RPC request to `/mcp` with and without the `Authorization` header and confirming the unauthenticated call returns `401`.
+
+#### OAuth / OIDC via FastMCP
+
+For production deployments with identity providers (Azure Entra, Google, GitHub, WorkOS, etc.), delegate authentication to [FastMCP's built-in auth providers](https://gofastmcp.com/servers/auth) instead of using a static token. Set `FASTMCP_SERVER_AUTH` to the **full class path** of a FastMCP auth provider, along with the provider-specific `FASTMCP_SERVER_AUTH_*` variables, and leave `CLICKHOUSE_MCP_AUTH_TOKEN` unset.
+
+Example (Azure Entra):
+
+```bash
+export FASTMCP_SERVER_AUTH=fastmcp.server.auth.providers.azure.AzureProvider
+export FASTMCP_SERVER_AUTH_AZURE_TENANT_ID="<tenant-id>"
+export FASTMCP_SERVER_AUTH_AZURE_CLIENT_ID="<client-id>"
+export FASTMCP_SERVER_AUTH_AZURE_CLIENT_SECRET="<client-secret>"
+```
+
+See the [FastMCP docs](https://gofastmcp.com/servers/auth) for the full list of providers and their required environment variables.
 
 #### Development Mode (Disabling Authentication)
 
@@ -453,11 +477,7 @@ CLICKHOUSE_PASSWORD=clickhouse
    CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_AUTH_TOKEN="your-token" python -m mcp_clickhouse.main
 
    # Then in another terminal:
-   # Without auth (if disabled):
    curl http://localhost:8000/health
-
-   # With auth:
-   curl -H "Authorization: Bearer your-token" http://localhost:8000/health
    ```
 
 ### Environment Variables
@@ -515,11 +535,15 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for SELECT tools
   * Default: `"30"`
   * Increase this if you see `Query timed out after ...` errors for heavy queries
-* `CLICKHOUSE_MCP_AUTH_TOKEN`: Authentication token for HTTP/SSE transports
+* `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None
-  * **Required** when using HTTP or SSE transport (unless `CLICKHOUSE_MCP_AUTH_DISABLED=true`)
+  * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `FASTMCP_SERVER_AUTH`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for HTTP/SSE transports
   * Generate using `uuidgen` or `openssl rand -hex 32`
   * Clients must send this token in the `Authorization: Bearer <token>` header
+* `FASTMCP_SERVER_AUTH`: Delegate authentication to a [FastMCP auth provider](https://gofastmcp.com/servers/auth)
+  * Default: None
+  * Value is the **full class path** of an AuthProvider subclass, e.g. `fastmcp.server.auth.providers.azure.AzureProvider` or `fastmcp.server.auth.providers.google.GoogleProvider`
+  * When set, FastMCP auto-loads the provider from its own `FASTMCP_SERVER_AUTH_*` environment variables; leave `CLICKHOUSE_MCP_AUTH_TOKEN` unset in this mode
 * `CLICKHOUSE_MCP_AUTH_DISABLED`: Disable authentication for HTTP/SSE transports
   * Default: `"false"` (authentication is enabled)
   * Set to `"true"` to disable authentication for local development/testing only
@@ -620,7 +644,7 @@ CLICKHOUSE_PASSWORD=clickhouse
 CLICKHOUSE_MCP_SERVER_TRANSPORT=http
 CLICKHOUSE_MCP_BIND_HOST=0.0.0.0  # Bind to all interfaces
 CLICKHOUSE_MCP_BIND_PORT=4200  # Custom port (default: 8000)
-CLICKHOUSE_MCP_AUTH_TOKEN=your-generated-token  # Required for HTTP/SSE
+CLICKHOUSE_MCP_AUTH_TOKEN=your-generated-token  # One auth mode required for HTTP/SSE (or FASTMCP_SERVER_AUTH, or CLICKHOUSE_MCP_AUTH_DISABLED=true)
 ```
 
 For local development with HTTP transport (authentication disabled):
