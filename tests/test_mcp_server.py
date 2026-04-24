@@ -385,7 +385,7 @@ async def test_run_query_does_not_block_other_mcp_requests(mcp_server):
 
     def slow_execute_query(_query: str):
         time.sleep(0.75)
-        return {"columns": ["value"], "rows": [[1]]}
+        return json.dumps({"columns": ["value"], "rows": [[1]]})
 
     async with Client(mcp_server) as client:
         with patch("mcp_clickhouse.mcp_server.execute_query", side_effect=slow_execute_query):
