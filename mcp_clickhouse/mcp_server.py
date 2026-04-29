@@ -812,7 +812,13 @@ def _register_chdb_tools():
         return
 
     atexit.register(_chdb_client.close)
-    mcp.add_tool(Tool.from_function(run_chdb_select_query_async, name="run_chdb_select_query"))
+    mcp.add_tool(
+        Tool.from_function(
+            run_chdb_select_query_async,
+            name="run_chdb_select_query",
+            description="Run SQL in chDB, an in-process ClickHouse engine",
+        )
+    )
     chdb_prompt = Prompt.from_function(
         chdb_initial_prompt,
         name="chdb_initial_prompt",
