@@ -5,7 +5,7 @@ description: Use when reviewing pull requests, code changes, or patches in mcp-c
 
 # Review skill
 
-For substantive review, read `.agents/architecture.md` first so the invariants below have context. For test-running and validation commands, use the `testing` skill rather than reasoning from memory.
+For substantive review, read `.claude/architecture.md` first so the invariants below have context. For test-running and validation commands, use the `testing` skill rather than reasoning from memory.
 
 ## Severity order
 

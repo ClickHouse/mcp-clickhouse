@@ -27,12 +27,12 @@ These are the contract. Changes here are breaking changes and need a `README.md`
 
 Read on demand:
 
-- `.agents/architecture.md` for substantial code changes (cross-cutting invariants, optional backend matrix, compatibility axes).
-- `.agents/skills/testing/SKILL.md` when running, writing, or modifying tests.
-- `.agents/skills/review/SKILL.md` when reviewing PRs or patches.
-- `.agents/skills/upstream-verify/SKILL.md` when a claim depends on ClickHouse, `clickhouse-connect`, `FastMCP`, or `chDB` behavior that may have changed across versions.
+- `.claude/architecture.md` for substantial code changes (cross-cutting invariants, optional backend matrix, compatibility axes).
+- `.claude/skills/testing/SKILL.md` when running, writing, or modifying tests.
+- `.claude/skills/review/SKILL.md` when reviewing PRs or patches.
+- `.claude/skills/upstream-verify/SKILL.md` when a claim depends on ClickHouse, `clickhouse-connect`, `FastMCP`, or `chDB` behavior that may have changed across versions.
 
-Skill-aware harnesses (Claude Code, modern Cursor) will activate these from their frontmatter. Other harnesses can read them directly.
+Skill-aware harnesses (Claude Code, modern Cursor) auto-discover skills under `.claude/skills/` via their frontmatter. Other harnesses can read these files directly.
 
 ## Writing Style
 

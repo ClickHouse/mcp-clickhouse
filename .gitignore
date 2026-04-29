@@ -1,6 +1,9 @@
 .envrc
 .ruff_cache/
 
+# Claude Code per-user local settings
+.claude/settings.local.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

@@ -1,6 +1,6 @@
 # Architecture and repo context
 
-Read this before substantial code changes. For test commands and validation, see `.agents/skills/testing/SKILL.md`. For review work, see `.agents/skills/review/SKILL.md`. For library or server claims, see `.agents/skills/upstream-verify/SKILL.md`.
+Read this before substantial code changes. For test commands and validation, see `.claude/skills/testing/SKILL.md`. For review work, see `.claude/skills/review/SKILL.md`. For library or server claims, see `.claude/skills/upstream-verify/SKILL.md`.
 
 ## What this is
 
