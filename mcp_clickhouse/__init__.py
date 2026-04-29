@@ -15,6 +15,9 @@ from .mcp_server import (
 )
 
 
+# Trust the system certificate store by default so users on corporate networks
+# (custom CAs in the OS trust store) work out of the box. Set
+# MCP_CLICKHOUSE_TRUSTSTORE_DISABLE=1 to opt out.
 if os.getenv("MCP_CLICKHOUSE_TRUSTSTORE_DISABLE", None) != "1":
     try:
         import truststore
