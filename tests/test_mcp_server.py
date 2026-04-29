@@ -3,6 +3,8 @@ import pytest_asyncio
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 import asyncio
+import time
+from unittest.mock import patch
 from mcp_clickhouse.mcp_server import mcp, create_clickhouse_client
 from dotenv import load_dotenv
 import json
@@ -375,3 +377,26 @@ async def test_concurrent_queries(mcp_server, setup_test_database):
             query_result = json.loads(result.content[0].text)
             assert "rows" in query_result
             assert len(query_result["rows"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_query_does_not_block_other_mcp_requests(mcp_server):
+    """list_tools should complete while a query is in flight."""
+
+    def slow_execute_query(_query: str):
+        time.sleep(0.75)
+        return json.dumps({"columns": ["value"], "rows": [[1]]})
+
+    async with Client(mcp_server) as client:
+        with patch("mcp_clickhouse.mcp_server.execute_query", side_effect=slow_execute_query):
+            slow_task = asyncio.create_task(client.call_tool("run_query", {"query": "SELECT 1"}))
+            await asyncio.sleep(0.05)
+
+            start = time.perf_counter()
+            tools = await client.list_tools()
+            list_tools_elapsed = time.perf_counter() - start
+
+            await slow_task
+
+    assert len(tools) >= 1
+    assert list_tools_elapsed < 0.5

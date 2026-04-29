@@ -1,7 +1,8 @@
+import importlib.util
+import json
 import os
 import tempfile
 import unittest
-import importlib.util
 
 from dotenv import load_dotenv
 
@@ -42,7 +43,7 @@ class TestChDBTools(unittest.TestCase):
     def test_run_chdb_select_query_simple(self):
         """Test running a simple SELECT query in chDB."""
         query = "SELECT 1 as test_value"
-        result = mcp_server.run_chdb_select_query(query)
+        result = json.loads(mcp_server.run_chdb_select_query(query))
         self.assertIsInstance(result, list)
         self.assertIn("test_value", str(result))
 
@@ -54,14 +55,14 @@ class TestChDBTools(unittest.TestCase):
 
         self.addCleanup(lambda: os.path.exists(temp_path) and os.unlink(temp_path))
         query = f"SELECT SUM(value) AS total FROM file('{temp_path}', 'CSVWithNames')"
-        result = mcp_server.run_chdb_select_query(query)
+        result = json.loads(mcp_server.run_chdb_select_query(query))
         self.assertIsInstance(result, list)
         self.assertEqual(result[0]["total"], 6)
 
     def test_run_chdb_select_query_failure(self):
         """Test running a SELECT query with an error in chDB."""
         query = "SELECT * FROM non_existent_table_chDB"
-        result = mcp_server.run_chdb_select_query(query)
+        result = json.loads(mcp_server.run_chdb_select_query(query))
         self.assertIsInstance(result, dict)
         self.assertEqual(result["status"], "error")
         self.assertIn("message", result)
@@ -69,7 +70,7 @@ class TestChDBTools(unittest.TestCase):
     def test_run_chdb_select_query_empty_result(self):
         """Test running a SELECT query that returns empty result in chDB."""
         query = "SELECT 1 WHERE 1 = 0"
-        result = mcp_server.run_chdb_select_query(query)
+        result = json.loads(mcp_server.run_chdb_select_query(query))
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 0)
 

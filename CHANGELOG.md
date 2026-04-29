@@ -8,12 +8,16 @@ All notable changes to this project will be documented in this file.
 - Client connection reuse across tool calls via a config-keyed cache, eliminating per-call connection overhead. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
 - Server-side query cancellation: timed-out queries now issue `KILL QUERY` on the ClickHouse server instead of leaving zombie workers consuming threads and server resources. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
 - `CLICKHOUSE_MCP_MAX_WORKERS` environment variable to configure the query worker thread pool size (default: `10`). ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+- Support for FastMCP OAuth/OIDC auth providers on HTTP/SSE transports via the `FASTMCP_SERVER_AUTH` environment variable (e.g. Azure Entra, Google, GitHub, WorkOS). Static token, FastMCP OAuth, and disabled mode are now mutually exclusive; configure exactly one. ([#171](https://github.com/ClickHouse/mcp-clickhouse/issues/171))
 
 ### Changed
 - `CLICKHOUSE_SEND_RECEIVE_TIMEOUT` is now auto-capped to `CLICKHOUSE_MCP_QUERY_TIMEOUT + 5` unless explicitly set, so HTTP reads unblock shortly after an MCP timeout fires. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+- `/health` endpoint is now unauthenticated across all auth modes (previously gated only under static-token mode, which was asymmetric and incompatible with redirect-based OAuth providers). Response bodies trimmed to `OK` / generic error strings to avoid leaking ClickHouse version information or connection exception details; underlying errors are logged server-side.
 
 ### Fixed
 - Session config overrides from PR #115 are now resolved on the request thread where the FastMCP context is available, so overrides are correctly applied to queries dispatched to the worker pool. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+- Tool responses now return JSON-encoded strings, avoiding MCP protocol validation errors on successful queries. ([#154](https://github.com/ClickHouse/mcp-clickhouse/pull/154))
+- Long-running queries no longer block other tool calls. The MCP-facing `run_query` and `run_chdb_select_query` tools now await their thread-pool futures asynchronously, so concurrent tool calls are served while a slow query is in flight. ([#128](https://github.com/ClickHouse/mcp-clickhouse/issues/128))
 
 ## 0.3.0 - 2026-04-14
 
