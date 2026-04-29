@@ -5,9 +5,11 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import clickhouse_connect
 from cachetools import TTLCache
@@ -67,10 +69,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(MCP_SERVER_NAME)
 
-QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10)
-atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
-
 load_dotenv()
+
+_max_workers = get_mcp_config().max_workers
+QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers)
+
+# --- Client cache ---
+# Cache of ClickHouse clients keyed by frozen config, enabling client reuse
+# across tool calls. Each entry is (client, last_used_timestamp).
+_client_cache: Dict[Tuple, Tuple] = {}
+_client_cache_lock = threading.Lock()
+_CLIENT_IDLE_PING_THRESHOLD = 60  # seconds before we ping to verify liveness
+
+# --- Active query tracker ---
+# Maps query_id -> (cache_key, query_text) so we can KILL QUERY on the
+# correct server when a timeout fires.
+_active_queries: Dict[str, Tuple] = {}
+_active_queries_lock = threading.Lock()
 
 _HTTP_TRANSPORTS = (TransportType.HTTP.value, TransportType.SSE.value)
 
@@ -190,8 +205,19 @@ def _serialize_tool_result(obj: Any) -> str:
 def list_databases() -> str:
     """List available ClickHouse databases"""
     logger.info("Listing all databases")
-    client = create_clickhouse_client()
-    result = client.command("SHOW DATABASES")
+    config = _resolve_client_config()
+
+    for attempt in range(2):
+        try:
+            client = create_clickhouse_client(config=config)
+            result = client.command("SHOW DATABASES")
+            break
+        except Exception as err:
+            if attempt == 0 and _is_connection_error(err):
+                logger.warning("list_databases connection error, retrying: %s", err)
+                _evict_cached_client(config)
+                continue
+            raise
 
     # Convert newline-separated string to list and trim whitespace
     if isinstance(result, str):
@@ -366,8 +392,33 @@ def list_tables(
         page_size,
         include_detailed_columns,
     )
-    client = create_clickhouse_client()
+    config = _resolve_client_config()
 
+    for attempt in range(2):
+        try:
+            client = create_clickhouse_client(config=config)
+            return _list_tables_impl(
+                client, database, like, not_like, page_token,
+                page_size, include_detailed_columns,
+            )
+        except Exception as err:
+            if attempt == 0 and _is_connection_error(err):
+                logger.warning("list_tables connection error, retrying: %s", err)
+                _evict_cached_client(config)
+                continue
+            raise
+
+
+def _list_tables_impl(
+    client,
+    database: str,
+    like: Optional[str],
+    not_like: Optional[str],
+    page_token: Optional[str],
+    page_size: int,
+    include_detailed_columns: bool,
+) -> Dict[str, Any]:
+    """Inner implementation of list_tables, separated for retry logic."""
     if page_token and page_token in table_pagination_cache:
         cached_state = table_pagination_cache[page_token]
         cached_include_detailed = cached_state.get("include_detailed_columns", True)
@@ -478,20 +529,88 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         )
 
 
-def execute_query(query: str) -> str:
-    client = create_clickhouse_client()
+def _is_connection_error(err: Exception) -> bool:
+    """Check if an exception indicates a broken connection rather than a query error."""
+    from clickhouse_connect.driver.exceptions import OperationalError
+    if isinstance(err, (OSError, ConnectionError, OperationalError)):
+        return True
+    err_str = str(err).lower()
+    return any(s in err_str for s in ("connection", "timed out", "reset by peer", "eof"))
+
+
+def execute_query(query: str, query_id: str, client_config: dict) -> str:
+    """Execute a query in a worker thread.
+
+    Args:
+        query: SQL to execute.
+        query_id: Unique identifier for server-side tracking / cancellation.
+        client_config: Pre-resolved config dict (resolved on the request thread).
+    """
+    cache_key = _config_to_cache_key(client_config)
+    with _active_queries_lock:
+        _active_queries[query_id] = (cache_key, query)
+
     try:
+        client = create_clickhouse_client(config=client_config)
         _validate_query_for_destructive_ops(query)
 
         query_settings = build_query_settings(client)
+        query_settings["query_id"] = query_id
         res = client.query(query, settings=query_settings)
-        logger.info(f"Query returned {len(res.result_rows)} rows")
+        logger.info(f"Query {query_id} returned {len(res.result_rows)} rows")
         return _serialize_tool_result({"columns": res.column_names, "rows": res.result_rows})
     except ToolError:
         raise
     except Exception as err:
-        logger.error(f"Error executing query: {err}")
+        # Evict the cached client on connection errors so the next call
+        # creates a fresh one. We do NOT retry here because the query may
+        # involve writes and retrying could duplicate side effects.
+        if _is_connection_error(err):
+            _evict_cached_client(client_config)
+        logger.error(f"Error executing query {query_id}: {err}")
         raise ToolError(f"Query execution failed: {str(err)}")
+    finally:
+        with _active_queries_lock:
+            _active_queries.pop(query_id, None)
+
+
+def _cancel_query(query_id: str):
+    """Issue KILL QUERY on the ClickHouse server for a timed-out query.
+
+    Uses the same cached client (same server/credentials) that originated
+    the query. Failures are logged but never raised — cancellation errors
+    must not mask the original timeout.
+    """
+    with _active_queries_lock:
+        entry = _active_queries.pop(query_id, None)
+
+    if entry is None:
+        logger.debug("Query %s already completed, nothing to cancel", query_id)
+        return
+
+    cache_key, _query_text = entry
+    try:
+        safe_id = str(uuid.UUID(query_id))
+    except ValueError:
+        logger.warning("Refusing to KILL QUERY with non-UUID query_id: %r", query_id)
+        return
+
+    try:
+        with _client_cache_lock:
+            cached = _client_cache.get(cache_key)
+        if cached is None:
+            logger.warning(
+                "No cached client for query %s cancel — server-side query may still run",
+                safe_id,
+            )
+            return
+
+        client, _ = cached
+        logger.info("Cancelling query %s via KILL QUERY", safe_id)
+        client.command(f"KILL QUERY WHERE query_id = '{safe_id}'")
+        logger.info("Successfully cancelled query %s", safe_id)
+    except Exception as e:
+        logger.warning("Failed to cancel query %s: %s", safe_id, e)
 
 
 def run_query(query: str) -> str:
@@ -501,14 +620,29 @@ def run_query(query: str) -> str:
     to allow DDL and DML statements when your ClickHouse server permits them.
     """
     logger.info(f"Executing query: {query}")
+
+    # Resolve config on the request thread where FastMCP Context is available
+    client_config = _resolve_client_config()
+    query_id = str(uuid.uuid4())
+
     try:
-        future = QUERY_EXECUTOR.submit(execute_query, query)
+        with _active_queries_lock:
+            in_flight = len(_active_queries)
+        if in_flight >= _max_workers:
+            logger.warning(
+                "Thread pool saturated: %d in-flight vs %d workers",
+                in_flight, _max_workers,
+            )
+
+        future = QUERY_EXECUTOR.submit(execute_query, query, query_id, client_config)
         timeout_secs = get_mcp_config().query_timeout
         try:
             return future.result(timeout=timeout_secs)
         except concurrent.futures.TimeoutError:
-            logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
-            future.cancel()
+            logger.warning(
+                "Query %s timed out after %s seconds: %s", query_id, timeout_secs, query
+            )
+            _cancel_query(query_id)
             raise ToolError(f"Query timed out after {timeout_secs} seconds")
     except ToolError:
         raise
@@ -517,19 +651,50 @@ def run_query(query: str) -> str:
         raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
 
 
+def _config_to_cache_key(config: dict) -> tuple:
+    """Convert a client config dict into a hashable cache key.
+
+    Handles nested dicts (e.g. 'settings') by recursively sorting items.
+    """
+    items = []
+    for k, v in sorted(config.items()):
+        if isinstance(v, dict):
+            v = _config_to_cache_key(v)
+        items.append((k, v))
+    return tuple(items)
+
+
 async def run_query_async(query: str) -> str:
-    """Async MCP-facing wrapper for ClickHouse queries."""
+    """Async MCP-facing wrapper for ClickHouse queries.
+
+    Awaits the worker-pool future asynchronously so concurrent tool calls are
+    served while a slow query is in flight.
+    """
     logger.info(f"Executing query: {query}")
+
+    client_config = _resolve_client_config()
+    query_id = str(uuid.uuid4())
+
     try:
-        future = QUERY_EXECUTOR.submit(execute_query, query)
+        with _active_queries_lock:
+            in_flight = len(_active_queries)
+        if in_flight >= _max_workers:
+            logger.warning(
+                "Thread pool saturated: %d in-flight vs %d workers",
+                in_flight, _max_workers,
+            )
+
+        future = QUERY_EXECUTOR.submit(execute_query, query, query_id, client_config)
         timeout_secs = get_mcp_config().query_timeout
         try:
             return await asyncio.wait_for(
                 asyncio.wrap_future(future), timeout=timeout_secs
             )
         except asyncio.TimeoutError:
-            logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
-            future.cancel()
+            logger.warning(
+                "Query %s timed out after %s seconds: %s", query_id, timeout_secs, query
+            )
+            _cancel_query(query_id)
             raise ToolError(f"Query timed out after {timeout_secs} seconds")
     except ToolError:
         raise
@@ -538,8 +703,15 @@ async def run_query_async(query: str) -> str:
         raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
 
 
-def create_clickhouse_client():
+def _resolve_client_config() -> dict:
+    """Build the merged client config on the request thread.
+
+    Must be called from the request thread where FastMCP Context is available.
+    Merges base config with any per-session overrides, then aligns
+    send_receive_timeout with the MCP query timeout.
+    """
     client_config = get_config().get_client_config()
+    srt_explicitly_set = "CLICKHOUSE_SEND_RECEIVE_TIMEOUT" in os.environ
 
     try:
         ctx = get_context()
@@ -552,35 +724,173 @@ def create_clickhouse_client():
             logger.debug(
                 f"Applying session-specific ClickHouse client config overrides: {list(session_config_overrides.keys())}"
             )
+            if "send_receive_timeout" in session_config_overrides:
+                srt_explicitly_set = True
             client_config.update(session_config_overrides)
     except RuntimeError:
-        # If we're outside a request context, just proceed with the default config
+        # Outside a request context — proceed with base config
         pass
 
+    # Align send_receive_timeout with MCP query timeout so worker threads
+    # unblock shortly after the MCP-level timeout fires, preventing zombie threads.
+    # Only auto-cap when neither env var nor session override explicitly set it.
+    if not srt_explicitly_set:
+        query_timeout = get_mcp_config().query_timeout
+        effective_srt = client_config.get("send_receive_timeout", 300)
+        if effective_srt > query_timeout + 5:
+            client_config["send_receive_timeout"] = query_timeout + 5
+
+    return client_config
+
+
+def _evict_cached_client(config: dict) -> None:
+    """Evict a cached client for the given config, closing it.
+
+    Call this when a query or command fails with a connection error so the
+    next call creates a fresh client instead of reusing the broken one.
+    """
+    cache_key = _config_to_cache_key(config)
+    with _client_cache_lock:
+        entry = _client_cache.pop(cache_key, None)
+    if entry is not None:
+        client, _ = entry
+        logger.info("Evicted stale cached client for %s", config.get("host", "?"))
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+def create_clickhouse_client(config: Optional[dict] = None):
+    """Get or create a cached ClickHouse client for the given config.
+
+    Args:
+        config: Pre-resolved client config dict.  When None the config is
+                resolved from env + session overrides (requires request context).
+                Pass an explicit config when calling from a worker thread.
+    """
+    if config is None:
+        config = _resolve_client_config()
+
+    cache_key = _config_to_cache_key(config)
+
+    # Check cache — extract candidate without holding the lock during ping
+    candidate = None
+    with _client_cache_lock:
+        if cache_key in _client_cache:
+            client, last_used = _client_cache[cache_key]
+            if time.time() - last_used > _CLIENT_IDLE_PING_THRESHOLD:
+                candidate = client
+            else:
+                _client_cache[cache_key] = (client, time.time())
+                logger.debug("Reusing cached client")
+                return client
+
+    # Ping outside the lock so we don't serialize unrelated configs
+    if candidate is not None:
+        try:
+            alive = candidate.ping()
+        except Exception:
+            alive = False
+
+        # Identity-check under the lock: another thread may have replaced
+        # the cached client while we were pinging — never overwrite or evict
+        # a newer entry based on stale candidate state.
+        if alive:
+            with _client_cache_lock:
+                entry = _client_cache.get(cache_key)
+                if entry is not None and entry[0] is candidate:
+                    _client_cache[cache_key] = (candidate, time.time())
+                    logger.debug("Reusing cached client (ping OK after idle)")
+                    return candidate
+                if entry is not None:
+                    current_client = entry[0]
+                    _client_cache[cache_key] = (current_client, time.time())
+                else:
+                    current_client = None
+            if current_client is not None:
+                try:
+                    candidate.close()
+                except Exception:
+                    pass
+                logger.debug("Reusing cached client (another thread replaced idle client)")
+                return current_client
+        else:
+            logger.warning("Cached client failed ping, creating new client")
+            with _client_cache_lock:
+                entry = _client_cache.get(cache_key)
+                if entry is not None and entry[0] is candidate:
+                    _client_cache.pop(cache_key, None)
+            try:
+                candidate.close()
+            except Exception:
+                pass
+
+    # Create new client outside the lock (client creation is slow)
     config_fields = [
-        f"secure={client_config['secure']}",
-        f"verify={client_config['verify']}",
-        f"connect_timeout={client_config['connect_timeout']}s",
-        f"send_receive_timeout={client_config['send_receive_timeout']}s",
+        f"secure={config['secure']}",
+        f"verify={config['verify']}",
+        f"connect_timeout={config['connect_timeout']}s",
+        f"send_receive_timeout={config['send_receive_timeout']}s",
     ]
-    if "server_host_name" in client_config:
-        config_fields.append(f"server_host_name={client_config['server_host_name']}")
-    log_msg = (
-        f"Creating ClickHouse client connection to {client_config['host']}:{client_config['port']} "
-        f"as {client_config['username']} "
+    if "server_host_name" in config:
+        config_fields.append(f"server_host_name={config['server_host_name']}")
+    logger.info(
+        f"Creating ClickHouse client connection to {config['host']}:{config['port']} "
+        f"as {config['username']} "
         f"({', '.join(config_fields)})"
     )
-    logger.info(log_msg)
 
     try:
-        client = clickhouse_connect.get_client(**client_config)
-        # Test the connection
+        # Disable autogenerate_session_id so the client is safe for concurrent
+        # use from the thread pool. clickhouse_connect rejects concurrent queries
+        # on the same session_id, but with this disabled each query runs
+        # without session affinity.
+        client = clickhouse_connect.get_client(
+            **config, autogenerate_session_id=False
+        )
         version = client.server_version
         logger.info(f"Successfully connected to ClickHouse server version {version}")
-        return client
     except Exception as e:
         logger.error(f"Failed to connect to ClickHouse: {str(e)}")
         raise
+
+    with _client_cache_lock:
+        # Another thread may have raced and cached a client for this key
+        if cache_key in _client_cache:
+            try:
+                client.close()
+            except Exception:
+                pass
+            client, _ = _client_cache[cache_key]
+            _client_cache[cache_key] = (client, time.time())
+            return client
+        _client_cache[cache_key] = (client, time.time())
+
+    return client
+
+
+def _clear_client_cache():
+    """Clear the client cache, closing all cached clients.
+
+    Used during shutdown and for testing.
+    """
+    with _client_cache_lock:
+        for _, (client, _) in list(_client_cache.items()):
+            try:
+                client.close()
+            except Exception:
+                pass
+        _client_cache.clear()
+
+
+def _shutdown():
+    # Order matters: drain workers before closing the clients they hold.
+    QUERY_EXECUTOR.shutdown(wait=True)
+    _clear_client_cache()
+
+
+atexit.register(_shutdown)
 
 
 def build_query_settings(client) -> dict[str, str]:

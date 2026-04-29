@@ -516,9 +516,9 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_CONNECT_TIMEOUT`: Connection timeout in seconds
   * Default: `"30"`
   * Increase this value if you experience connection timeouts
-* `CLICKHOUSE_SEND_RECEIVE_TIMEOUT`: Send/receive timeout in seconds
-  * Default: `"300"`
-  * Increase this value for long-running queries
+* `CLICKHOUSE_SEND_RECEIVE_TIMEOUT`: Send/receive timeout in seconds for the underlying HTTP connection
+  * Default: automatically set to `CLICKHOUSE_MCP_QUERY_TIMEOUT + 5` so worker threads unblock shortly after a query timeout
+  * If explicitly set, the value is used as-is (e.g. `"300"` for long-running queries)
 * `CLICKHOUSE_DATABASE`: Default database to use
   * Default: None (uses server default)
   * Set this to automatically connect to a specific database
@@ -532,9 +532,14 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_MCP_BIND_PORT`: Port to bind the MCP server to when using HTTP or SSE transport
   * Default: `"8000"`
   * Only used when transport is `"http"` or `"sse"`
-* `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for SELECT tools
+* `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for query tool calls
   * Default: `"30"`
   * Increase this if you see `Query timed out after ...` errors for heavy queries
+  * When a query times out, the server issues a `KILL QUERY` on the ClickHouse server to cancel it
+  * Unless `CLICKHOUSE_SEND_RECEIVE_TIMEOUT` is explicitly set, the HTTP read timeout is automatically aligned to this value plus a small buffer, so worker threads unblock shortly after a timeout
+* `CLICKHOUSE_MCP_MAX_WORKERS`: Maximum number of concurrent query worker threads
+  * Default: `"10"`
+  * Increase if your workload requires many concurrent tool calls
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None
   * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `FASTMCP_SERVER_AUTH`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for HTTP/SSE transports

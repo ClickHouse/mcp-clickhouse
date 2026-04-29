@@ -383,7 +383,7 @@ async def test_concurrent_queries(mcp_server, setup_test_database):
 async def test_run_query_does_not_block_other_mcp_requests(mcp_server):
     """list_tools should complete while a query is in flight."""
 
-    def slow_execute_query(_query: str):
+    def slow_execute_query(_query: str, _query_id: str, _client_config: dict):
         time.sleep(0.75)
         return json.dumps({"columns": ["value"], "rows": [[1]]})
 

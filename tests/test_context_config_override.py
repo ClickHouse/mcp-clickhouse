@@ -10,6 +10,7 @@ from fastmcp.server.dependencies import get_context
 from mcp_clickhouse.mcp_server import (
     mcp,
     create_clickhouse_client,
+    _clear_client_cache,
     CLIENT_CONFIG_OVERRIDES_KEY,
 )
 
@@ -28,6 +29,14 @@ class ConfigOverrideMiddleware(Middleware):
 
 class TestConfigOverrideUnit:
     """Unit tests for the config override merge logic in create_clickhouse_client."""
+
+    def setup_method(self):
+        """Clear the client cache before each test."""
+        _clear_client_cache()
+
+    def teardown_method(self):
+        """Clear the client cache after each test."""
+        _clear_client_cache()
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     @patch("mcp_clickhouse.mcp_server.get_context")
