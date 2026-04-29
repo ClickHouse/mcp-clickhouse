@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import concurrent.futures
 import json
@@ -502,8 +503,8 @@ def run_query(query: str) -> str:
     logger.info(f"Executing query: {query}")
     try:
         future = QUERY_EXECUTOR.submit(execute_query, query)
+        timeout_secs = get_mcp_config().query_timeout
         try:
-            timeout_secs = get_mcp_config().query_timeout
             return future.result(timeout=timeout_secs)
         except concurrent.futures.TimeoutError:
             logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
@@ -513,6 +514,27 @@ def run_query(query: str) -> str:
         raise
     except Exception as e:
         logger.error("Unexpected error in run_query: %s", str(e))
+        raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
+
+
+async def run_query_async(query: str) -> str:
+    """Async MCP-facing wrapper for ClickHouse queries."""
+    logger.info(f"Executing query: {query}")
+    try:
+        future = QUERY_EXECUTOR.submit(execute_query, query)
+        timeout_secs = get_mcp_config().query_timeout
+        try:
+            return await asyncio.wait_for(
+                asyncio.wrap_future(future), timeout=timeout_secs
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
+            future.cancel()
+            raise ToolError(f"Query timed out after {timeout_secs} seconds")
+    except ToolError:
+        raise
+    except Exception as e:
+        logger.error("Unexpected error in run_query_async: %s", str(e))
         raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
 
 
@@ -674,22 +696,25 @@ def execute_chdb_query(query: str):
         return {"error": str(err)}
 
 
+def _process_chdb_result(result) -> str:
+    if isinstance(result, dict) and "error" in result:
+        logger.warning(f"chDB query failed: {result['error']}")
+        return _serialize_tool_result({
+            "status": "error",
+            "message": f"chDB query failed: {result['error']}",
+        })
+    return _serialize_tool_result(result)
+
+
 def run_chdb_select_query(query: str) -> str:
     """Run SQL in chDB, an in-process ClickHouse engine"""
     logger.info(f"Executing chDB SELECT query: {query}")
     try:
         future = QUERY_EXECUTOR.submit(execute_chdb_query, query)
+        timeout_secs = get_mcp_config().query_timeout
         try:
-            timeout_secs = get_mcp_config().query_timeout
             result = future.result(timeout=timeout_secs)
-            # Check if we received an error structure from execute_chdb_query
-            if isinstance(result, dict) and "error" in result:
-                logger.warning(f"chDB query failed: {result['error']}")
-                return _serialize_tool_result({
-                    "status": "error",
-                    "message": f"chDB query failed: {result['error']}",
-                })
-            return _serialize_tool_result(result)
+            return _process_chdb_result(result)
         except concurrent.futures.TimeoutError:
             logger.warning(f"chDB query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
@@ -699,6 +724,31 @@ def run_chdb_select_query(query: str) -> str:
             })
     except Exception as e:
         logger.error(f"Unexpected error in run_chdb_select_query: {e}")
+        return _serialize_tool_result({"status": "error", "message": f"Unexpected error: {e}"})
+
+
+async def run_chdb_select_query_async(query: str) -> str:
+    """Async MCP-facing wrapper for chDB queries."""
+    logger.info(f"Executing chDB SELECT query: {query}")
+    try:
+        future = QUERY_EXECUTOR.submit(execute_chdb_query, query)
+        timeout_secs = get_mcp_config().query_timeout
+        try:
+            result = await asyncio.wait_for(
+                asyncio.wrap_future(future), timeout=timeout_secs
+            )
+            return _process_chdb_result(result)
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"chDB query timed out after {timeout_secs} seconds: {query}"
+            )
+            future.cancel()
+            return _serialize_tool_result({
+                "status": "error",
+                "message": f"chDB query timed out after {timeout_secs} seconds",
+            })
+    except Exception as e:
+        logger.error(f"Unexpected error in run_chdb_select_query_async: {e}")
         return _serialize_tool_result({"status": "error", "message": f"Unexpected error: {e}"})
 
 
@@ -762,7 +812,13 @@ def _register_chdb_tools():
         return
 
     atexit.register(_chdb_client.close)
-    mcp.add_tool(Tool.from_function(run_chdb_select_query))
+    mcp.add_tool(
+        Tool.from_function(
+            run_chdb_select_query_async,
+            name="run_chdb_select_query",
+            description="Run SQL in chDB, an in-process ClickHouse engine",
+        )
+    )
     chdb_prompt = Prompt.from_function(
         chdb_initial_prompt,
         name="chdb_initial_prompt",
@@ -778,7 +834,8 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
     mcp.add_tool(Tool.from_function(list_tables))
     mcp.add_tool(
         Tool.from_function(
-            run_query,
+            run_query_async,
+            name="run_query",
             description=(
                 "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
                 "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML operations. "
