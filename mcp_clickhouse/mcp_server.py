@@ -66,6 +66,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(MCP_SERVER_NAME)
 
+# Bounded thread pool for both ClickHouse and chDB query execution. Timeouts
+# are enforced at the Python level via Future.result(timeout=...); the query
+# itself is not canceled server-side when the timeout fires.
 QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
 
@@ -517,6 +520,14 @@ def run_query(query: str) -> str:
 
 
 def create_clickhouse_client():
+    """Create a ClickHouse client, layering per-request overrides on the base config.
+
+    Middleware can inject per-request routing, tenant overrides, or timeouts
+    via FastMCP context state under CLIENT_CONFIG_OVERRIDES_KEY. Non-dict values
+    under that key are ignored with a warning. Outside a request context (e.g.
+    startup, unit tests), get_context() raises RuntimeError and we fall back to
+    the base config from get_config().
+    """
     client_config = get_config().get_client_config()
 
     try:
@@ -532,7 +543,6 @@ def create_clickhouse_client():
             )
             client_config.update(session_config_overrides)
     except RuntimeError:
-        # If we're outside a request context, just proceed with the default config
         pass
 
     config_fields = [

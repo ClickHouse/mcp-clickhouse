@@ -1,5 +1,8 @@
-# Claude Instructions
+This repository uses `AGENTS.md` as the canonical agent instruction file. Read it and follow it.
 
-This repository uses `AGENTS.md` as the canonical AI instruction file.
+`AGENTS.md` points to deeper, on-demand context:
 
-Read `AGENTS.md` and follow it. Also read any docs it requires, especially `.agents/architecture.md` for substantial code changes and `.agents/review.md` for code review work.
+- `.agents/architecture.md` for substantial code changes.
+- `.agents/skills/testing/SKILL.md` for running, writing, or modifying tests.
+- `.agents/skills/review/SKILL.md` for PR and patch review.
+- `.agents/skills/upstream-verify/SKILL.md` for ClickHouse, `clickhouse-connect`, `FastMCP`, or `chDB` behavior claims.

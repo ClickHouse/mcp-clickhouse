@@ -4,10 +4,10 @@ This module handles all environment variable configuration with sensible default
 and type conversion.
 """
 
-from dataclasses import dataclass
 import os
-from typing import Optional
+from dataclasses import dataclass
 from enum import Enum
+from typing import Optional
 
 
 class TransportType(str, Enum):
@@ -263,13 +263,17 @@ _CHDB_CONFIG_INSTANCE = None
 
 
 def get_config():
-    """
-    Gets the singleton instance of ClickHouseConfig.
-    Instantiates it on the first call.
+    """Get the singleton ClickHouseConfig, instantiating on first call.
+
+    The cache is process-wide. ClickHouseConfig.__init__ validates required
+    env vars only when the backend is enabled, which is what lets the server
+    run in chDB-only mode without CLICKHOUSE_HOST. Tests should use
+    monkeypatch.setenv plus patches that target this accessor (or reset the
+    global via existing fixtures). Note that reimporting modules will not re-read env
+    vars.
     """
     global _CONFIG_INSTANCE
     if _CONFIG_INSTANCE is None:
-        # Instantiate the config object here, ensuring load_dotenv() has likely run
         _CONFIG_INSTANCE = ClickHouseConfig()
     return _CONFIG_INSTANCE
 
