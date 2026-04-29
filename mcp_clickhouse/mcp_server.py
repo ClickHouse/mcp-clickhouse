@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import uuid
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 import clickhouse_connect
@@ -71,51 +71,73 @@ atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
 
 load_dotenv()
 
-# Configure authentication for HTTP/SSE transports
-auth_provider = None
-mcp_config = get_mcp_config()
-http_transports = [TransportType.HTTP.value, TransportType.SSE.value]
+_HTTP_TRANSPORTS = (TransportType.HTTP.value, TransportType.SSE.value)
 
-if mcp_config.server_transport in http_transports:
+
+def _resolve_auth(mcp_config) -> Dict[str, Any]:
+    """Resolve FastMCP auth kwargs for the current transport.
+
+    An empty return dict omits the `auth` kwarg so FastMCP auto-detects its
+    provider from FASTMCP_SERVER_AUTH / FASTMCP_SERVER_AUTH_* env vars.
+    Returning {"auth": None} instead explicitly disables auth.
+    """
+    if mcp_config.server_transport not in _HTTP_TRANSPORTS:
+        return {}
+
+    configured = {
+        "CLICKHOUSE_MCP_AUTH_DISABLED": mcp_config.auth_disabled,
+        "CLICKHOUSE_MCP_AUTH_TOKEN": bool(mcp_config.auth_token),
+        "FASTMCP_SERVER_AUTH": bool(os.getenv("FASTMCP_SERVER_AUTH")),
+    }
+    active = [name for name, is_set in configured.items() if is_set]
+
+    if len(active) > 1:
+        raise ValueError(
+            "Multiple authentication modes configured for HTTP/SSE transport: "
+            f"{', '.join(active)}. These are mutually exclusive; unset all but one."
+        )
+
+    if not active:
+        raise ValueError(
+            "Authentication is required for HTTP/SSE transports. Configure exactly one of:\n"
+            "  - CLICKHOUSE_MCP_AUTH_TOKEN=<token>   (static bearer token)\n"
+            "  - FASTMCP_SERVER_AUTH=<class-path>    (FastMCP auth provider, full class path;\n"
+            "       e.g. fastmcp.server.auth.providers.azure.AzureProvider)\n"
+            "  - CLICKHOUSE_MCP_AUTH_DISABLED=true   (disables auth; development only)"
+        )
+
     if mcp_config.auth_disabled:
         logger.warning("WARNING: MCP SERVER AUTHENTICATION IS DISABLED")
         logger.warning("Only use this for local development/testing.")
         logger.warning("DO NOT expose to networks.")
-    elif mcp_config.auth_token:
-        auth_provider = StaticTokenVerifier(
+        return {"auth": None}
+
+    if mcp_config.auth_token:
+        verifier = StaticTokenVerifier(
             tokens={mcp_config.auth_token: {"client_id": "mcp-client", "scopes": []}},
             required_scopes=[],
         )
-        logger.info("Authentication enabled for HTTP/SSE transport")
-    else:
-        # No token configured and auth not disabled
-        raise ValueError(
-            "Authentication token required for HTTP/SSE transports. "
-            "Set CLICKHOUSE_MCP_AUTH_TOKEN environment variable or set "
-            "CLICKHOUSE_MCP_AUTH_DISABLED=true (for development only)."
-        )
+        logger.info("Authentication enabled for HTTP/SSE transport (static bearer token)")
+        return {"auth": verifier}
 
-mcp = FastMCP(name=MCP_SERVER_NAME, auth=auth_provider)
+    logger.info(
+        "Authentication delegated to FastMCP provider: %s", os.getenv("FASTMCP_SERVER_AUTH")
+    )
+    # Return empty kwargs so FastMCP auto-loads from FASTMCP_SERVER_AUTH_* env vars.
+    return {}
+
+
+mcp = FastMCP(name=MCP_SERVER_NAME, **_resolve_auth(get_mcp_config()))
 _chdb_client = None
 _chdb_error_message: Optional[str] = None
 
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request) -> PlainTextResponse:
-    """Health check endpoint for monitoring server status.
+    """Liveness probe. Intentionally unauthenticated and minimal.
 
-    Returns OK if the server is running and can connect to ClickHouse.
+    Debug via server logs.
     """
-    if auth_provider is not None:
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            return PlainTextResponse("Unauthorized", status_code=401)
-
-        token = auth_header[7:]
-        access_token = await auth_provider.verify_token(token)
-        if access_token is None:
-            return PlainTextResponse("Unauthorized", status_code=401)
-
     try:
         # Check if ClickHouse is enabled by trying to create config
         # If ClickHouse is disabled, this will succeed but connection will fail
@@ -125,26 +147,31 @@ async def health_check(request: Request) -> PlainTextResponse:
             # If ClickHouse is disabled, check chDB status
             chdb_config = get_chdb_config()
             if chdb_config.enabled and _chdb_client is not None:
-                return PlainTextResponse("OK - MCP server running with chDB enabled")
+                return PlainTextResponse("OK")
             elif chdb_config.enabled and _chdb_error_message:
                 return PlainTextResponse(
                     "ERROR. chDB initialization failed. Check server logs for details.",
                     status_code=503,
                 )
             else:
-                # Both ClickHouse and chDB are disabled - this is an error
+                logger.error(
+                    "Health check failed: both CLICKHOUSE_ENABLED=false and CHDB_ENABLED=false"
+                )
                 return PlainTextResponse(
-                    "ERROR - Both ClickHouse and chDB are disabled. At least one must be enabled.",
+                    "ERROR. Server misconfigured. Check server logs for details.",
                     status_code=503,
                 )
 
         # Try to create a client connection to verify ClickHouse connectivity
-        client = create_clickhouse_client()
-        version = client.server_version
-        return PlainTextResponse(f"OK - Connected to ClickHouse {version}")
-    except Exception as e:
-        # Return 503 Service Unavailable if we can't connect to ClickHouse
-        return PlainTextResponse(f"ERROR - Cannot connect to ClickHouse: {str(e)}", status_code=503)
+        create_clickhouse_client()
+        return PlainTextResponse("OK")
+    except Exception:
+        # Log the underlying error server-side, but don't leak details over the wire.
+        logger.exception("Health check failed: ClickHouse connection error")
+        return PlainTextResponse(
+            "ERROR. ClickHouse connection failed. Check server logs for details.",
+            status_code=503,
+        )
 
 
 def result_to_table(query_columns, result) -> List[Table]:
@@ -155,17 +182,11 @@ def result_to_column(query_columns, result) -> List[Column]:
     return [Column(**dict(zip(query_columns, row))) for row in result]
 
 
-def to_json(obj: Any) -> str:
-    if is_dataclass(obj):
-        return json.dumps(asdict(obj), default=to_json)
-    elif isinstance(obj, list):
-        return [to_json(item) for item in obj]
-    elif isinstance(obj, dict):
-        return {key: to_json(value) for key, value in obj.items()}
-    return obj
+def _serialize_tool_result(obj: Any) -> str:
+    return json.dumps(obj, default=str)
 
 
-def list_databases():
+def list_databases() -> str:
     """List available ClickHouse databases"""
     logger.info("Listing all databases")
     client = create_clickhouse_client()
@@ -178,7 +199,7 @@ def list_databases():
         databases = [result]
 
     logger.info(f"Found {len(databases)} databases")
-    return json.dumps(databases)
+    return _serialize_tool_result(databases)
 
 
 # Store pagination state for list_tables with 1-hour expiry
@@ -314,7 +335,7 @@ def list_tables(
     page_token: Optional[str] = None,
     page_size: int = 50,
     include_detailed_columns: bool = True,
-) -> Dict[str, Any]:
+) -> str:
     """List available ClickHouse tables in a database, including schema, comment,
     row count, and column count.
 
@@ -329,7 +350,7 @@ def list_tables(
             all column information. This reduces payload size for large schemas.
 
     Returns:
-        A dictionary containing:
+        A JSON-encoded string of an object containing:
         - tables: List of table information (as dictionaries)
         - next_page_token: Token for the next page, or None if no more pages
         - total_tables: Total number of tables matching the filters
@@ -389,11 +410,11 @@ def list_tables(
                 len(table_names),
                 next_page_token,
             )
-            return {
+            return _serialize_tool_result({
                 "tables": [asdict(table) for table in tables],
                 "next_page_token": next_page_token,
                 "total_tables": len(table_names),
-            }
+            })
 
     table_names = fetch_table_names_from_system(client, database, like, not_like)
 
@@ -420,11 +441,11 @@ def list_tables(
         next_page_token,
     )
 
-    return {
+    return _serialize_tool_result({
         "tables": [asdict(table) for table in tables],
         "next_page_token": next_page_token,
         "total_tables": len(table_names),
-    }
+    })
 
 
 def _validate_query_for_destructive_ops(query: str) -> None:
@@ -456,7 +477,7 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         )
 
 
-def execute_query(query: str):
+def execute_query(query: str) -> str:
     client = create_clickhouse_client()
     try:
         _validate_query_for_destructive_ops(query)
@@ -464,7 +485,7 @@ def execute_query(query: str):
         query_settings = build_query_settings(client)
         res = client.query(query, settings=query_settings)
         logger.info(f"Query returned {len(res.result_rows)} rows")
-        return {"columns": res.column_names, "rows": res.result_rows}
+        return _serialize_tool_result({"columns": res.column_names, "rows": res.result_rows})
     except ToolError:
         raise
     except Exception as err:
@@ -472,7 +493,7 @@ def execute_query(query: str):
         raise ToolError(f"Query execution failed: {str(err)}")
 
 
-def run_query(query: str):
+def run_query(query: str) -> str:
     """Execute a SQL query against ClickHouse.
 
     Queries run in read-only mode by default. Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true
@@ -483,17 +504,7 @@ def run_query(query: str):
         future = QUERY_EXECUTOR.submit(execute_query, query)
         try:
             timeout_secs = get_mcp_config().query_timeout
-            result = future.result(timeout=timeout_secs)
-            # Check if we received an error structure from execute_query
-            if isinstance(result, dict) and "error" in result:
-                logger.warning(f"Query failed: {result['error']}")
-                # MCP requires structured responses; string error messages can cause
-                # serialization issues leading to BrokenResourceError
-                return {
-                    "status": "error",
-                    "message": f"Query failed: {result['error']}",
-                }
-            return result
+            return future.result(timeout=timeout_secs)
         except concurrent.futures.TimeoutError:
             logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
@@ -663,7 +674,7 @@ def execute_chdb_query(query: str):
         return {"error": str(err)}
 
 
-def run_chdb_select_query(query: str):
+def run_chdb_select_query(query: str) -> str:
     """Run SQL in chDB, an in-process ClickHouse engine"""
     logger.info(f"Executing chDB SELECT query: {query}")
     try:
@@ -674,21 +685,21 @@ def run_chdb_select_query(query: str):
             # Check if we received an error structure from execute_chdb_query
             if isinstance(result, dict) and "error" in result:
                 logger.warning(f"chDB query failed: {result['error']}")
-                return {
+                return _serialize_tool_result({
                     "status": "error",
                     "message": f"chDB query failed: {result['error']}",
-                }
-            return result
+                })
+            return _serialize_tool_result(result)
         except concurrent.futures.TimeoutError:
             logger.warning(f"chDB query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
-            return {
+            return _serialize_tool_result({
                 "status": "error",
                 "message": f"chDB query timed out after {timeout_secs} seconds",
-            }
+            })
     except Exception as e:
         logger.error(f"Unexpected error in run_chdb_select_query: {e}")
-        return {"status": "error", "message": f"Unexpected error: {e}"}
+        return _serialize_tool_result({"status": "error", "message": f"Unexpected error: {e}"})
 
 
 def chdb_initial_prompt() -> str:
