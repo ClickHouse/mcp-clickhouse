@@ -255,9 +255,17 @@ You can also enable both ClickHouse and chDB simultaneously:
 }
 ```
 
-3. Locate the command entry for `uv` and replace it with the absolute path to the `uv` executable. This ensures that the correct version of `uv` is used when starting the server. On a mac, you can find this path using `which uv`.
+3. ## Usage with Gemini CLI
 
-4. Restart Claude Desktop to apply the changes.
+You can install and run the ClickHouse MCP server directly as a native extension using the Gemini CLI. This will automatically manage the environment and start the server when needed.
+
+```bash
+gemini extensions install [https://github.com/ClickHouse/mcp-clickhouse](https://github.com/ClickHouse/mcp-clickhouse)
+```
+
+4. Locate the command entry for `uv` and replace it with the absolute path to the `uv` executable. This ensures that the correct version of `uv` is used when starting the server. On a mac, you can find this path using `which uv`.
+
+5. Restart Claude Desktop to apply the changes.
 
 ### Optional Write Access
 

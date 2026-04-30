@@ -1,0 +1,52 @@
+{
+  "name": "clickhouse",
+  "version": "1.0.0",
+  "description": "Connect Gemini to your ClickHouse database to query data and explore schemas.",
+  "mcpServers": {
+    "clickhouse": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp-clickhouse",
+        "mcp-clickhouse"
+      ],
+      "env": {
+        "CLICKHOUSE_HOST": "${settings.CLICKHOUSE_HOST}",
+        "CLICKHOUSE_PORT": "${settings.CLICKHOUSE_PORT}",
+        "CLICKHOUSE_USER": "${settings.CLICKHOUSE_USER}",
+        "CLICKHOUSE_PASSWORD": "${settings.CLICKHOUSE_PASSWORD}"
+      }
+    }
+  },
+  "settings": [
+    {
+      "name": "CLICKHOUSE_HOST",
+      "type": "string",
+      "description": "The hostname of your ClickHouse database",
+      "default": "localhost",
+      "required": false
+    },
+    {
+      "name": "CLICKHOUSE_PORT",
+      "type": "string",
+      "description": "The port number (e.g., 8123 for local, 8443 for Cloud)",
+      "default": "8443",
+      "required": false
+    },
+    {
+      "name": "CLICKHOUSE_USER",
+      "type": "string",
+      "description": "Database username",
+      "default": "default",
+      "required": false
+    },
+    {
+      "name": "CLICKHOUSE_PASSWORD",
+      "type": "password",
+      "description": "Database password (input will be masked securely)",
+      "sensitive": true,
+      "required": true
+    }
+  ]
+}
