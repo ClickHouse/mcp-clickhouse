@@ -450,18 +450,23 @@ def list_tables(
 
 
 def _validate_query_for_destructive_ops(query: str) -> None:
-    """Validate that destructive operations (DROP, TRUNCATE) are allowed.
-
-    Args:
-        query: The SQL query to validate
-
-    Raises:
-        ToolError: If the query contains destructive operations but CLICKHOUSE_ALLOW_DROP is not set
-    """
+    """Validate that destructive operations (DROP, TRUNCATE) are allowed."""
     config = get_config()
 
-    # If writes are not enabled, skip this check (readonly mode will catch it anyway)
+    # 🛡️ SECURITY PATCH: Enforce strict read-only at the application layer
     if not config.allow_write_access:
+        # Strip comments to prevent SQL injection style bypasses
+        clean_query = re.sub(r'--.*$', '', query, flags=re.MULTILINE)
+        clean_query = re.sub(r'/\*.*?\*/', '', clean_query, flags=re.DOTALL)
+        clean_query = clean_query.strip().upper()
+        
+        allowed_prefixes = ('SELECT', 'WITH', 'SHOW', 'DESCRIBE', 'EXPLAIN', 'EXISTS')
+        if not clean_query.startswith(allowed_prefixes):
+            raise ToolError(
+                "Security Violation: Only SELECT/SHOW/DESCRIBE queries are allowed. "
+                "Data modification is strictly prohibited in this environment unless "
+                "CLICKHOUSE_ALLOW_WRITE_ACCESS=true is set."
+            )
         return
 
     # If DROP is explicitly allowed, no validation needed
