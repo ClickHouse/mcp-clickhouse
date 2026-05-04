@@ -120,3 +120,45 @@ def test_server_host_name_omitted_when_unset(monkeypatch: pytest.MonkeyPatch):
     client_config = config.get_client_config()
 
     assert "server_host_name" not in client_config
+
+
+def test_client_cert_configuration(monkeypatch: pytest.MonkeyPatch):
+    """Test that client cert and key are passed through when set."""
+    monkeypatch.setenv("CLICKHOUSE_HOST", "localhost")
+    monkeypatch.setenv("CLICKHOUSE_USER", "test")
+    monkeypatch.setenv("CLICKHOUSE_CLIENT_CERT", "/path/to/client.pem")
+    monkeypatch.setenv("CLICKHOUSE_CLIENT_CERT_KEY", "/path/to/client.key")
+    monkeypatch.delenv("CLICKHOUSE_PASSWORD", raising=False)
+
+    config = ClickHouseConfig()
+    client_config = config.get_client_config()
+
+    assert client_config["client_cert"] == "/path/to/client.pem"
+    assert client_config["client_cert_key"] == "/path/to/client.key"
+    assert client_config["password"] == ""
+
+
+def test_client_cert_not_in_config_when_unset(monkeypatch: pytest.MonkeyPatch):
+    """Test that client cert fields are omitted when not set."""
+    monkeypatch.setenv("CLICKHOUSE_HOST", "localhost")
+    monkeypatch.setenv("CLICKHOUSE_USER", "test")
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "test")
+    monkeypatch.delenv("CLICKHOUSE_CLIENT_CERT", raising=False)
+    monkeypatch.delenv("CLICKHOUSE_CLIENT_CERT_KEY", raising=False)
+
+    config = ClickHouseConfig()
+    client_config = config.get_client_config()
+
+    assert "client_cert" not in client_config
+    assert "client_cert_key" not in client_config
+
+
+def test_password_required_without_client_cert(monkeypatch: pytest.MonkeyPatch):
+    """Test that CLICKHOUSE_PASSWORD is required when no client cert is set."""
+    monkeypatch.setenv("CLICKHOUSE_HOST", "localhost")
+    monkeypatch.setenv("CLICKHOUSE_USER", "test")
+    monkeypatch.delenv("CLICKHOUSE_PASSWORD", raising=False)
+    monkeypatch.delenv("CLICKHOUSE_CLIENT_CERT", raising=False)
+
+    with pytest.raises(ValueError, match="CLICKHOUSE_PASSWORD"):
+        ClickHouseConfig()

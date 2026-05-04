@@ -198,6 +198,37 @@ Or, if you'd like to try it out with the [ClickHouse SQL Playground](https://sql
 }
 ```
 
+For mTLS (mutual TLS) authentication, where client certificates are used instead of a password:
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp-clickhouse",
+        "--python",
+        "3.10",
+        "mcp-clickhouse"
+      ],
+      "env": {
+        "CLICKHOUSE_HOST": "<clickhouse-host>",
+        "CLICKHOUSE_PORT": "<clickhouse-port>",
+        "CLICKHOUSE_USER": "<clickhouse-user>",
+        "CLICKHOUSE_SECURE": "true",
+        "CLICKHOUSE_VERIFY": "true",
+        "CLICKHOUSE_CLIENT_CERT": "/path/to/client.pem",
+        "CLICKHOUSE_CLIENT_CERT_KEY": "/path/to/client.key",
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
+        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30"
+      }
+    }
+  }
+}
+```
+
 For chDB (embedded ClickHouse engine), add the following configuration:
 
 ```json
@@ -491,6 +522,7 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_HOST`: The hostname of your ClickHouse server
 * `CLICKHOUSE_USER`: The username for authentication
 * `CLICKHOUSE_PASSWORD`: The password for authentication
+  * Not required when using mTLS client certificate authentication (see `CLICKHOUSE_CLIENT_CERT`)
 
 > [!CAUTION]
 > It is important to treat your MCP database user as you would any external client connecting to your database, granting only the minimum necessary privileges required for its operation. The use of default or administrative users should be strictly avoided at all times.
@@ -560,6 +592,13 @@ The following environment variables are used to configure the ClickHouse and chD
   * Only takes effect when `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` is also set
   * Set to `"true"` to explicitly allow destructive DROP and TRUNCATE operations
   * This is a safety feature to prevent accidental data deletion during AI exploration
+* `CLICKHOUSE_CLIENT_CERT`: Path to TLS client certificate for mTLS authentication
+  * Default: None
+  * When set, `CLICKHOUSE_PASSWORD` is no longer required
+  * Must be used with `CLICKHOUSE_CLIENT_CERT_KEY`
+* `CLICKHOUSE_CLIENT_CERT_KEY`: Path to TLS client private key for mTLS authentication
+  * Default: None
+  * Must be used with `CLICKHOUSE_CLIENT_CERT`
 
 #### Middleware Variables
 
@@ -633,6 +672,17 @@ For chDB with persistent storage:
 CHDB_ENABLED=true
 CLICKHOUSE_ENABLED=false
 CHDB_DATA_PATH=/path/to/chdb/data
+```
+
+For mTLS (mutual TLS) authentication:
+
+```env
+CLICKHOUSE_HOST=your-instance.clickhouse.cloud
+CLICKHOUSE_USER=default
+CLICKHOUSE_SECURE=true
+CLICKHOUSE_CLIENT_CERT=/path/to/client.pem
+CLICKHOUSE_CLIENT_CERT_KEY=/path/to/client.key
+# CLICKHOUSE_PASSWORD is not required when using client certificates
 ```
 
 For MCP Inspector or remote access with HTTP transport:
