@@ -183,8 +183,29 @@ def result_to_column(query_columns, result) -> List[Column]:
     return [Column(**dict(zip(query_columns, row))) for row in result]
 
 
+JS_MAX_SAFE_INTEGER = (1 << 53) - 1
+
+
+def _json_safe_value(obj: Any) -> Any:
+    if isinstance(obj, int) and not isinstance(obj, bool):
+        if abs(obj) > JS_MAX_SAFE_INTEGER:
+            return str(obj)
+        return obj
+
+    if isinstance(obj, tuple):
+        return [_json_safe_value(item) for item in obj]
+
+    if isinstance(obj, list):
+        return [_json_safe_value(item) for item in obj]
+
+    if isinstance(obj, dict):
+        return {key: _json_safe_value(value) for key, value in obj.items()}
+
+    return obj
+
+
 def _serialize_tool_result(obj: Any) -> str:
-    return json.dumps(obj, default=str)
+    return json.dumps(_json_safe_value(obj), default=str)
 
 
 def list_databases() -> str:
