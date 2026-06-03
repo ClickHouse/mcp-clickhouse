@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.4.0 - 2026-06-03
+
 ### Added
 - Support for FastMCP OAuth/OIDC auth providers on HTTP/SSE transports via the `FASTMCP_SERVER_AUTH` environment variable (e.g. Azure Entra, Google, GitHub, WorkOS). Static token, FastMCP OAuth, and disabled mode are now mutually exclusive; configure exactly one. ([#171](https://github.com/ClickHouse/mcp-clickhouse/issues/171))
 - Official multi-arch Docker images published to GitHub Container Registry on each release: `ghcr.io/clickhouse/mcp-clickhouse:vX.Y.Z`, `:X.Y`, and `:latest`.
