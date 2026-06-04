@@ -1,6 +1,7 @@
 import asyncio
 import atexit
 import concurrent.futures
+import copy
 import json
 import logging
 import os
@@ -478,8 +479,26 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         )
 
 
-def execute_query(query: str) -> str:
-    client = create_clickhouse_client()
+def get_session_client_config_overrides() -> dict | None:
+    """Return request-scoped ClickHouse client config overrides, if any."""
+    try:
+        ctx = get_context()
+    except RuntimeError:
+        return None
+
+    session_config_overrides = ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY)
+    if session_config_overrides and not isinstance(session_config_overrides, dict):
+        logger.warning(
+            "%s must be a dict, got %s. Ignoring.",
+            CLIENT_CONFIG_OVERRIDES_KEY,
+            type(session_config_overrides).__name__,
+        )
+        return None
+    return copy.deepcopy(session_config_overrides) if session_config_overrides else None
+
+
+def execute_query(query: str, session_config_overrides: dict | None = None) -> str:
+    client = create_clickhouse_client(session_config_overrides)
     try:
         _validate_query_for_destructive_ops(query)
 
@@ -502,7 +521,8 @@ def run_query(query: str) -> str:
     """
     logger.info(f"Executing query: {query}")
     try:
-        future = QUERY_EXECUTOR.submit(execute_query, query)
+        session_config_overrides = get_session_client_config_overrides()
+        future = QUERY_EXECUTOR.submit(execute_query, query, session_config_overrides)
         timeout_secs = get_mcp_config().query_timeout
         try:
             return future.result(timeout=timeout_secs)
@@ -521,7 +541,8 @@ async def run_query_async(query: str) -> str:
     """Async MCP-facing wrapper for ClickHouse queries."""
     logger.info(f"Executing query: {query}")
     try:
-        future = QUERY_EXECUTOR.submit(execute_query, query)
+        session_config_overrides = get_session_client_config_overrides()
+        future = QUERY_EXECUTOR.submit(execute_query, query, session_config_overrides)
         timeout_secs = get_mcp_config().query_timeout
         try:
             return await asyncio.wait_for(
@@ -538,24 +559,17 @@ async def run_query_async(query: str) -> str:
         raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
 
 
-def create_clickhouse_client():
+def create_clickhouse_client(session_config_overrides: dict | None = None):
     client_config = get_config().get_client_config()
 
-    try:
-        ctx = get_context()
-        session_config_overrides = ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY)
-        if session_config_overrides and not isinstance(session_config_overrides, dict):
-            logger.warning(
-                f"{CLIENT_CONFIG_OVERRIDES_KEY} must be a dict, got {type(session_config_overrides).__name__}. Ignoring."
-            )
-        elif session_config_overrides:
-            logger.debug(
-                f"Applying session-specific ClickHouse client config overrides: {list(session_config_overrides.keys())}"
-            )
-            client_config.update(session_config_overrides)
-    except RuntimeError:
-        # If we're outside a request context, just proceed with the default config
-        pass
+    if session_config_overrides is None:
+        session_config_overrides = get_session_client_config_overrides()
+    if session_config_overrides:
+        logger.debug(
+            "Applying session-specific ClickHouse client config overrides: %s",
+            list(session_config_overrides.keys()),
+        )
+        client_config.update(session_config_overrides)
 
     config_fields = [
         f"secure={client_config['secure']}",
