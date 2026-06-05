@@ -23,6 +23,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
+from mcp_clickhouse.skills_advisor import CLICKHOUSE_SKILLS_ADVISORY
 from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
 
 
@@ -185,6 +186,11 @@ def result_to_column(query_columns, result) -> List[Column]:
 
 def _serialize_tool_result(obj: Any) -> str:
     return json.dumps(obj, default=str)
+
+
+def clickhouse_skills_advisor() -> str:
+    """Advertise the official ClickHouse Agent Skills and how to install them."""
+    return CLICKHOUSE_SKILLS_ADVISORY
 
 
 def list_databases() -> str:
@@ -829,6 +835,23 @@ def _register_chdb_tools():
 
 
 # Register tools based on configuration
+# The skills advisor has no dependencies (no DB connection or config required),
+# so it is registered unconditionally to always advertise the official skills.
+mcp.add_tool(
+    Tool.from_function(
+        clickhouse_skills_advisor,
+        name="clickhouse_skills_advisor",
+        description=(
+            "MUST USE when starting to analyze a coding task or an SQL "
+            "optimization for ClickHouse or chDB. Takes no arguments and returns "
+            "a brief description of the official ClickHouse Agent Skills "
+            "(https://github.com/ClickHouse/agent-skills): ClickHouse coding best "
+            "practices, performance/query optimization, architecture guidance, "
+            "data migrations, and troubleshooting — plus how to install them."
+        ),
+    )
+)
+
 if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
     mcp.add_tool(Tool.from_function(list_databases))
     mcp.add_tool(Tool.from_function(list_tables))
