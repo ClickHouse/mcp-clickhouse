@@ -189,7 +189,13 @@ def _serialize_tool_result(obj: Any) -> str:
 
 
 def clickhouse_skills_advisor() -> str:
-    """Advertise the official ClickHouse Agent Skills and how to install them."""
+    """Return static advisory text about the official ClickHouse Agent Skills.
+
+    The returned text describes the available skills (ClickHouse best practices,
+    architecture guidance, troubleshooting, and chDB/data migration), what each
+    covers, and how to install them. Takes no arguments and performs no network
+    or database access.
+    """
     return CLICKHOUSE_SKILLS_ADVISORY
 
 
