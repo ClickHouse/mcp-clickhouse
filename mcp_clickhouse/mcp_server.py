@@ -190,11 +190,6 @@ def _serialize_tool_result(obj: Any) -> str:
 
 def clickhouse_skills_advisor() -> str:
     """Return static advisory text about the official ClickHouse Agent Skills.
-
-    The returned text describes the available skills (ClickHouse best practices,
-    architecture guidance, troubleshooting, and chDB/data migration), what each
-    covers, and how to install them. Takes no arguments and performs no network
-    or database access.
     """
     return CLICKHOUSE_SKILLS_ADVISORY
 
@@ -849,11 +844,7 @@ mcp.add_tool(
         name="clickhouse_skills_advisor",
         description=(
             "MUST USE when starting to analyze a coding task or an SQL "
-            "optimization for ClickHouse or chDB. Takes no arguments and returns "
-            "a brief description of the official ClickHouse Agent Skills "
-            "(https://github.com/ClickHouse/agent-skills): ClickHouse coding best "
-            "practices, performance/query optimization, architecture guidance, "
-            "data migrations, and troubleshooting — plus how to install them."
+            "optimization for ClickHouse or chDB."
         ),
     )
 )
