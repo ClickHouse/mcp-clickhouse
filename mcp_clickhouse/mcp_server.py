@@ -843,8 +843,8 @@ mcp.add_tool(
         clickhouse_skills_advisor,
         name="clickhouse_skills_advisor",
         description=(
-            "MUST USE when starting to analyze a coding task or an SQL "
-            "optimization for ClickHouse or chDB."
+            "MUST USE when starting to analyze a ClickHouse related coding task, an SQL "
+            "optimization for ClickHouse or chDB or troubleshooting ClickHouse OSS server or Cloud."
         ),
     )
 )
