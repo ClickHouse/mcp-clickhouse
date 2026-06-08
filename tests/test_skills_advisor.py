@@ -16,7 +16,7 @@ class TestSkillsAdvisorTool(unittest.TestCase):
     def test_mentions_skills_repo_and_install_hint(self):
         result = clickhouse_skills_advisor()
         self.assertIn("github.com/ClickHouse/agent-skills", result)
-        self.assertIn("npx skills", result)
+        self.assertIn("skills add clickhouse/agent-skills", result)
 
     def test_tool_can_be_registered(self):
         tool = Tool.from_function(
