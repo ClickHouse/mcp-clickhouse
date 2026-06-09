@@ -8,16 +8,6 @@ An MCP server for ClickHouse.
 
 ## Features
 
-### ClickHouse Agent Skills Guidance
-
-The server publishes built-in instructions recommending the official [ClickHouse Agent Skills](https://github.com/ClickHouse/agent-skills) for ClickHouse coding, schema design, SQL optimization, migrations, and troubleshooting.
-
-Install with:
-
-```bash
-npx -y skills add clickhouse/agent-skills --all
-```
-
 ### ClickHouse Tools
 
 * `run_query`
