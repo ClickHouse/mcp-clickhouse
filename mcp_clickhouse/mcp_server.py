@@ -23,6 +23,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
+from mcp_clickhouse.skills_advisor import CLICKHOUSE_SERVER_INSTRUCTIONS
 from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
 
 
@@ -128,7 +129,11 @@ def _resolve_auth(mcp_config) -> Dict[str, Any]:
     return {}
 
 
-mcp = FastMCP(name=MCP_SERVER_NAME, **_resolve_auth(get_mcp_config()))
+mcp = FastMCP(
+    name=MCP_SERVER_NAME,
+    instructions=CLICKHOUSE_SERVER_INSTRUCTIONS,
+    **_resolve_auth(get_mcp_config()),
+)
 _chdb_client = None
 _chdb_error_message: Optional[str] = None
 
@@ -828,7 +833,6 @@ def _register_chdb_tools():
     logger.info("chDB tools and prompts registered")
 
 
-# Register tools based on configuration
 if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
     mcp.add_tool(Tool.from_function(list_databases))
     mcp.add_tool(Tool.from_function(list_tables))
