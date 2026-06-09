@@ -23,7 +23,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
-from mcp_clickhouse.skills_advisor import CLICKHOUSE_SKILLS_ADVISORY
+from mcp_clickhouse.skills_advisor import CLICKHOUSE_SERVER_INSTRUCTIONS
 from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
 
 
@@ -129,7 +129,11 @@ def _resolve_auth(mcp_config) -> Dict[str, Any]:
     return {}
 
 
-mcp = FastMCP(name=MCP_SERVER_NAME, **_resolve_auth(get_mcp_config()))
+mcp = FastMCP(
+    name=MCP_SERVER_NAME,
+    instructions=CLICKHOUSE_SERVER_INSTRUCTIONS,
+    **_resolve_auth(get_mcp_config()),
+)
 _chdb_client = None
 _chdb_error_message: Optional[str] = None
 
@@ -186,12 +190,6 @@ def result_to_column(query_columns, result) -> List[Column]:
 
 def _serialize_tool_result(obj: Any) -> str:
     return json.dumps(obj, default=str)
-
-
-def clickhouse_skills_advisor() -> str:
-    """Return static advisory text about the official ClickHouse Agent Skills.
-    """
-    return CLICKHOUSE_SKILLS_ADVISORY
 
 
 def list_databases() -> str:
@@ -834,20 +832,6 @@ def _register_chdb_tools():
     mcp.add_prompt(chdb_prompt)
     logger.info("chDB tools and prompts registered")
 
-
-# Register tools based on configuration
-# The skills advisor has no dependencies (no DB connection or config required),
-# so it is registered unconditionally to always advertise the official skills.
-mcp.add_tool(
-    Tool.from_function(
-        clickhouse_skills_advisor,
-        name="clickhouse_skills_advisor",
-        description=(
-            "MUST USE when starting a ClickHouse-related coding task, SQL optimization (ClickHouse or chDB), "
-            "or troubleshooting ClickHouse OSS server or ClickHouse Cloud."
-        ),
-    )
-)
 
 if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
     mcp.add_tool(Tool.from_function(list_databases))
