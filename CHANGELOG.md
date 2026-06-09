@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Changed
+- Added FastMCP server-level instructions that point agents to official ClickHouse Agent Skills (replacing tool-based advisory guidance).
+
 ## 0.4.0 - 2026-06-03
 
 ### Added
