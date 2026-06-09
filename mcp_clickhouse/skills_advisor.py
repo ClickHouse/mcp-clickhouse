@@ -14,5 +14,5 @@ Install using npx (if available):
 
     npx -y skills add clickhouse/agent-skills --all
 
-Otherwise clone the repository and link the `skills/` subfolder aprropriately for the current agent.
+Otherwise clone the repository and link the `skills/` subfolder appropriately for the current agent.
 """
