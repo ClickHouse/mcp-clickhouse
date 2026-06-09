@@ -1,4 +1,7 @@
+import asyncio
 import unittest
+
+from fastmcp import Client
 
 from mcp_clickhouse.mcp_server import mcp
 from mcp_clickhouse.skills_advisor import CLICKHOUSE_SERVER_INSTRUCTIONS
@@ -15,8 +18,23 @@ class TestSkillsAdvisorInstructions(unittest.TestCase):
         self.assertIn("skills add clickhouse/agent-skills", mcp.instructions)
 
     def test_skills_advisor_tool_not_registered(self):
-        self.assertNotIn("clickhouse_skills_advisor", mcp._tool_manager._tools)
+        async def _list_tool_names():
+            async with Client(mcp) as client:
+                tools = await client.list_tools()
 
+            names = set()
+            for tool in tools:
+                if isinstance(tool, str):
+                    names.add(tool)
+                elif isinstance(tool, dict):
+                    names.add(tool.get("name"))
+                else:
+                    names.add(getattr(tool, "name", None))
+            names.discard(None)
+            return names
+
+        tool_names = asyncio.run(_list_tool_names())
+        self.assertNotIn("clickhouse_skills_advisor", tool_names)
 
 if __name__ == "__main__":
     unittest.main()
