@@ -5,7 +5,7 @@ from fastmcp.exceptions import ToolError
 import asyncio
 import time
 from unittest.mock import patch
-from mcp_clickhouse.mcp_server import mcp, create_clickhouse_client
+from mcp_clickhouse.mcp_server import _serialize_tool_result, create_clickhouse_client, mcp
 from dotenv import load_dotenv
 import json
 
@@ -105,6 +105,17 @@ async def test_list_databases(mcp_server, setup_test_database):
         databases = json.loads(result.content[0].text)
         assert test_db in databases
         assert "system" in databases  # System database should always exist
+
+
+def test_serialize_tool_result_stringifies_large_integers():
+    payload = {"rows": [[1875924584784080993, 42, True]], "value": -1875924584784080993}
+
+    result = json.loads(_serialize_tool_result(payload))
+
+    assert result == {
+        "rows": [["1875924584784080993", 42, True]],
+        "value": "-1875924584784080993",
+    }
 
 
 @pytest.mark.asyncio
@@ -229,6 +240,19 @@ async def test_run_select_query_with_aggregation(mcp_server, setup_test_database
         assert len(query_result["rows"]) == 1
         assert query_result["rows"][0][0] == 4  # count
         assert query_result["rows"][0][1] == 29.5  # average age
+
+
+@pytest.mark.asyncio
+async def test_run_select_query_preserves_uint64_precision(mcp_server):
+    """Large UInt64 values should be serialized as strings to avoid JS precision loss."""
+    async with Client(mcp_server) as client:
+        query = "SELECT toUInt64('1875924584784080993') as value"
+        result = await client.call_tool("run_query", {"query": query})
+
+        query_result = json.loads(result.content[0].text)
+
+        assert query_result["columns"] == ["value"]
+        assert query_result["rows"] == [["1875924584784080993"]]
 
 
 @pytest.mark.asyncio
