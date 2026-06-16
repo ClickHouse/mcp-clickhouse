@@ -509,7 +509,7 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_VERIFY`: Enable/disable SSL certificate verification
   * Default: `"true"`
   * Set to `"false"` to disable certificate verification (not recommended for production)
-  * TLS certificates: By default, the package uses your operating system trust store via `truststore`.
+  * TLS certificates: The package uses your operating system trust store for TLS certificate verification via `truststore`. We call `truststore.inject_into_ssl()` at startup to ensure proper certificate handling. Python’s default SSL behavior is used as a fallback only if an unexpected error occurs.
 * `MCP_CLICKHOUSE_TRUSTSTORE_DISABLE`: Disable the operating-system trust store integration for TLS
   * Default: unset (trust store integration is enabled)
   * Set to `"1"` to skip `truststore.inject_into_ssl()` and use Python's default SSL certificate handling
