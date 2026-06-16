@@ -1,0 +1,96 @@
+---
+apiVersion: "mcp.ypipe.com/v1"
+kind: "McpIntegrationBlueprint"
+metadata:
+  name: "chdb"
+  namespace: "system"
+spec:
+  displayName: "chDB (Embedded ClickHouse)"
+  description: "Embedded ClickHouse engine (chDB) for analytical queries on local\
+    \ files (Parquet, CSV, JSON) and in-memory data."
+  source: "https://github.com/ClickHouse/mcp-clickhouse"
+  configurationSchema:
+    CHDB_DATA_PATH:
+      type: "string"
+      required: false
+      default: ":memory:"
+      description: "Path for persistent storage, or ':memory:' for in-memory database"
+      sensitive: null
+      pattern: null
+  mcpConfig:
+    type: "stdio"
+    command: "uv"
+    args:
+    - "run"
+    - "--with"
+    - "mcp-clickhouse"
+    - "--python"
+    - "3.10"
+    - "mcp-clickhouse"
+    env:
+      CHDB_ENABLED: "true"
+      CLICKHOUSE_ENABLED: "false"
+      CHDB_DATA_PATH: "${CHDB_DATA_PATH}"
+    url: null
+    headers: null
+  disabledTools: null
+  suggestions:
+  - id: "chdb-chdb-query-local-files"
+    title: "chDB: Query Local Files"
+    label: "Run SQL on local Parquet or CSV files"
+    action: "Use chDB to execute a SELECT query on my local data files (like Parquet\
+      \ or CSV) and show the results."
+    actionType: null
+    target: null
+  - id: "chdb-chdb-in-memory-analytics"
+    title: "chDB: In-Memory Analytics"
+    label: "Perform high-speed SQL in memory"
+    action: "Run an analytical SQL aggregation on an in-memory dataset using the chDB\
+      \ engine."
+    actionType: null
+    target: null
+  tools:
+    run_chdb_select_query:
+      description: "Execute SQL queries on local data files or in-memory using the\
+        \ embedded chDB engine."
+      usageIntent: null
+      discoveryHint: "Query and analyze local data files or in-memory datasets using\
+        \ the high-performance, embedded chDB engine, which brings the power of ClickHouse\
+        \ directly to your local environment without the need for a separate server\
+        \ process. This tool is exceptionally well-suited for serverless SQL analysis,\
+        \ allowing you to perform ad-hoc data processing, complex aggregations, and\
+        \ advanced analytical queries on various file formats including Parquet, CSV,\
+        \ JSON, Arrow, and more. By leveraging the chDB library, which is essentially\
+        \ an in-process version of ClickHouse, the agent initiates a sophisticated\
+        \ analytical sequence where the engine directly reads from the local filesystem,\
+        \ parses the data according to the specified schema, and executes optimized\
+        \ SQL operations with sub-second latency. This is essential for a wide variety\
+        \ of tasks, including large-scale log analysis, data engineering pipelines,\
+        \ and real-time exploratory data science. The tool supports the full range\
+        \ of ClickHouse SQL functions, ensuring compatibility with complex analytical\
+        \ workflows that require window functions, arrays, and nested data structures.\
+        \ Synonyms for this tool's functionality include local data analysis, embedded\
+        \ SQL querying, in-memory data processing, ad-hoc file exploration, serverless\
+        \ analytics, and in-process OLAP. Common use cases involve reading multi-gigabyte\
+        \ Parquet files to extract specific business metrics, joining multiple large\
+        \ CSV files in memory for rapid reporting, converting data between different\
+        \ formats (e.g., CSV to JSON) using familiar SQL syntax, or performing sentiment\
+        \ analysis on locally stored text files. Keywords: chDB, ClickHouse, SQL analytics,\
+        \ Parquet querying, in-memory database, OLAP, data exploration, embedded engine,\
+        \ serverless SQL, local analytics. Behavioral notes: the engine uses a column-oriented\
+        \ storage and execution model, which provides massive performance gains for\
+        \ analytical queries that only reference a subset of columns. It can seamlessly\
+        \ handle datasets that exceed available RAM by using temporary storage on\
+        \ disk if configured correctly. Caveats: ensure that the file paths are correctly\
+        \ specified and accessible; if a file is missing or formatted incorrectly,\
+        \ the engine will return a clear error. This tool is the 'analytical engine'\
+        \ for the AI, providing a way to perform professional-grade data analysis\
+        \ directly on the user's local machine with minimal overhead and maximum speed.\
+        \ It bridges the gap between raw files and meaningful business intelligence,\
+        \ ensuring that every local dataset is a potential source of deep insights.\
+        \ The AI should think of this tool as its personal, high-speed data scientist\
+        \ that can handle millions of rows in the blink of an eye, all while staying\
+        \ entirely within the local environment."
+      properties: null
+      required: null
+  modelSemantics: null

@@ -1,0 +1,165 @@
+---
+apiVersion: "mcp.ypipe.com/v1"
+kind: "McpIntegrationBlueprint"
+metadata:
+  name: "clickhouseplayground"
+  namespace: "system"
+spec:
+  displayName: "ClickHouse SQL Playground"
+  description: "Instant read-only access to the ClickHouse SQL Playground. Explore\
+    \ ClickHouse features and sample datasets without any setup."
+  source: "https://github.com/ClickHouse/mcp-clickhouse"
+  configurationSchema: {}
+  mcpConfig:
+    type: "stdio"
+    command: "uv"
+    args:
+    - "run"
+    - "--with"
+    - "mcp-clickhouse"
+    - "--python"
+    - "3.10"
+    - "mcp-clickhouse"
+    env:
+      CLICKHOUSE_HOST: "sql-clickhouse.clickhouse.com"
+      CLICKHOUSE_PORT: "8443"
+      CLICKHOUSE_USER: "demo"
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_SECURE: "true"
+      CLICKHOUSE_VERIFY: "true"
+      CLICKHOUSE_CONNECT_TIMEOUT: "30"
+      CLICKHOUSE_SEND_RECEIVE_TIMEOUT: "300"
+    url: null
+    headers: null
+  disabledTools: null
+  suggestions:
+  - id: "clickhouseplayground-clickhouse-playground-discover-data"
+    title: "Clickhouse Playground: Discover Data"
+    label: "List all available sample databases"
+    action: "List all available databases with ${metadata.name}_list_databases\
+      \ to see what I can explore."
+    actionType: null
+    target: null
+  - id: "clickhouseplayground-clickhouse-playground-whats-inside-the-wiki-database"
+    title: "Clickhouse Playground: Whats inside the Wiki Database?"
+    label: "List all tables in the 'wiki' database"
+    action: "List tables in the database 'wiki' by calling tool '${metadata.name}_list_tables'."
+    actionType: null
+    target: null
+  - id: "clickhouseplayground-playground-wiki-stats"
+    title: "Playground: Wiki Stats"
+    label: "View top Wikipedia statistics"
+    action: "Run the query 'SELECT * FROM \"wiki\".\"wikistat_top\" LIMIT 100' using\
+      \ ${metadata.name}_run_query."
+    actionType: null
+    target: null
+  tools:
+    list_databases:
+      description: "List available databases on the ClickHouse SQL Playground."
+      usageIntent: null
+      discoveryHint: "List and browse all available sample databases currently hosted\
+        \ on the public ClickHouse SQL Playground environment. This tool serves as\
+        \ the critical initial entry point for data discovery, allowing the AI to\
+        \ identify which namespaces and datasets are currently available for inspection\
+        \ and analysis without needing prior knowledge of the cluster's contents.\
+        \ By exploring the database list, the agent can understand the broad scope\
+        \ of data domains present—ranging from the 'system' database containing internal\
+        \ metrics to the 'default' and 'sample' databases where the primary analytical\
+        \ data resides. Synonyms for this action include database discovery, namespace\
+        \ listing, schema reconnaissance, remote environment orientation, identifying\
+        \ data targets, and cluster mapping. Common use cases include performing initial\
+        \ reconnaissance on a new ClickHouse instance, verifying the availability\
+        \ of specific sample datasets mentioned in documentation, and identifying\
+        \ which databases contain the most relevant information for a given analytical\
+        \ task (e.g., finding the 'uk_price_paid' database for real estate trends).\
+        \ Behavioral notes: The listing is retrieved via a system query against the\
+        \ 'system.databases' table and reflects the real-time state of the playground\
+        \ environment. The AI should think of this as building its 'mental map' of\
+        \ the accessible data structures before attempting any more granular operations.\
+        \ Keywords: data discovery, metadata management, remote exploration, database\
+        \ inventory, SQL namespace, cluster orientation, schema discovery. Caveats:\
+        \ While most databases are public, some system-level namespaces might be visible\
+        \ but restricted or contain cryptic internal metrics that are less relevant\
+        \ for general user-facing analysis. The playground is a dynamic environment,\
+        \ and the list of available sample databases may be modified by the ClickHouse\
+        \ team as new data is added or old datasets are retired. Security implications\
+        \ are negligible as this is a read-only metadata retrieval tool, but it is\
+        \ a fundamental step for ensuring that subsequent queries are directed at\
+        \ the correct database, avoiding 'table not found' errors and ensuring a smooth\
+        \ research workflow. This tool is the 'first glance' at the remote data world."
+      properties: null
+      required: null
+    list_tables:
+      description: "List tables in a specific playground database. Give databasename\
+        \ as parameter."
+      usageIntent: null
+      discoveryHint: "Retrieve a comprehensive and detailed list of all tables, views,\
+        \ and dictionaries residing within a specific, named database on the ClickHouse\
+        \ SQL Playground cluster. once a database has been identified using 'list_databases',\
+        \ this tool is the next logical and critical step for understanding the internal\
+        \ organizational structure of that dataset. It reveals the exact names of\
+        \ all data entities, which is essential for target identification before writing\
+        \ any SELECT queries. By listing the tables, the AI can distinguish between\
+        \ raw event logs (often the largest tables), pre-aggregated rollup tables,\
+        \ and materialized views that provide specific analytical perspectives. Synonyms\
+        \ for this tool's action include table listing, entity discovery, metadata\
+        \ retrieval, schema mapping, relational structure inspection, and table inventory.\
+        \ Common use cases include identifying the core data assets within a sample\
+        \ database like 'hits' or 'visits', checking for the existence of specific\
+        \ temporary tables, or mapping out the dependencies between views and their\
+        \ underlying data sources. Behavioral notes: You must provide a valid and\
+        \ precisely spelled database name as a parameter. The output will include\
+        \ all entities supported by ClickHouse, including standard MergeTree tables,\
+        \ Log engines, and sophisticated materialized views. The AI should use this\
+        \ tool to narrow its focus from the entire cluster to a specific set of interesting\
+        \ tables for deeper investigation. Keywords: table inventory, data mapping,\
+        \ entity discovery, ClickHouse schema, remote data assets, table enumeration,\
+        \ metadata collection. Caveats: In the playground environment, some tables\
+        \ might be incredibly massive, containing billions of rows, while others are\
+        \ small lookup tables or dictionaries. This tool provides only the names and\
+        \ types; it does not provide row counts, file sizes, or column definitions.\
+        \ Therefore, it should always be followed by a 'describe_table' call to understand\
+        \ the data's internal structure before any complex analytical operations are\
+        \ attempted. This ensures that the AI is fully aware of the data it is about\
+        \ to process, preventing inefficient queries or incorrect assumptions about\
+        \ the data's shape and size. It is the bridge between knowing a database exists\
+        \ and knowing how to query its contents effectively."
+      properties: null
+      required: null
+    run_query:
+      description: "Execute read-only SQL queries on the ClickHouse SQL Playground."
+      usageIntent: null
+      discoveryHint: "Execute read-only SQL SELECT queries on the ClickHouse SQL Playground\
+        \ to explore massive, multi-billion row datasets with lightning-fast, sub-second\
+        \ performance. This tool is specifically designed for high-level data exploration,\
+        \ analytical experimentation, and learning the unique features of ClickHouse-specific\
+        \ SQL syntax without the need for any local infrastructure or complex server\
+        \ setup. The playground environment provides a wealth of curated sample datasets,\
+        \ including real-world web traffic logs (hits and visits), flight data, and\
+        \ genomic information. By sending a query through this tool, the AI agent\
+        \ initiates a sequence where the underlying ClickHouse engine parses the SQL,\
+        \ optimizes the execution plan for a columnar storage model, and retrieves\
+        \ results from a high-performance remote cluster. This is essential for a\
+        \ wide range of tasks, including performance benchmarking of complex analytical\
+        \ queries, validating query logic before deployment, or simply browsing public\
+        \ datasets to find trends and anomalies. Synonyms for this tool's action include\
+        \ querying the cloud, analytical data exploration, SQL-based research, sample\
+        \ dataset analysis, remote OLAP execution, and cloud-native querying. Common\
+        \ use cases include running multi-dimensional aggregations on web traffic\
+        \ data, performing time-series analysis on system logs, or testing advanced\
+        \ ClickHouse functions like 'uniqCombined' for cardinality estimation or 'arrayJoin'\
+        \ for nested data processing. Keywords: OLAP, real-time analytics, big data,\
+        \ sample datasets, ClickHouse SQL dialect, cloud sandbox, remote SQL execution,\
+        \ analytical benchmarking. Behavioral notes: This tool strictly enforces a\
+        \ read-only policy; any attempts to use DDL (Data Definition Language) like\
+        \ 'CREATE' or 'DROP' or DML (Data Manipulation Language) like 'INSERT' or\
+        \ 'UPDATE' will be rejected by the server. It utilizes the standard ClickHouse\
+        \ HTTPS interface, which might have inherent rate limits or execution time\
+        \ constraints for extremely heavy queries. The AI should think of this tool\
+        \ as its gateway to massive-scale data without the overhead of management.\
+        \ It provides a frictionless way to prove a concept or find a data point across\
+        \ billions of rows of historical information, ensuring that every analytical\
+        \ hypothesis can be tested against real-world scale data in real-time."
+      properties: null
+      required: null
+  modelSemantics: null

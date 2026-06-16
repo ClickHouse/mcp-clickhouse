@@ -259,6 +259,17 @@ You can also enable both ClickHouse and chDB simultaneously:
 
 4. Restart Claude Desktop to apply the changes.
 
+### Quick Install with ypipe
+
+Install and run **ypipe** with a single command using JBang:
+```bash
+jbang ypipe@iunera/ypipe
+```
+Or download the desktop app from [ypipe.com](https://ypipe.com). Once opened, simply import the pre-configured blueprint files to install with one click:
+* **Embedded chDB:** [chdb.ypipe](./chdb.ypipe)
+* **SQL Playground:** [clickhouseplayground.ypipe](./clickhouseplayground.ypipe)
+* **Custom ClickHouse:** [localclickhouse.ypipe](./localclickhouse.ypipe)
+
 ### Optional Write Access
 
 By default, this MCP enforces read-only queries so that accidental mutations cannot happen during exploration. To allow DDL or INSERT/UPDATE statements, set the `CLICKHOUSE_ALLOW_WRITE_ACCESS` environment variable to `true`. The server keeps enforcing read-only mode if the ClickHouse instance itself disallows writes.
@@ -367,7 +378,7 @@ logger = logging.getLogger("my-middleware")
 
 class LoggingMiddleware(Middleware):
     """Log all tool calls."""
-    
+
     async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
         tool_name = context.message.name if hasattr(context.message, 'name') else 'unknown'
         logger.info(f"Calling tool: {tool_name}")

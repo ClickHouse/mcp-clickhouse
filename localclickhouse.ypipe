@@ -1,0 +1,241 @@
+---
+apiVersion: "mcp.ypipe.com/v1"
+kind: "McpIntegrationBlueprint"
+metadata:
+  name: "localclickhouse"
+  namespace: "system"
+spec:
+  displayName: "ClickHouse (local)"
+  description: "Connect your own ClickHouse cluster to your AI assistant. Supports\
+    \ high-performance analytical queries and database exploration."
+  source: "https://github.com/ClickHouse/mcp-clickhouse"
+  configurationSchema:
+    CLICKHOUSE_HOST:
+      type: "string"
+      required: true
+      default: "localhost"
+      description: "The hostname of your ClickHouse server"
+      sensitive: false
+      pattern: null
+    CLICKHOUSE_PORT:
+      type: "string"
+      required: true
+      default: "8443"
+      description: "The port number (8443 for HTTPS, 8123 for HTTP)"
+      sensitive: false
+      pattern: null
+    CLICKHOUSE_USER:
+      type: "string"
+      required: true
+      default: "default"
+      description: "The username for authentication"
+      sensitive: false
+      pattern: null
+    CLICKHOUSE_PASSWORD:
+      type: "string"
+      required: false
+      default: ""
+      description: "The password for authentication"
+      sensitive: true
+      pattern: null
+    CLICKHOUSE_DATABASE:
+      type: "string"
+      required: false
+      default: null
+      description: "Default database to connect to"
+      sensitive: false
+      pattern: null
+    CLICKHOUSE_SECURE:
+      type: "boolean"
+      required: null
+      default: "true"
+      description: "Enable HTTPS connection"
+      sensitive: false
+      pattern: null
+    CLICKHOUSE_VERIFY:
+      type: "boolean"
+      required: null
+      default: "true"
+      description: "Verify SSL certificates"
+      sensitive: false
+      pattern: null
+    CLICKHOUSE_ALLOW_WRITE_ACCESS:
+      type: "boolean"
+      required: null
+      default: "false"
+      description: "Allow write operations (DDL and DML). If false, queries are read-only."
+      sensitive: false
+      pattern: null
+  mcpConfig:
+    type: "stdio"
+    command: "uv"
+    args:
+    - "run"
+    - "--with"
+    - "mcp-clickhouse"
+    - "--python"
+    - "3.10"
+    - "mcp-clickhouse"
+    env:
+      CLICKHOUSE_HOST: "${CLICKHOUSE_HOST}"
+      CLICKHOUSE_PORT: "${CLICKHOUSE_PORT}"
+      CLICKHOUSE_USER: "${CLICKHOUSE_USER}"
+      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD}"
+      CLICKHOUSE_DATABASE: "${CLICKHOUSE_DATABASE}"
+      CLICKHOUSE_SECURE: "${CLICKHOUSE_SECURE}"
+      CLICKHOUSE_VERIFY: "${CLICKHOUSE_VERIFY}"
+      CLICKHOUSE_ALLOW_WRITE_ACCESS: "${CLICKHOUSE_ALLOW_WRITE_ACCESS}"
+      CLICKHOUSE_CONNECT_TIMEOUT: "30"
+      CLICKHOUSE_SEND_RECEIVE_TIMEOUT: "300"
+    url: null
+    headers: null
+  disabledTools: null
+  suggestions: []
+  tools:
+    list_databases:
+      description: "List available databases on your ClickHouse instance."
+      usageIntent: null
+      discoveryHint: "List and browse all available databases currently hosted on your\
+        \ local or organizational ClickHouse instance. This tool is fundamental for\
+        \ data discovery and reconnaissance, providing a high-level inventory of which\
+        \ namespaces are accessible for querying and management. It is almost always\
+        \ the first step in any analytical workflow, allowing the AI to identify relevant\
+        \ databases such as the 'default' workspace, 'system' metrics, or custom business-specific\
+        \ schemas. By retrieving the list of databases, the agent builds an internal\
+        \ map of the data landscape before attempting more granular operations. Synonyms\
+        \ for this action include database discovery, namespace listing, schema reconnaissance,\
+        \ cluster orientation, identifying data targets, and cluster inventory. Common\
+        \ use cases include performing initial reconnaissance on a new ClickHouse\
+        \ environment, verifying the successful creation of a new database during\
+        \ a migration, or identifying which databases contain the most relevant data\
+        \ for a specific project or department. Behavioral notes: The listing is retrieved\
+        \ via a system query against the 'system.databases' table and reflects the\
+        \ real-time state of the server. The AI should use this tool to confirm the\
+        \ existence of a target namespace before attempting to list its tables or\
+        \ run queries. Keywords: data discovery, metadata management, ClickHouse inventory,\
+        \ namespace listing, schema exploration, cluster orientation, database mapping.\
+        \ Caveats: Some system-level databases (like 'system' or 'information_schema')\
+        \ may be visible but restricted or contain internal telemetry that is not\
+        \ relevant for general business analysis. The server environment is dynamic,\
+        \ and databases may be added or removed by other users or automated data pipelines.\
+        \ Security-wise, it only exposes metadata, but this provides the structural\
+        \ context needed for more privileged actions. Performance is virtually instantaneous,\
+        \ as this information is cached in the ClickHouse server's memory. This tool\
+        \ is the 'ls' or 'dir' equivalent for the ClickHouse cluster, providing the\
+        \ basic visibility required for any subsequent data management or analytical\
+        \ task. It ensures the AI is navigating based on a current and accurate map\
+        \ of the system's data structure."
+      properties: null
+      required: null
+    run_select_query:
+      description: "Execute SQL queries on your local ClickHouse cluster."
+      usageIntent: null
+      discoveryHint: "Execute high-performance SQL queries against your local or private\
+        \ ClickHouse cluster to perform lightning-fast analytical operations on massive\
+        \ datasets. This tool is the primary interface for professional data analysis,\
+        \ enabling sub-second latency queries for real-time dashboards, internal reporting,\
+        \ and deep ad-hoc data exploration. By leveraging ClickHouse's industry-leading\
+        \ columnar storage engine and vectorised execution model, the agent can run\
+        \ complex aggregations over millions or billions of rows with unprecedented\
+        \ efficiency. This is essential for a wide variety of tasks, including large-scale\
+        \ log analysis, real-time monitoring of infrastructure, financial modeling,\
+        \ and identifying trends in high-velocity event streams. Synonyms for this\
+        \ action include analytical querying, SQL execution, time-series exploration,\
+        \ OLAP processing, database data retrieval, and data mining. Common use cases\
+        \ include calculating real-time error rates from system logs, grouping billions\
+        \ of transactions by user segment, performing time-series forecasting on historical\
+        \ data, or running complex multi-stage joins for data enrichment using local\
+        \ reference tables. Behavioral notes: The tool connects via the ClickHouse\
+        \ HTTPS or HTTP interface and supports the full breadth of the ClickHouse\
+        \ SQL dialect, including advanced window functions, array manipulation, and\
+        \ specialized aggregation functions like 'uniqCombined' or 'quantile'. Depending\
+        \ on the 'CLICKHOUSE_ALLOW_WRITE_ACCESS' configuration setting, this tool\
+        \ can perform read-only SELECT queries or full DDL/DML operations (including\
+        \ CREATE, INSERT, UPDATE, DROP) if specifically authorized. Keywords: OLAP,\
+        \ real-time analytics, big data, SQL dialect, time-series database, columnar\
+        \ storage, vectorised execution, data warehousing. Caveats: Be mindful of\
+        \ query complexity; while ClickHouse is exceptionally fast, inefficient JOINs\
+        \ or queries without proper primary key filters can still impact cluster performance\
+        \ and memory usage. Always leverage the partition key and primary key in your\
+        \ 'WHERE' clauses to take advantage of ClickHouse's sparse indexing system.\
+        \ Security-wise, ensure that write access is only enabled when strictly necessary\
+        \ and that the AI is not executing destructive commands without explicit human\
+        \ confirmation. This tool is the 'analytical engine' of the agent, providing\
+        \ a way to perform professional-grade data analysis directly on the user's\
+        \ local or private infrastructure with maximum speed and accuracy. It ensures\
+        \ that every local dataset is a potential source of deep, actionable insights."
+      properties: null
+      required: null
+    describe_table:
+      description: "Retrieve the schema and structural metadata for a ClickHouse table."
+      usageIntent: null
+      discoveryHint: "Inspect and retrieve the complete technical schema, column definitions,\
+        \ and structural metadata for a specific table or view on your local ClickHouse\
+        \ cluster. This tool provides granular, technical insights into the internal\
+        \ organization of a data entity, revealing every column's name, its precise\
+        \ ClickHouse data type (e.g., Int64, String, DateTime64, Array, or specialized\
+        \ types like LowCardinality or AggregateFunction), and associated attributes\
+        \ like default values, compression codecs, and TTL (Time-To-Live) policies.\
+        \ Understanding the schema is absolutely paramount for writing syntactically\
+        \ correct and performant SQL queries, especially when dealing with ClickHouse's\
+        \ advanced features like Bloom filters or specialized indexing. Synonyms for\
+        \ this action include schema inspection, column definition retrieval, technical\
+        \ profiling, metadata deep-dive, table structure analysis, and schema audit.\
+        \ Common use cases include identifying the primary join keys for a multi-table\
+        \ analysis, understanding the time granularity of a 'DateTime' column for\
+        \ report grouping, verifying the availability of specific dimensions, and\
+        \ identifying columns that are optimized for certain types of queries (like\
+        \ sorting keys). Behavioral notes: The tool executes a 'DESCRIBE TABLE' command\
+        \ on the server and returns a structured representation of the schema. The\
+        \ AI should think of this as its 'final check' before committing to a large-scale\
+        \ analytical query. Keywords: schema metadata, data types, technical profiling,\
+        \ ClickHouse columns, table definition, schema verification, column audit.\
+        \ Caveats: Some tables might use complex storage engines (like ReplicatedMergeTree)\
+        \ or have sophisticated partitioning schemes that require specialized query\
+        \ patterns to avoid excessive resource consumption. Knowing the primary key,\
+        \ partition key, and sorting key—which are often clearly visible in the schema—\
+        allows the AI to write filters that are significantly faster by leveraging\
+        \ ClickHouse's sparse indexing system. This tool is essential for an AI to\
+        \ act as a truly expert data analyst, ensuring its queries are not only correct\
+        \ but also perfectly optimized for the underlying data distribution and storage\
+        \ engine. Security-wise, it provides structural awareness without exposing\
+        \ the actual data content, ensuring a safe and informed data exploration process."
+      properties: null
+      required: null
+    list_tables:
+      description: "List tables and views in a specific ClickHouse database."
+      usageIntent: null
+      discoveryHint: "Retrieve a comprehensive and detailed list of all tables, views,\
+        \ and dictionaries residing within a specific, named database on your local\
+        \ ClickHouse cluster. Once a target database has been identified using 'list_databases',\
+        \ this tool is the next logical step for understanding the internal organization\
+        \ of that namespace. It reveals the exact names of all data entities, which\
+        \ is essential for target identification before writing any analytical SQL.\
+        \ By listing the tables, the AI can distinguish between raw event logs (often\
+        \ using MergeTree engines), pre-aggregated rollup tables, materialized views,\
+        \ and external dictionaries. Synonyms for this tool's action include table\
+        \ listing, entity discovery, metadata retrieval, schema mapping, relational\
+        \ structure inspection, and table inventory. Common use cases include identifying\
+        \ the core tables for a specific analysis, checking for the existence of newly\
+        \ ingested data assets, mapping out the relationships between raw data and\
+        \ summarized views, or auditing a database for temporary tables that need\
+        \ cleanup. Behavioral notes: You must provide a valid and correctly spelled\
+        \ database name as a parameter. The output will include all entities supported\
+        \ by the ClickHouse engine, including specialized engines like Kafka, S3,\
+        \ or Distributed tables. Keywords: table inventory, data mapping, ClickHouse\
+        \ schema, entity discovery, database structure, metadata collection, table\
+        \ enumeration. Caveats: In a production cluster, some databases might contain\
+        \ thousands of tables. This tool provides the names and types but does not\
+        \ include row counts, disk sizes, or individual column details. Therefore,\
+        \ it should always be followed by a 'describe_table' call for a specific target\
+        \ to understand its internal structure, sorting keys, and data types before\
+        \ any complex analytical operations are attempted. Security-wise, this is\
+        \ a safe, read-only metadata operation. Performance is extremely fast. The\
+        \ AI should use this tool to narrow its focus from the entire database down\
+        \ to the specific tables needed for the current task, ensuring accuracy and\
+        \ avoiding 'table not found' errors in later queries. It provides the essential\
+        \ structural context needed to interact with the database in a professional\
+        \ and informed manner."
+      properties: null
+      required: null
+  modelSemantics: null
