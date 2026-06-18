@@ -9,6 +9,8 @@ import os
 from typing import Optional
 from enum import Enum
 
+import yaml
+
 
 class TransportType(str, Enum):
     """Supported MCP server transport types."""
@@ -48,10 +50,16 @@ class ClickHouseConfig:
         CLICKHOUSE_ENABLED: Enable ClickHouse server (default: true)
         CLICKHOUSE_ALLOW_WRITE_ACCESS: Allow write operations (DDL and DML) (default: false)
         CLICKHOUSE_ALLOW_DROP: Allow destructive operations (DROP, TRUNCATE) when writes are also enabled (default: false)
+        CLICKHOUSE_CONFIG_FILE: Path to a clickhouse-client config.yaml to read connection settings from as a fallback for unset env vars (default: None, file not read)
+        CLICKHOUSE_CONNECTION: Name of an entry under connections_credentials in CLICKHOUSE_CONFIG_FILE to use; when unset, top-level keys are used (default: None)
     """
 
     def __init__(self):
         """Initialize the configuration from environment variables."""
+        # Cache for parsed config-file settings, keyed by (path, connection_name) and
+        # mapping to (mtime_ns, settings). Avoids re-parsing on every property access
+        # while still re-reading when the file is edited (see _file_settings).
+        self._file_settings_cache: dict = {}
         if self.enabled:
             self._validate_required_vars()
 
@@ -63,10 +71,23 @@ class ClickHouseConfig:
         """
         return os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true"
 
+    def _resolve(self, env_var: str, file_key: str):
+        """Resolve a setting from the environment, falling back to the config file.
+
+        Returns the env var value if set, otherwise the config-file value, otherwise
+        None (absent from both).
+        """
+        if env_var in os.environ:
+            return os.environ[env_var]
+        return self._file_settings().get(file_key)
+
     @property
     def host(self) -> str:
-        """Get the ClickHouse host."""
-        return os.environ["CLICKHOUSE_HOST"]
+        """Get the ClickHouse host (CLICKHOUSE_HOST env var, then the config file)."""
+        value = self._resolve("CLICKHOUSE_HOST", "host")
+        if value is None:
+            raise KeyError("CLICKHOUSE_HOST")
+        return value
 
     @property
     def port(self) -> int:
@@ -81,13 +102,19 @@ class ClickHouseConfig:
 
     @property
     def username(self) -> str:
-        """Get the ClickHouse username."""
-        return os.environ["CLICKHOUSE_USER"]
+        """Get the ClickHouse username (CLICKHOUSE_USER env var, then the config file)."""
+        value = self._resolve("CLICKHOUSE_USER", "username")
+        if value is None:
+            raise KeyError("CLICKHOUSE_USER")
+        return value
 
     @property
     def password(self) -> str:
-        """Get the ClickHouse password."""
-        return os.environ["CLICKHOUSE_PASSWORD"]
+        """Get the ClickHouse password (CLICKHOUSE_PASSWORD env var, then the config file)."""
+        value = self._resolve("CLICKHOUSE_PASSWORD", "password")
+        if value is None:
+            raise KeyError("CLICKHOUSE_PASSWORD")
+        return value
 
     @property
     def role(self) -> Optional[str]:
@@ -96,16 +123,20 @@ class ClickHouseConfig:
 
     @property
     def database(self) -> Optional[str]:
-        """Get the default database name if set."""
-        return os.getenv("CLICKHOUSE_DATABASE")
+        """Get the default database name (CLICKHOUSE_DATABASE env var, then the config file)."""
+        return self._resolve("CLICKHOUSE_DATABASE", "database")
 
     @property
     def secure(self) -> bool:
         """Get whether HTTPS is enabled.
 
+        Resolution order: CLICKHOUSE_SECURE env var, then the config file (if any).
         Default: True
         """
-        return os.getenv("CLICKHOUSE_SECURE", "true").lower() == "true"
+        if "CLICKHOUSE_SECURE" in os.environ:
+            return os.environ["CLICKHOUSE_SECURE"].lower() == "true"
+        file_secure = self._file_settings().get("secure")
+        return True if file_secure is None else file_secure
 
     @property
     def verify(self) -> bool:
@@ -195,18 +226,129 @@ class ClickHouseConfig:
         return config
 
     def _validate_required_vars(self) -> None:
-        """Validate that all required environment variables are set.
+        """Validate that all required connection settings are available.
+
+        Each value may come from an environment variable or, as a fallback, from
+        CLICKHOUSE_CONFIG_FILE. Reading the file here also surfaces parse/lookup
+        errors (missing file, unknown connection name) eagerly at startup.
 
         Raises:
-            ValueError: If any required environment variable is missing.
+            ValueError: If any required setting is missing from both sources.
         """
-        missing_vars = []
-        for var in ["CLICKHOUSE_HOST", "CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD"]:
-            if var not in os.environ:
-                missing_vars.append(var)
+        file_settings = self._file_settings()
+        required = {
+            "CLICKHOUSE_HOST": "host",
+            "CLICKHOUSE_USER": "username",
+            "CLICKHOUSE_PASSWORD": "password",
+        }
+        missing_vars = [
+            env_var
+            for env_var, file_key in required.items()
+            if env_var not in os.environ and file_settings.get(file_key) is None
+        ]
 
         if missing_vars:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+
+    @staticmethod
+    def _secure_to_bool(value) -> bool:
+        """Coerce a config-file `secure` value to a bool.
+
+        Accepts native YAML booleans as well as the integer/string forms used by
+        clickhouse-client (e.g. `secure: 1`, `secure: "true"`).
+        """
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    def _file_settings(self) -> dict:
+        """Load connection settings from CLICKHOUSE_CONFIG_FILE, if configured.
+
+        Returns a normalized dict with any of the keys
+        {host, username, password, database, secure} that are present in the file.
+        `port` is intentionally never returned (see class docstring). Returns an
+        empty dict when CLICKHOUSE_CONFIG_FILE is unset (feature off).
+
+        Raises:
+            ValueError: If the file is missing/unparseable, or CLICKHOUSE_CONNECTION
+                names a connection that does not exist in the file.
+        """
+        path = os.getenv("CLICKHOUSE_CONFIG_FILE")
+        if not path:
+            return {}
+
+        connection_name = os.getenv("CLICKHOUSE_CONNECTION")
+        cache_key = (path, connection_name)
+
+        # Invalidate the cache when the file changes on disk, so edits are picked up
+        # without a restart. Stat'ing on each access is cheap; only re-parse on change.
+        try:
+            mtime = os.stat(path).st_mtime_ns
+        except FileNotFoundError as e:
+            raise ValueError(f"CLICKHOUSE_CONFIG_FILE not found: {path}") from e
+        except OSError as e:
+            raise ValueError(f"Failed to read CLICKHOUSE_CONFIG_FILE '{path}': {e}") from e
+
+        cached = self._file_settings_cache.get(cache_key)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+
+        # The os.stat above already validated existence/readability; here we only
+        # guard against a parse error or a TOCTOU race (OSError covers FileNotFoundError).
+        try:
+            with open(path) as f:
+                raw = yaml.safe_load(f)
+        except (OSError, yaml.YAMLError) as e:
+            raise ValueError(f"Failed to read CLICKHOUSE_CONFIG_FILE '{path}': {e}") from e
+
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"CLICKHOUSE_CONFIG_FILE '{path}' does not contain a top-level mapping"
+            )
+
+        if connection_name:
+            source = self._select_connection(raw, connection_name, path)
+            host_keys = ("hostname", "host")
+        else:
+            source = raw
+            host_keys = ("host",)
+
+        settings = {}
+        for host_key in host_keys:
+            if source.get(host_key) is not None:
+                settings["host"] = source[host_key]
+                break
+        if source.get("user") is not None:
+            settings["username"] = source["user"]
+        if source.get("password") is not None:
+            settings["password"] = source["password"]
+        if source.get("database") is not None:
+            settings["database"] = source["database"]
+        if source.get("secure") is not None:
+            settings["secure"] = self._secure_to_bool(source["secure"])
+
+        self._file_settings_cache[cache_key] = (mtime, settings)
+        return settings
+
+    @staticmethod
+    def _select_connection(raw: dict, connection_name: str, path: str) -> dict:
+        """Find a named entry in the connections_credentials section of the file."""
+        credentials = raw.get("connections_credentials") or {}
+        connections = credentials.get("connection") if isinstance(credentials, dict) else None
+        # `connection` may be a single mapping or a list of mappings.
+        if isinstance(connections, dict):
+            connections = [connections]
+        elif not isinstance(connections, list):
+            connections = []
+
+        for entry in connections:
+            if isinstance(entry, dict) and entry.get("name") == connection_name:
+                return entry
+
+        raise ValueError(
+            f"CLICKHOUSE_CONNECTION '{connection_name}' not found in "
+            f"connections_credentials of '{path}'"
+        )
 
 
 @dataclass

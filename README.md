@@ -522,6 +522,14 @@ The following environment variables are used to configure the ClickHouse and chD
 * `CLICKHOUSE_DATABASE`: Default database to use
   * Default: None (uses server default)
   * Set this to automatically connect to a specific database
+* `CLICKHOUSE_CONFIG_FILE`: Path to a `clickhouse-client` `config.yaml` to read connection settings from as a fallback for unset env vars
+  * Default: None (the file is never read)
+  * Only `host`, `user`, `password`, `database`, and `secure` are read from the file; environment variables always take precedence
+  * **`port` is intentionally not read** from the file: `clickhouse-client` config ports are for the native TCP protocol (9000/9440), but this server connects over the HTTP interface (8123/8443). Set `CLICKHOUSE_PORT` explicitly if the default (8443/8123 based on `secure`) is not correct
+  * See [Config file fallback](#config-file-fallback) below for examples
+* `CLICKHOUSE_CONNECTION`: Name of an entry under `connections_credentials` in `CLICKHOUSE_CONFIG_FILE` to use
+  * Default: None (top-level keys in the file are used)
+  * Set this to select a named profile; an unknown name raises an error at startup
 * `CLICKHOUSE_MCP_SERVER_TRANSPORT`: Sets the transport method for the MCP server.
   * Default: `"stdio"`
   * Valid options: `"stdio"`, `"http"`, `"sse"`. This is useful for local development with tools like MCP Inspector.
@@ -655,6 +663,54 @@ CLICKHOUSE_USER=default
 CLICKHOUSE_PASSWORD=clickhouse
 CLICKHOUSE_MCP_SERVER_TRANSPORT=http
 CLICKHOUSE_MCP_AUTH_DISABLED=true  # Only for local development!
+```
+
+#### Config file fallback
+
+If you already use the official `clickhouse-client` and keep your connection
+details in a `config.yaml`, you can point the server at it with
+`CLICKHOUSE_CONFIG_FILE` instead of re-declaring everything as environment
+variables. The file is read **only** when `CLICKHOUSE_CONFIG_FILE` is set, and
+environment variables always take precedence over file values.
+
+> [!IMPORTANT]
+> Only `host`, `user`, `password`, `database`, and `secure` are read from the
+> file. The `port` is **intentionally ignored**: `clickhouse-client` config
+> ports are for the native TCP protocol (9000/9440), but this server connects
+> over the HTTP interface (8123/8443). Set `CLICKHOUSE_PORT` explicitly if the
+> default (8443/8123, derived from `secure`) is not correct.
+
+Top-level keys (single connection):
+
+```yaml
+# ~/.clickhouse-client/config.yaml
+host: localhost
+user: default
+password: clickhouse
+secure: false
+```
+
+```env
+CLICKHOUSE_CONFIG_FILE=/home/me/.clickhouse-client/config.yaml
+CLICKHOUSE_PORT=8123  # set explicitly — port is not read from the file
+```
+
+Named connections via `connections_credentials`, selected with
+`CLICKHOUSE_CONNECTION`:
+
+```yaml
+connections_credentials:
+  connection:
+    - name: prod
+      hostname: your-instance.clickhouse.cloud
+      user: default
+      password: your-password
+      secure: 1
+```
+
+```env
+CLICKHOUSE_CONFIG_FILE=/home/me/.clickhouse-client/config.yaml
+CLICKHOUSE_CONNECTION=prod
 ```
 
 When using HTTP transport, the server will run on the configured port (default 8000). For example, with the above configuration:

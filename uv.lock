@@ -875,6 +875,7 @@ dependencies = [
     { name = "clickhouse-connect" },
     { name = "fastmcp" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
     { name = "truststore" },
 ]
 
@@ -897,6 +898,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "truststore", specifier = ">=0.10" },
 ]
