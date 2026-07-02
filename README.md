@@ -39,6 +39,35 @@ An MCP server for ClickHouse.
   * Query data directly from various sources (files, URLs, databases) without ETL processes.
   * Requires the optional `chdb` extra: `pip install 'mcp-clickhouse[chdb]'`
 
+#### chDB-only introspection tools
+
+When chDB is the only enabled engine (`CHDB_ENABLED=true` and `CLICKHOUSE_ENABLED=false`), the
+following read-only introspection tools are also registered, alongside `run_chdb_select_query`.
+They are not registered when the ClickHouse server is enabled (the ClickHouse tools above own those
+names in that mode). User-supplied identifiers are validated and quoted, and output is truncated to
+`CHDB_MAX_RESULT_BYTES`.
+
+* `list_databases`: List databases in the chDB engine.
+* `list_tables`: List tables in a chDB database. Input: `database` (string).
+* `describe_table`: Return column names and types for a chDB table. Input: `database`, `table` (strings).
+* `get_sample_data`: Return the first rows of a chDB table. Input: `database`, `table` (strings), `limit` (int, default 10, clamped to 1–1000).
+* `list_functions`: List SQL functions available in the chDB engine. Input: `pattern` (optional string, case-insensitive name filter).
+
+#### chDB-only security baseline
+
+In chDB-only mode the chDB session also runs under a security baseline so the agent-facing
+query surface is bounded by default:
+
+* **Read-only by default**: the session is put under `SET readonly=2`, which rejects
+  INSERT/CREATE/DROP/ALTER on persistent tables while keeping `SET` and table functions usable.
+  Set `CHDB_ALLOW_WRITE_ACCESS=true` to allow writes.
+* **Bounded output**: results are capped at `CHDB_MAX_RESULT_BYTES` both at the engine level
+  (`max_result_bytes`) and as a final truncation of the serialized payload.
+* **Bounded runtime**: queries are aborted past the shared query timeout (`max_execution_time`).
+* **Optional source sandbox**: set `CHDB_FILE_ALLOWLIST` to refuse external/file table functions
+  (`file`/`url`/`s3`/`remote`/`postgresql`/`executable`/`python`/…) in raw `run_chdb_select_query`
+  SQL. The list of disallowed functions is taken from the live engine's `system.table_functions`.
+
 ### Health Check Endpoint
 
 When running with HTTP or SSE transport, a health check endpoint is available at `/health`. This endpoint:
@@ -579,6 +608,15 @@ The following environment variables are used to configure the ClickHouse and chD
   * Default: `":memory:"` (in-memory database)
   * Use `:memory:` for in-memory database
   * Use a file path for persistent storage (e.g., `/path/to/chdb/data`)
+* `CHDB_MAX_RESULT_BYTES`: Maximum size (in bytes) of chDB output; capped at the engine level and truncated again on the serialized payload, with a notice
+  * Default: `1048576` (1 MiB)
+  * Applies in chDB-only mode (introspection tools and `run_chdb_select_query`)
+* `CHDB_ALLOW_WRITE_ACCESS`: Allow writes against the chDB session
+  * Default: `"false"` (session runs under `SET readonly=2`)
+  * Set to `"true"` to permit INSERT/CREATE/DROP/ALTER
+* `CHDB_FILE_ALLOWLIST`: Colon-separated path prefixes that sandbox the chDB engine
+  * Default: unset (no gating — behavior unchanged)
+  * When set, `run_chdb_select_query` refuses external/file table functions (`file`/`url`/`s3`/`remote`/…) in raw SQL
 
 #### Example Configurations
 

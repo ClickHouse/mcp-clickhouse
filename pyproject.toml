@@ -22,7 +22,7 @@ Home = "https://github.com/ClickHouse/mcp-clickhouse"
 
 [project.optional-dependencies]
 chdb = [
-    "chdb>=3.3.0"
+    "chdb>=4.2.1"  # needs chdb.agents contract 0.2.0: external-session verification + chdb.agents.safety scanner
 ]
 dev = [
     "ruff",

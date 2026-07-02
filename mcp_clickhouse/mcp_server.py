@@ -23,6 +23,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
+from mcp_clickhouse.chdb_safety import truncate_text
 from mcp_clickhouse.skills_advisor import CLICKHOUSE_SERVER_INSTRUCTIONS
 from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
 
@@ -136,6 +137,11 @@ mcp = FastMCP(
 )
 _chdb_client = None
 _chdb_error_message: Optional[str] = None
+# Lowercase names of every table function the live chDB build exposes, snapshot
+# from system.table_functions at session init. The allowlist scanner consults
+# this so it tracks whatever the running engine offers instead of a denylist
+# that goes stale. Empty until a chDB session is opened.
+_chdb_known_table_functions: frozenset = frozenset()
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -678,9 +684,56 @@ def create_chdb_client():
     return _chdb_client
 
 
+# file-like table functions whose first argument is a path/URI the allowlist
+# can constrain (kept in sync with chdb.agents.safety.scan_file_paths).
+_FILE_LIKE_FUNCTIONS = frozenset({"file", "s3", "url", "hdfs", "azureblobstorage"})
+
+
+def _chdb_sql_source_violation(query: str) -> Optional[str]:
+    """Return an error message if ``query`` reaches a source outside the allowlist.
+
+    Enforced only when CHDB_FILE_ALLOWLIST is set. It is a **path allowlist**
+    (like DuckDB's ``allowed_directories``): file-like sources
+    (file/s3/url/hdfs/azureBlobStorage) are permitted when their path is under an
+    allowed prefix and refused otherwise; DSN-based external sources
+    (postgresql/mysql/remote/…) cannot be constrained by a path and are refused
+    while the allowlist is active. Returns None when the allowlist is unset
+    (default — behavior unchanged) or the query is clean.
+
+    Uses chdb.agents.safety (the same path-allowlist logic ChDBTool enforces) so
+    the raw-SQL path and the ChDBTool path agree.
+    """
+    allow = get_chdb_config().file_allowlist
+    if not allow:
+        return None
+    from chdb.agents.safety import (
+        FALLBACK_KNOWN_TABLE_FUNCTIONS,
+        find_source_calls,
+        path_allowed,
+        scan_file_paths,
+    )
+
+    outside = [path for _fn, path in scan_file_paths(query) if not path_allowed(path, allow)]
+    if outside:
+        return f"refusing file paths outside CHDB_FILE_ALLOWLIST {list(allow)}: {outside}"
+
+    known = _chdb_known_table_functions or FALLBACK_KNOWN_TABLE_FUNCTIONS
+    non_file = sorted({name for name, _ in find_source_calls(query, known)} - _FILE_LIKE_FUNCTIONS)
+    if non_file:
+        return (
+            f"refusing non-file external sources {non_file} while CHDB_FILE_ALLOWLIST "
+            f"is set (a path allowlist cannot constrain a DSN-based source)"
+        )
+    return None
+
+
 def execute_chdb_query(query: str):
     """Execute a query using chDB client."""
     client = create_chdb_client()
+    violation = _chdb_sql_source_violation(query)
+    if violation is not None:
+        logger.warning("chDB query rejected by file allowlist: %s", violation)
+        return {"error": violation}
     try:
         res = client.query(query, "JSON")
         if res.has_error():
@@ -708,7 +761,10 @@ def _process_chdb_result(result) -> str:
             "status": "error",
             "message": f"chDB query failed: {result['error']}",
         })
-    return _serialize_tool_result(result)
+    # Final guardrail: bound the serialized payload even though the engine is
+    # already capped via max_result_bytes, so a large result can't flood the
+    # caller's context.
+    return truncate_text(_serialize_tool_result(result), get_chdb_config().max_result_bytes)
 
 
 def run_chdb_select_query(query: str) -> str:
@@ -762,6 +818,52 @@ def chdb_initial_prompt() -> str:
     return CHDB_PROMPT
 
 
+def _apply_chdb_session_baseline(client) -> None:
+    """Apply the chDB-session security baseline once at init.
+
+    - Snapshot system.table_functions so the allowlist scanner tracks the live
+      engine (falls back to a hardcoded set if the catalog query fails).
+    - Cap engine work: bound result bytes and abort runaway queries by wall time.
+    - Unless CHDB_ALLOW_WRITE_ACCESS=true, put the session under SET readonly=2,
+      which rejects persistent-table writes while keeping table functions usable.
+
+    The result byte cap and timeout are applied BEFORE readonly=2, in case a
+    future chDB release tightens which settings stay writable under readonly.
+    """
+    global _chdb_known_table_functions
+    from chdb.agents.safety import FALLBACK_KNOWN_TABLE_FUNCTIONS
+
+    try:
+        rows = client.query("SELECT lower(name) FROM system.table_functions", "TabSeparated")
+        names = {line.strip() for line in str(rows).splitlines() if line.strip()}
+        _chdb_known_table_functions = (
+            frozenset(names) if names else FALLBACK_KNOWN_TABLE_FUNCTIONS
+        )
+    except Exception as e:  # noqa: BLE001 — defensive against catalog issues
+        logger.warning(
+            "system.table_functions unavailable (%s); using fallback denylist", e
+        )
+        _chdb_known_table_functions = FALLBACK_KNOWN_TABLE_FUNCTIONS
+
+    chdb_config = get_chdb_config()
+    # max_block_size is shrunk because result_overflow_mode='break' only checks
+    # between blocks; at the default block size a single block can blow past
+    # max_result_bytes before break fires. With a small block the engine
+    # overshoots by at most one block and the Python truncate() trims the rest.
+    setup_parts = [
+        "max_block_size = 8192",
+        f"max_result_bytes = {chdb_config.max_result_bytes}",
+        "result_overflow_mode = 'break'",
+    ]
+    query_timeout = get_mcp_config().query_timeout
+    if query_timeout and query_timeout > 0:
+        setup_parts.append(f"max_execution_time = {query_timeout}")
+    client.query("SET " + ", ".join(setup_parts), "TabSeparated")
+
+    if not chdb_config.allow_write_access:
+        client.query("SET readonly=2", "TabSeparated")
+
+
 def _init_chdb_client():
     """Initialize the global chDB client instance."""
     global _chdb_error_message
@@ -777,6 +879,7 @@ def _init_chdb_client():
         import chdb.session as chs
 
         client = chs.Session(path=data_path)
+        _apply_chdb_session_baseline(client)
         _chdb_error_message = None
         logger.info(f"Successfully connected to chDB with data_path={data_path}")
         return client
@@ -851,3 +954,33 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
 
 
 _register_chdb_tools()
+
+
+# When ONLY chDB is enabled (the ClickHouse server is disabled), the bare tool
+# names used above are free, so expose a richer set of read-only chDB
+# introspection tools under those canonical names. This is the single
+# integration point with the otherwise self-contained chDB tool module: it
+# injects the chDB client factory, the shared query executor, and the query
+# timeout, so that module never imports the ClickHouse server logic. In any
+# mode where the ClickHouse server is enabled, these tools are not registered
+# and existing chDB behavior (run_chdb_select_query) is unchanged.
+if (
+    get_chdb_config().enabled
+    and os.getenv("CLICKHOUSE_ENABLED", "true").lower() != "true"
+    and _chdb_client is not None
+):
+    from mcp_clickhouse.chdb_tools import register_chdb_only_tools
+
+    register_chdb_only_tools(
+        mcp,
+        max_result_bytes=get_chdb_config().max_result_bytes,
+        create_client=create_chdb_client,
+        query_executor=QUERY_EXECUTOR,
+        query_timeout=lambda: get_mcp_config().query_timeout,
+        # Must match the session's mode: ChDBTool never mutates an externally
+        # provided session — it probes the session's readonly setting at
+        # construction and fails with a CONFIG_MISMATCH error if it disagrees
+        # with the declared flag. _init_chdb_client has already locked the
+        # session to readonly=2 unless writes are allowed, so pass the same flag.
+        allow_write=get_chdb_config().allow_write_access,
+    )
