@@ -34,6 +34,7 @@ FROM python:3.13-slim-bookworm
 LABEL org.opencontainers.image.source="https://github.com/ClickHouse/mcp-clickhouse"
 LABEL org.opencontainers.image.description="MCP server for ClickHouse"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL io.modelcontextprotocol.server.name="io.github.ClickHouse/mcp-clickhouse"
 
 # Set the working directory
 WORKDIR /app
