@@ -188,8 +188,29 @@ def result_to_column(query_columns, result) -> List[Column]:
     return [Column(**dict(zip(query_columns, row))) for row in result]
 
 
+# Integers outside JavaScript's safe range lose precision once a JSON consumer
+# (browsers, Node-based MCP clients, ...) parses them as IEEE-754 doubles, e.g.
+# UInt64 1875924584784080993 -> 1875924584784081000. Emit such values as strings
+# so the exact value survives; smaller ints stay numeric.
+JS_MAX_SAFE_INTEGER = (1 << 53) - 1
+
+
+def _json_safe(obj: Any) -> Any:
+    """Recursively stringify integers that exceed JavaScript's safe integer range."""
+    # bool is a subclass of int but is always JSON-safe, so leave it numeric.
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, int):
+        return str(obj) if abs(obj) > JS_MAX_SAFE_INTEGER else obj
+    if isinstance(obj, dict):
+        return {key: _json_safe(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(item) for item in obj]
+    return obj
+
+
 def _serialize_tool_result(obj: Any) -> str:
-    return json.dumps(obj, default=str)
+    return json.dumps(_json_safe(obj), default=str)
 
 
 def list_databases() -> str:
