@@ -512,9 +512,15 @@ The following environment variables are used to configure the ClickHouse and chD
   * Default: `"true"`
   * Set to `"false"` to disable certificate verification (not recommended for production)
   * TLS certificates: The package uses your operating system trust store for TLS certificate verification via `truststore`. We call `truststore.inject_into_ssl()` at startup to ensure proper certificate handling. Python’s default SSL behavior is used as a fallback only if an unexpected error occurs.
+* `MCP_CLICKHOUSE_TRUSTSTORE_DISABLE`: Disable the operating-system trust store integration for TLS
+  * Default: unset (trust store integration is enabled)
+  * Set to `"1"` to skip `truststore.inject_into_ssl()` and use Python's default SSL certificate handling
 * `CLICKHOUSE_SERVER_HOST_NAME`: Server hostname for SNI override and certificate validation
   * Default: None (uses the connection hostname)
   * This is useful when connecting through proxies or load balancers where the certificate hostname differs from the connection hostname. When set, this hostname will be used for both SNI (Server Name Indication) during the TLS handshake and for certificate hostname validation.
+* `CLICKHOUSE_PROXY_PATH`: Path appended to the host URL, for ClickHouse servers behind an HTTP proxy
+  * Default: None
+  * Set this when your ClickHouse endpoint is served under a sub-path rather than at the host root, for example `"/clickhouse"`
 * `CLICKHOUSE_CONNECT_TIMEOUT`: Connection timeout in seconds
   * Default: `"30"`
   * Increase this value if you experience connection timeouts
