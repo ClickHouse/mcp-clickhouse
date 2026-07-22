@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from clickhouse_connect.driver.exceptions import OperationalError
 
 from mcp_clickhouse.mcp_server import (
     _NATIVE_PROTOCOL_PORTS,
@@ -41,8 +42,11 @@ def test_hint_for_native_port_server_message():
 
     hints = _connection_error_hints(error, config)
 
-    assert any("HTTP interface" in hint for hint in hints)
-    assert any("9000/9440" in hint for hint in hints)
+    assert len(hints) == 1
+    assert "reached native TCP port 9000" in hints[0]
+    assert "configured for xxx.us-east-1.aws.clickhouse.cloud:8443" in hints[0]
+    assert "Check DNS, service, proxy, load-balancer, and port mappings" in hints[0]
+    assert "CLICKHOUSE_PORT=8443 looks like" not in hints[0]
 
 
 def test_hint_for_tls_mismatch():
@@ -66,6 +70,18 @@ def test_hint_for_http_status_without_other_signals():
     assert len(hints) == 1
     assert "CLICKHOUSE_SECURE=false" in hints[0]
     assert "HTTP interface" in hints[0]
+
+
+def test_connection_refused_hint_starts_with_reachability():
+    error = Exception("Connection refused")
+    config = {"host": "localhost", "port": 8123, "secure": False}
+
+    hints = _connection_error_hints(error, config)
+
+    assert len(hints) == 1
+    assert "running and reachable" in hints[0]
+    assert "network or proxy routing" in hints[0]
+    assert "CLICKHOUSE_SECURE=false" in hints[0]
 
 
 def test_no_hint_for_unrelated_errors():
@@ -99,19 +115,24 @@ def test_format_connection_failure_without_hints():
 
 
 @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-def test_create_client_raises_runtime_error_with_hint(mock_cc):
-    mock_cc.get_client.side_effect = Exception(
+def test_create_client_preserves_exception_and_logs_hint(mock_cc, caplog):
+    import logging
+
+    original_error = OperationalError(
         "HTTP driver received HTTP status 400, server response: "
         "Port 9000 is for clickhouse-client program"
     )
+    mock_cc.get_client.side_effect = original_error
 
-    with pytest.raises(RuntimeError) as exc_info:
-        create_clickhouse_client()
+    with caplog.at_level(logging.ERROR, logger="mcp-clickhouse"):
+        with pytest.raises(OperationalError) as exc_info:
+            create_clickhouse_client()
 
-    message = str(exc_info.value)
-    assert "Failed to connect to ClickHouse" in message
-    assert "Hint:" in message
-    assert "HTTP interface" in message
+    assert exc_info.value is original_error
+    log_message = "\n".join(record.message for record in caplog.records)
+    assert "Failed to connect to ClickHouse" in log_message
+    assert "Hint:" in log_message
+    assert "reached native TCP port 9000" in log_message
 
 
 @patch("mcp_clickhouse.mcp_server.clickhouse_connect")

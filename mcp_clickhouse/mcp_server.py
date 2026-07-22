@@ -561,15 +561,28 @@ def _connection_error_hints(error: Exception, client_config: dict) -> List[str]:
     secure = bool(client_config.get("secure"))
     host = client_config.get("host", "<unknown>")
 
-    native_port_message = (
-        "port 9000 is for clickhouse-client" in err or "port 9440 is for clickhouse-client" in err
+    native_response_port = next(
+        (
+            native_port
+            for native_port in _NATIVE_PROTOCOL_PORTS
+            if f"port {native_port} is for clickhouse-client" in err
+        ),
+        None,
     )
-    if port in _NATIVE_PROTOCOL_PORTS or native_port_message:
+    if port in _NATIVE_PROTOCOL_PORTS:
         hints.append(
             f"CLICKHOUSE_PORT={port} looks like ClickHouse's native TCP protocol port "
             "(used by clickhouse-client). This server uses the HTTP interface — set "
             "CLICKHOUSE_PORT to 8123 (HTTP) or 8443 (HTTPS), or your deployment's HTTP "
             "mapping. Do not use native ports 9000/9440."
+        )
+    elif native_response_port is not None:
+        hints.append(
+            f"The ClickHouse response indicates that this request reached native TCP port "
+            f"{native_response_port}, even though the client was configured for {host}:{port}. "
+            "Check DNS, service, proxy, load-balancer, and port mappings to ensure traffic is "
+            "routed to ClickHouse's HTTP interface (8123/8443 by default, or your deployment's "
+            "HTTP mapping)."
         )
 
     tls_tokens = (
@@ -593,21 +606,22 @@ def _connection_error_hints(error: Exception, client_config: dict) -> List[str]:
             "(typical local Docker on 8123)."
         )
 
-    # Scheme/port mismatches often surface as opaque HTTP client errors.
-    http_mismatch_tokens = (
+    # General connectivity and scheme/port failures can surface as opaque HTTP errors.
+    connection_failure_tokens = (
         "http status",
         "bad status line",
         "connection refused",
         "connection reset",
         "remote end closed connection",
     )
-    if any(token in err for token in http_mismatch_tokens) and not hints:
+    if any(token in err for token in connection_failure_tokens) and not hints:
         hints.append(
-            f"Connection to {host}:{port} failed with CLICKHOUSE_SECURE="
-            f"{str(secure).lower()}. Confirm CLICKHOUSE_SECURE matches whether "
-            "ClickHouse expects HTTPS, and that CLICKHOUSE_PORT is an HTTP interface "
-            "port (8123/8443), not a native TCP port (9000/9440). These settings "
-            "configure the database client, not the MCP server transport."
+            f"Connection to {host}:{port} failed. Verify ClickHouse is running and reachable "
+            "at this address and that network or proxy routing permits access. Then confirm "
+            f"CLICKHOUSE_SECURE={str(secure).lower()} matches whether ClickHouse expects HTTPS, "
+            "and that CLICKHOUSE_PORT is an HTTP interface port (8123/8443), not a native TCP "
+            "port (9000/9440). These settings configure the database client, not the MCP "
+            "server transport."
         )
 
     return hints
@@ -673,7 +687,7 @@ def create_clickhouse_client():
     except Exception as e:
         message = _format_connection_failure(e, client_config)
         logger.error(message)
-        raise RuntimeError(message) from e
+        raise
 
 
 def build_query_settings(client) -> dict[str, str]:
