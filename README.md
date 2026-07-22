@@ -489,7 +489,7 @@ Configuration is split into **independent** groups. Mixing them up is a common c
 | Group | Variables | Controls |
 |-------|-----------|----------|
 | **ClickHouse database connection** | `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_SECURE`, `CLICKHOUSE_VERIFY`, … | How **this MCP server** connects to your ClickHouse cluster over the **HTTP interface** |
-| **MCP server / transport** | `CLICKHOUSE_MCP_*`, `FASTMCP_SERVER_AUTH*` | How **MCP clients** (Claude Desktop, inspectors, etc.) connect *to this server* |
+| **MCP server / transport** | `CLICKHOUSE_MCP_*`, `FASTMCP_SERVER_AUTH*` | MCP transport, authentication, and query-tool execution limits |
 | **Middleware / chDB** | `MCP_MIDDLEWARE_MODULE`, `CHDB_*` | Optional extensions |
 
 > [!IMPORTANT]
@@ -499,7 +499,7 @@ Configuration is split into **independent** groups. Mixing them up is a common c
 
 #### ClickHouse database connection
 
-These variables configure the [clickhouse-connect](https://clickhouse.com/docs/en/integrations/python) HTTP client used by `run_query`, `list_databases`, and `list_tables`.
+These variables configure the [clickhouse-connect](https://clickhouse.com/docs/en/integrations/python) HTTP client and the behavior of ClickHouse-backed tools such as `run_query`, `list_databases`, and `list_tables`.
 
 ##### Required Variables
 
@@ -535,6 +535,9 @@ These variables configure the [clickhouse-connect](https://clickhouse.com/docs/e
 * `CLICKHOUSE_SERVER_HOST_NAME`: Server hostname for SNI override and certificate validation on the **ClickHouse** connection
   * Default: None (uses the connection hostname)
   * This is useful when connecting through proxies or load balancers where the certificate hostname differs from the connection hostname. When set, this hostname will be used for both SNI (Server Name Indication) during the TLS handshake and for certificate hostname validation.
+* `CLICKHOUSE_PROXY_PATH`: URL path prefix for the ClickHouse HTTP endpoint
+  * Default: None
+  * Set this when the ClickHouse HTTP interface is exposed behind a reverse proxy under a path prefix (for example, `/clickhouse`)
 * `CLICKHOUSE_CONNECT_TIMEOUT`: Connection timeout in seconds for the **ClickHouse** client
   * Default: `"30"`
   * Increase this value if you experience connection timeouts
@@ -559,7 +562,7 @@ These variables configure the [clickhouse-connect](https://clickhouse.com/docs/e
 
 #### MCP server and transport
 
-These variables control the MCP process itself (how clients talk to `mcp-clickhouse`). They are independent of the ClickHouse database settings above. See also [Authentication for HTTP/SSE Transports](#authentication-for-httpsse-transports).
+These variables control the MCP process itself, including transport, authentication, and query-tool execution limits. They are independent of the ClickHouse database settings above. See also [Authentication for HTTP/SSE Transports](#authentication-for-httpsse-transports).
 
 * `CLICKHOUSE_MCP_SERVER_TRANSPORT`: Sets the transport method for the MCP server
   * Default: `"stdio"`
