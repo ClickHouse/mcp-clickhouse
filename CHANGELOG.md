@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Changed
+- Connection failures now log actionable hints for common misconfigurations (native TCP port used instead of the HTTP interface, TLS/`CLICKHOUSE_SECURE` mismatches), and a warning is logged when `CLICKHOUSE_PORT` is set to a native protocol port (9000/9440). ([#102](https://github.com/ClickHouse/mcp-clickhouse/issues/102))
+
 ## 0.4.1 - 2026-07-17
 
 ### Changed
