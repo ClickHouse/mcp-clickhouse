@@ -115,8 +115,19 @@ def test_format_connection_failure_without_hints():
 
 
 @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-def test_create_client_preserves_exception_and_logs_hint(mock_cc, caplog):
+def test_create_client_preserves_exception_and_logs_hint(mock_cc, monkeypatch, caplog):
     import logging
+
+    monkeypatch.setenv("CLICKHOUSE_HOST", "localhost")
+    monkeypatch.setenv("CLICKHOUSE_USER", "default")
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "secret")
+    monkeypatch.setenv("CLICKHOUSE_PORT", "8123")
+    monkeypatch.setenv("CLICKHOUSE_SECURE", "false")
+
+    # Reset config singleton so env changes are picked up
+    import mcp_clickhouse.mcp_env as mcp_env
+
+    mcp_env._CONFIG_INSTANCE = None
 
     original_error = OperationalError(
         "HTTP driver received HTTP status 400, server response: "
@@ -133,6 +144,9 @@ def test_create_client_preserves_exception_and_logs_hint(mock_cc, caplog):
     assert "Failed to connect to ClickHouse" in log_message
     assert "Hint:" in log_message
     assert "reached native TCP port 9000" in log_message
+
+    # Clean up singleton for other tests
+    mcp_env._CONFIG_INSTANCE = None
 
 
 @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
