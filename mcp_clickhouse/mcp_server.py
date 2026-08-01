@@ -188,8 +188,41 @@ def result_to_column(query_columns, result) -> List[Column]:
     return [Column(**dict(zip(query_columns, row))) for row in result]
 
 
+# The largest integer magnitude that round-trips exactly through an IEEE 754
+# double-precision float, i.e. JavaScript's `Number` type. Most MCP clients
+# (including Claude Desktop) decode tool results with `JSON.parse`, which
+# represents every JSON number as a `Number`. ClickHouse integer types such as
+# UInt64/Int64/UInt128/Int128/UInt256/Int256 routinely exceed this range, so
+# emitting them as raw JSON number literals silently corrupts the value on the
+# client side (see https://github.com/ClickHouse/mcp-clickhouse/issues/111).
+_JSON_SAFE_INT_LIMIT = 2**53 - 1
+
+
+def _json_safe(obj: Any) -> Any:
+    """Recursively stringify integers that JSON number literals can't carry safely.
+
+    `json.dumps` serializes Python `int` natively for any magnitude, and never
+    routes it through a `default=` hook, so `default=str` alone does not help
+    here. This walks dicts/lists/tuples (covering nested ClickHouse Array,
+    Tuple, and Map values) and converts any out-of-range int to its exact
+    decimal string before serialization. `bool` is a subclass of `int` but is
+    always within range, so it is left untouched to preserve JSON true/false.
+    """
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, int):
+        if obj > _JSON_SAFE_INT_LIMIT or obj < -_JSON_SAFE_INT_LIMIT:
+            return str(obj)
+        return obj
+    if isinstance(obj, dict):
+        return {key: _json_safe(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(item) for item in obj]
+    return obj
+
+
 def _serialize_tool_result(obj: Any) -> str:
-    return json.dumps(obj, default=str)
+    return json.dumps(_json_safe(obj), default=str)
 
 
 def list_databases() -> str:

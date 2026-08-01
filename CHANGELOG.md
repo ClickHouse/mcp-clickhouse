@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - Connection failures now log actionable hints for common misconfigurations (native TCP port used instead of the HTTP interface, TLS/`CLICKHOUSE_SECURE` mismatches), and a warning is logged when `CLICKHOUSE_PORT` is set to a native protocol port (9000/9440). ([#102](https://github.com/ClickHouse/mcp-clickhouse/issues/102))
 
+### Fixed
+- Large ClickHouse integers (`UInt64`, `Int64`, `UInt128`, `Int128`, `UInt256`, `Int256`) beyond JavaScript's safe integer range (`2^53 - 1`) are now serialized as JSON strings instead of raw number literals, preventing silent precision loss when tool results are decoded by JS-based MCP clients. ([#111](https://github.com/ClickHouse/mcp-clickhouse/issues/111))
+
 ## 0.4.1 - 2026-07-17
 
 ### Changed
