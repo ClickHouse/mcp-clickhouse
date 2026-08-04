@@ -1,5 +1,7 @@
 # ClickHouse MCP Server
 
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.ClickHouse%2Fmcp-clickhouse.svg)](https://mcptoplist.com/server/io.github.ClickHouse%2Fmcp-clickhouse)
+
 <!-- mcp-name: io.github.ClickHouse/mcp-clickhouse -->
 
 [![PyPI - Version](https://img.shields.io/pypi/v/mcp-clickhouse)](https://pypi.org/project/mcp-clickhouse)
