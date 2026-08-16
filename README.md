@@ -3,6 +3,7 @@
 <!-- mcp-name: io.github.ClickHouse/mcp-clickhouse -->
 
 [![PyPI - Version](https://img.shields.io/pypi/v/mcp-clickhouse)](https://pypi.org/project/mcp-clickhouse)
+[![context cost](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fathakur3%2Fmcp-context-cost%2Fmain%2Fbadges%2Fclickhouse.json)](https://athakur3.github.io/mcp-context-cost/METHODOLOGY)
 
 An MCP server for ClickHouse.
 
