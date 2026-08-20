@@ -218,7 +218,19 @@ class ChDBConfig:
 
     Required environment variables:
         CHDB_DATA_PATH: The path to the chDB data directory (only required if CHDB_ENABLED=true)
+
+    Optional environment variables (with defaults):
+        CHDB_ALLOW_WRITE_ACCESS: Allow writes; when false, the session runs under
+            SET readonly=2 (table functions stay usable) (default: false)
+        CHDB_MAX_RESULT_BYTES: Engine result-size cap, also used as the final
+            Python truncation budget (default: 1048576, i.e. 1 MiB)
+        CHDB_FILE_ALLOWLIST: Colon-separated path prefixes. When set, the chDB
+            query tool is sandboxed: raw SQL may not call external/file table
+            functions (file/url/s3/remote/...) (default: unset)
     """
+
+    # Engine result-size cap (1 MiB) when CHDB_MAX_RESULT_BYTES is unset/invalid.
+    DEFAULT_MAX_RESULT_BYTES = 1024 * 1024
 
     def __init__(self):
         """Initialize the configuration from environment variables."""
@@ -237,6 +249,49 @@ class ChDBConfig:
     def data_path(self) -> str:
         """Get the chDB data path."""
         return os.getenv("CHDB_DATA_PATH", ":memory:")
+
+    @property
+    def allow_write_access(self) -> bool:
+        """Get whether writes are allowed.
+
+        When false (the default), the chDB session is put under SET readonly=2,
+        which rejects INSERT/CREATE/DROP/ALTER on persistent tables while still
+        allowing SET and table functions.
+
+        Default: False
+        """
+        return os.getenv("CHDB_ALLOW_WRITE_ACCESS", "false").lower() == "true"
+
+    @property
+    def max_result_bytes(self) -> int:
+        """Get the result-size cap in bytes (engine cap + Python truncation).
+
+        Falls back to DEFAULT_MAX_RESULT_BYTES when unset or not a positive int.
+
+        Default: 1048576 (1 MiB)
+        """
+        raw = os.getenv("CHDB_MAX_RESULT_BYTES")
+        if not raw:
+            return self.DEFAULT_MAX_RESULT_BYTES
+        try:
+            value = int(raw)
+        except ValueError:
+            return self.DEFAULT_MAX_RESULT_BYTES
+        return value if value > 0 else self.DEFAULT_MAX_RESULT_BYTES
+
+    @property
+    def file_allowlist(self) -> tuple[str, ...]:
+        """Colon-separated file-path allowlist prefixes (like DuckDB's ``allowed_directories``).
+
+        When non-empty, chDB may read file-like sources (file/s3/url/…) only when
+        their path is under one of these prefixes; paths outside — and DSN-based
+        external sources that can't be path-checked — are refused. Empty by
+        default (no restriction). See ``CHDB_FILE_ALLOWLIST``.
+        """
+        raw = os.getenv("CHDB_FILE_ALLOWLIST")
+        if not raw:
+            return ()
+        return tuple(p for p in (part.strip() for part in raw.split(":")) if p)
 
     def get_client_config(self) -> dict:
         """Get the configuration dictionary for chDB client.

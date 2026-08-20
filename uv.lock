@@ -202,7 +202,7 @@ wheels = [
 
 [[package]]
 name = "chdb"
-version = "4.1.6"
+version = "4.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "chdb-core" },
@@ -211,12 +211,12 @@ dependencies = [
     { name = "pyarrow" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/61/8b/b7ec9eff8795a87f462c4b304e82391ecd6e4b238607f130557294a9ae6f/chdb-4.1.6-py3-none-any.whl", hash = "sha256:9acf64920697a9a88608c2c740d5ad5c650d1f75a47af089bd78ae5b6fe40f30", size = 1444649, upload-time = "2026-03-19T15:27:04.271Z" },
+    { url = "https://files.pythonhosted.org/packages/91/88/85d2dbe2151d69a759f57f4e5d11d55c506e758b0e8fd0a2fa8d4e982c55/chdb-4.2.1-py3-none-any.whl", hash = "sha256:b5ae04ed5e1d6b51acfe7e2d6efbb176027ef09c3ed2255c6ca439a077a4aa1e", size = 1616586, upload-time = "2026-07-13T07:53:25.938Z" },
 ]
 
 [[package]]
 name = "chdb-core"
-version = "26.1.0"
+version = "26.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -224,10 +224,10 @@ dependencies = [
     { name = "pyarrow" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/43/31e699cb602b8348531b2e36a57c70b7ad9238f6aaeed01dc38242524b34/chdb_core-26.1.0-cp39-abi3-macosx_10_15_x86_64.whl", hash = "sha256:7dd4fc1d008e60e1fb54440bc9a7c41996413f5f164c324acc790d47043264a5", size = 105204496, upload-time = "2026-03-02T13:20:46.813Z" },
-    { url = "https://files.pythonhosted.org/packages/b1/6a/872464cbffb7f345643751c4f670d0844aef16b2e82ae3f5ceb95790399e/chdb_core-26.1.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:73be929393fd33136e550e99a5101e3068fc7812dfbb93eacbba9603b9a8e77a", size = 87764655, upload-time = "2026-03-02T12:45:07.585Z" },
-    { url = "https://files.pythonhosted.org/packages/11/a9/649b956846bac60b91052583f84077a97bd9cc7dfb164178a4222f92b997/chdb_core-26.1.0-cp39-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:a62b85061ec81ca64b74f418edf4eaee6ff82aa915b0d537c7ccb3a3e2ed0e9d", size = 118355514, upload-time = "2026-03-02T13:23:53.088Z" },
-    { url = "https://files.pythonhosted.org/packages/aa/b1/266c91ca0cd9c5259dfb8f18efd507ba53611bab10bffc10083b97ff66bf/chdb_core-26.1.0-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:ff3559d024c10a31c5041ab4387e0b7d6a3b5d5bbf6dda884c5a36d4dc50ce47", size = 158111115, upload-time = "2026-03-02T13:16:14.098Z" },
+    { url = "https://files.pythonhosted.org/packages/10/64/584953f24530357270bf16747cc9e0b5136d002011eb3713cded079a65e1/chdb_core-26.5.0-cp39-abi3-macosx_10_15_x86_64.whl", hash = "sha256:a4b896feb536b75b0cae0612410e3cc93e8161d41eab9bd55720303aef1aa047", size = 110710168, upload-time = "2026-06-08T03:33:44.677Z" },
+    { url = "https://files.pythonhosted.org/packages/63/f4/04fc1be6d5576aa04a22faa168351431c3689fde1b1ac51c54eca2af895f/chdb_core-26.5.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:4902bdf2e58e49567dbfcb8d9b88607edf6d472f6c21f33c4674574e0444bd28", size = 96683215, upload-time = "2026-06-08T01:52:15.76Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/08/d97a17a69d54ab21b636c7de668a94e0413d3e8fe5804ffbd2e38996a1e6/chdb_core-26.5.0-cp39-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:0004a5528287d3eec757a223e851a3b68a485675881a09bb4fa7b5116035b3c7", size = 122690139, upload-time = "2026-06-08T03:17:08.205Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/2d/eb9b51180f2c0934339cf94ae2c031fab7c3dc93191f95aff0f83a0ca741/chdb_core-26.5.0-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:85ddbf675b4a070aa5abb79456b0a08643273dcf3977dc39f347c8acf846c804", size = 157311782, upload-time = "2026-06-08T02:32:13.171Z" },
 ]
 
 [[package]]
@@ -891,7 +891,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cachetools", specifier = ">=5.5.0" },
-    { name = "chdb", marker = "extra == 'chdb'", specifier = ">=3.3.0" },
+    { name = "chdb", marker = "extra == 'chdb'", specifier = ">=4.2.1" },
     { name = "clickhouse-connect", specifier = ">=0.8.16" },
     { name = "fastmcp", specifier = ">=2.0.0,<3.0.0" },
     { name = "pytest", marker = "extra == 'dev'" },
