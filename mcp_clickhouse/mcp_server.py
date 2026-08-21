@@ -470,17 +470,31 @@ _SQL_COMMENTS_AND_QUOTED_TEXT = re.compile(
     re.VERBOSE | re.DOTALL,
 )
 
-# DROP is matched as a bare keyword rather than against a list of object types.
-# The list form silently allowed ALTER TABLE ... DROP PARTITION, DROP COLUMN,
-# DROP FUNCTION, DROP INDEX, DROP NAMED COLLECTION, and every object type added
-# to ClickHouse after the list was written.
-_DROP_KEYWORD = re.compile(r"\bDROP\b", re.IGNORECASE)
+# Matched against the scrubbed statement. Bare DROP also covers the
+# ALTER ... DROP PARTITION/PART/COLUMN clauses. TRUNCATE followed by an open
+# parenthesis is the rounding function, as is replace() after OR. Bare DELETE
+# and UPDATE cover both the lightweight and ALTER mutation forms. REPLACE
+# TABLE/PARTITION and OR REPLACE overwrite existing data. Bare CLEAR is
+# reversible, so only CLEAR COLUMN/INDEX/PROJECTION is flagged.
+_DESTRUCTIVE_KEYWORDS = re.compile(
+    r"""
+      \bDROP\b
+    | \bTRUNCATE\b(?!\s*\()
+    | \bDELETE\b
+    | \bUPDATE\b
+    | \bREPLACE\s+(?:TABLE|PARTITION)\b
+    | \bOR\s+REPLACE\b(?!\s*\()
+    | \bCLEAR\s+(?:COLUMN|INDEX|PROJECTION)\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
-# Covers TRUNCATE TABLE, TRUNCATE DATABASE, TRUNCATE ALL TABLES FROM, and the
-# form where the TABLE keyword is omitted (`TRUNCATE db.name` is valid SQL in
-# ClickHouse). `truncate(x)` is the rounding function, so a following open
-# parenthesis marks an expression rather than a statement.
-_TRUNCATE_KEYWORD = re.compile(r"\bTRUNCATE\b(?!\s*\()", re.IGNORECASE)
+# DETACH ... PERMANENTLY is matched as two independent searches. A single
+# `DETACH .* PERMANENTLY` branch backtracks quadratically on crafted input,
+# and the validator runs on an executor thread that cancel cannot stop.
+# Plain DETACH is reversible via ATTACH and stays allowed.
+_DETACH_KEYWORD = re.compile(r"\bDETACH\b", re.IGNORECASE)
+_PERMANENTLY_KEYWORD = re.compile(r"\bPERMANENTLY\b", re.IGNORECASE)
 
 
 def _strip_comments_and_quoted_text(query: str) -> str:
@@ -494,13 +508,13 @@ def _strip_comments_and_quoted_text(query: str) -> str:
 
 
 def _validate_query_for_destructive_ops(query: str) -> None:
-    """Validate that destructive operations (DROP, TRUNCATE) are allowed.
+    """Reject destructive statements unless CLICKHOUSE_ALLOW_DROP is set.
 
     Args:
         query: The SQL query to validate
 
     Raises:
-        ToolError: If the query contains destructive operations but CLICKHOUSE_ALLOW_DROP is not set
+        ToolError: If the query contains a destructive statement and CLICKHOUSE_ALLOW_DROP is not set
     """
     config = get_config()
 
@@ -513,11 +527,15 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         return
 
     statement = _strip_comments_and_quoted_text(query)
-    if _DROP_KEYWORD.search(statement) or _TRUNCATE_KEYWORD.search(statement):
+    if _DESTRUCTIVE_KEYWORDS.search(statement) or (
+        _DETACH_KEYWORD.search(statement) and _PERMANENTLY_KEYWORD.search(statement)
+    ):
         raise ToolError(
-            "Destructive operations (DROP, TRUNCATE) are not allowed. "
-            "Set CLICKHOUSE_ALLOW_DROP=true to enable these operations. "
-            "This is a safety feature to prevent accidental data deletion."
+            "Destructive operations are not allowed (DROP, TRUNCATE, DELETE, UPDATE, "
+            "REPLACE TABLE/PARTITION, CREATE OR REPLACE, CLEAR COLUMN/INDEX/PROJECTION, "
+            "DETACH PERMANENTLY). Set CLICKHOUSE_ALLOW_DROP=true to enable them. "
+            "This gate is a best-effort accident guard, not a security boundary. "
+            "Restrict the ClickHouse user's grants for real enforcement."
         )
 
 
@@ -674,8 +692,56 @@ def _format_connection_failure(error: Exception, client_config: dict) -> str:
     return message
 
 
+# Privileges the drop gate pretends to block but cannot enforce server-side.
+# ALTER includes ALTER DELETE and ALTER DROP PARTITION in the privilege
+# hierarchy. ALTER ADD is exempt because the README recipe grants it.
+_GRANTS_ADVISORY_PRIVILEGES = re.compile(
+    r"\b(ALL|DROP|TRUNCATE|DELETE|UPDATE|ALTER\b(?!\s+ADD\b))\b", re.IGNORECASE
+)
+
+_grants_advisory_done = False
+
+
+def _warn_if_overprivileged(client) -> None:
+    """Warn once when the drop gate is active but the ClickHouse user holds
+    privileges it cannot enforce against. Fail-open, never raises.
+    """
+    global _grants_advisory_done
+    if _grants_advisory_done:
+        return
+    # Check-then-set race across executor threads is harmless, worst case is a
+    # duplicate warning.
+    _grants_advisory_done = True
+
+    try:
+        result = client.query("SHOW GRANTS")
+        matched: set[str] = set()
+        role_grants = []
+        for row in result.result_rows:
+            grant = str(row[0])
+            if grant.upper().startswith("GRANT") and not re.search(r"\bON\b", grant, re.IGNORECASE):
+                # `GRANT <role> TO ...`; role privileges are not expanded here.
+                role_grants.append(grant)
+                continue
+            matched.update(m.group(1).upper() for m in _GRANTS_ADVISORY_PRIVILEGES.finditer(grant))
+        if matched:
+            logger.warning(
+                "CLICKHOUSE_ALLOW_DROP=false, but the ClickHouse user holds %s privileges. "
+                "The destructive-operation gate runs in the MCP server and is not enforced "
+                "server-side. See the README least-privilege recipe to restrict grants.",
+                ", ".join(sorted(matched)),
+            )
+        for grant in role_grants:
+            logger.info(
+                "Grants advisory cannot inspect privileges granted via roles: %s", grant
+            )
+    except Exception as e:
+        logger.debug("Grants advisory skipped: %s", e)
+
+
 def create_clickhouse_client():
     client_config = get_config().get_client_config()
+    overrides_applied = False
 
     try:
         ctx = get_context()
@@ -689,6 +755,7 @@ def create_clickhouse_client():
                 f"Applying session-specific ClickHouse client config overrides: {list(session_config_overrides.keys())}"
             )
             client_config.update(session_config_overrides)
+            overrides_applied = True
     except RuntimeError:
         # If we're outside a request context, just proceed with the default config
         pass
@@ -721,11 +788,17 @@ def create_clickhouse_client():
         # Test the connection
         version = client.server_version
         logger.info(f"Successfully connected to ClickHouse server version {version}")
-        return client
     except Exception as e:
         message = _format_connection_failure(e, client_config)
         logger.error(message)
         raise
+
+    config = get_config()
+    # Session overrides may connect as a different user. Skip the advisory
+    # without consuming the one-shot so a later base-config client still runs it.
+    if not overrides_applied and config.allow_write_access and not config.allow_drop:
+        _warn_if_overprivileged(client)
+    return client
 
 
 def build_query_settings(client) -> dict[str, str]:
@@ -983,7 +1056,10 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
             description=(
                 "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
                 "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML operations. "
-                "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow destructive operations (DROP, TRUNCATE)."
+                "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow destructive operations "
+                "(DROP, TRUNCATE, DELETE, UPDATE, REPLACE TABLE/PARTITION, CREATE OR REPLACE, "
+                "CLEAR COLUMN/INDEX/PROJECTION, DETACH PERMANENTLY). That gate is a best-effort "
+                "accident guard, not a security boundary."
             ),
         )
     )

@@ -1,10 +1,11 @@
-"""Tests for DROP and TRUNCATE protection in the query validator.
+"""Tests for destructive-statement protection in the query validator.
 
 These are unit tests for `_validate_query_for_destructive_ops` and its helper.
 They do not need a running ClickHouse server. Integration coverage of the same
 flag lives in `tests/test_tool.py`.
 """
 
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -50,9 +51,29 @@ DESTRUCTIVE_QUERIES = [
     "ALTER TABLE d.t DROP PARTITION tuple()",
     "ALTER TABLE d.t DROP PART 'all_1_1_0'",
     "ALTER TABLE d.t DROP COLUMN c",
+    # DELETE and UPDATE, both the lightweight statements and the ALTER mutations.
+    "DELETE FROM d.t WHERE 1",
+    "ALTER TABLE d.t DELETE WHERE 1",
+    "ALTER TABLE d.t UPDATE c = 0 WHERE 1",
+    "UPDATE d.t SET c = 0 WHERE 1",
+    # CLEAR COLUMN/INDEX/PROJECTION erase data even after the scrubber blanks
+    # the partition literal.
+    "ALTER TABLE d.t CLEAR COLUMN c IN PARTITION 'p'",
+    "ALTER TABLE d.t CLEAR INDEX i IN PARTITION 'p'",
+    "ALTER TABLE d.t CLEAR PROJECTION p IN PARTITION 'p'",
+    # REPLACE forms overwrite existing data.
+    "CREATE OR REPLACE TABLE d.t (a UInt8) ENGINE = MergeTree ORDER BY a",
+    "REPLACE TABLE d.t (a UInt8) ENGINE = MergeTree ORDER BY a",
+    "ALTER TABLE d.t REPLACE PARTITION 'p' FROM d.s",
+    "CREATE OR REPLACE VIEW d.v AS SELECT 1",
+    # DETACH is only destructive with PERMANENTLY.
+    "DETACH TABLE d.t PERMANENTLY",
+    "DETACH TABLE d.t SYNC PERMANENTLY",
     # Case and whitespace variations.
     "drop table d.t",
     "DROP\n  TABLE\n  d.t",
+    "delete from d.t where 1",
+    "Detach Table d.t Permanently",
     # Comments must not hide the statement.
     "-- harmless comment\nDROP TABLE d.t",
     "/* harmless comment */ DROP TABLE d.t",
@@ -67,10 +88,12 @@ ALLOWED_QUERIES = [
     "CREATE TABLE d.t (a UInt8) ENGINE = MergeTree ORDER BY a",
     "ALTER TABLE d.t ADD COLUMN b UInt8",
     "INSERT INTO d.t (a) VALUES (1)",
-    # `truncate` is also a rounding function.
+    # `truncate` is also a rounding function, `replace` a string function.
     "SELECT truncate(3.7)",
     "SELECT truncate(1.234, 2)",
     "INSERT INTO d.t SELECT truncate(a) FROM d.s",
+    "SELECT replace(x, 'a', 'b') FROM d.t",
+    "SELECT a OR replace(b, 'c', 'd') FROM d.t",
     # Keywords inside string literals and identifiers are data, not statements.
     "INSERT INTO d.logs (msg) VALUES ('drop the table')",
     "INSERT INTO d.logs (msg) VALUES ('truncate everything')",
@@ -89,6 +112,13 @@ ALLOWED_QUERIES = [
     # Word boundaries.
     "SELECT dropped, undropped FROM d.t",
     "SELECT truncated FROM d.t",
+    "SELECT updated_at, deleted_at FROM d.t",
+    # Plain DETACH is reversible with ATTACH.
+    "DETACH TABLE d.t",
+    "ATTACH TABLE d.t",
+    # New keywords inside literals and comments stay data.
+    "SELECT * FROM d.t WHERE note = 'please delete this'",
+    "SELECT 1 -- update d.t later",
 ]
 
 
@@ -98,8 +128,9 @@ def test_destructive_queries_blocked(write_mode_without_drop, query):
         _validate_query_for_destructive_ops(query)
 
     message = str(exc_info.value)
-    assert "Destructive operations (DROP, TRUNCATE) are not allowed" in message
+    assert "Destructive operations are not allowed" in message
     assert "CLICKHOUSE_ALLOW_DROP=true" in message
+    assert "not a security boundary" in message
 
 
 @pytest.mark.parametrize("query", ALLOWED_QUERIES)
@@ -151,3 +182,15 @@ def test_strip_leaves_unterminated_literal_in_place():
     query = "INSERT INTO t VALUES ('drop table"
 
     assert "drop table" in _strip_comments_and_quoted_text(query)
+
+
+def test_pathological_detach_input_is_fast(write_mode_without_drop):
+    """A single `DETACH .* PERMANENTLY` branch backtracked quadratically on
+    repeated DETACH without PERMANENTLY, wedging executor threads."""
+    pathological = "DETACH " * 20000
+
+    start = time.monotonic()
+    _validate_query_for_destructive_ops(pathological)
+    with pytest.raises(ToolError):
+        _validate_query_for_destructive_ops(pathological + "PERMANENTLY")
+    assert time.monotonic() - start < 3.0
