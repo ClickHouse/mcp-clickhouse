@@ -454,6 +454,45 @@ def list_tables(
     })
 
 
+# SQL comments and quoted text, blanked out before destructive-keyword matching.
+# A keyword inside a string literal must not trigger the guard, and a keyword
+# placed after a comment marker must not slip past it.
+_SQL_COMMENTS_AND_QUOTED_TEXT = re.compile(
+    r"""
+      '(?:\\.|''|[^'\\])*'              # string literal
+    | "(?:\\.|""|[^"\\])*"              # double-quoted identifier
+    | `(?:\\.|``|[^`\\])*`              # backtick-quoted identifier
+    | \$(?P<tag>\w*)\$.*?\$(?P=tag)\$    # dollar-quoted string or heredoc
+    | --[^\n]*                         # line comment
+    | \#[^\n]*                         # line comment
+    | /\*.*?\*/                        # block comment
+    """,
+    re.VERBOSE | re.DOTALL,
+)
+
+# DROP is matched as a bare keyword rather than against a list of object types.
+# The list form silently allowed ALTER TABLE ... DROP PARTITION, DROP COLUMN,
+# DROP FUNCTION, DROP INDEX, DROP NAMED COLLECTION, and every object type added
+# to ClickHouse after the list was written.
+_DROP_KEYWORD = re.compile(r"\bDROP\b", re.IGNORECASE)
+
+# Covers TRUNCATE TABLE, TRUNCATE DATABASE, TRUNCATE ALL TABLES FROM, and the
+# form where the TABLE keyword is omitted (`TRUNCATE db.name` is valid SQL in
+# ClickHouse). `truncate(x)` is the rounding function, so a following open
+# parenthesis marks an expression rather than a statement.
+_TRUNCATE_KEYWORD = re.compile(r"\bTRUNCATE\b(?!\s*\()", re.IGNORECASE)
+
+
+def _strip_comments_and_quoted_text(query: str) -> str:
+    """Blank out comments and quoted text so keyword matching sees only SQL syntax.
+
+    Each match is replaced by a single space to keep surrounding tokens separate.
+    Unterminated literals and comments do not match and are left in place, which
+    keeps the destructive-operation check on the conservative side.
+    """
+    return _SQL_COMMENTS_AND_QUOTED_TEXT.sub(" ", query)
+
+
 def _validate_query_for_destructive_ops(query: str) -> None:
     """Validate that destructive operations (DROP, TRUNCATE) are allowed.
 
@@ -473,9 +512,8 @@ def _validate_query_for_destructive_ops(query: str) -> None:
     if config.allow_drop:
         return
 
-    # Simple pattern matching for destructive operations
-    destructive_pattern = r"\b(DROP\s+(\S+\s+)*(TABLE|DATABASE|VIEW|DICTIONARY)|TRUNCATE\s+TABLE)\b"
-    if re.search(destructive_pattern, query, re.IGNORECASE):
+    statement = _strip_comments_and_quoted_text(query)
+    if _DROP_KEYWORD.search(statement) or _TRUNCATE_KEYWORD.search(statement):
         raise ToolError(
             "Destructive operations (DROP, TRUNCATE) are not allowed. "
             "Set CLICKHOUSE_ALLOW_DROP=true to enable these operations. "

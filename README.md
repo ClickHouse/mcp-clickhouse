@@ -267,7 +267,7 @@ By default, this MCP enforces read-only queries so that accidental mutations can
 
 ### Destructive Operation Protection
 
-Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), destructive operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY, TRUNCATE TABLE) require an additional opt-in flag for safety. This prevents accidental data deletion during AI exploration.
+Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), destructive operations require an additional opt-in flag for safety. This prevents accidental data deletion during AI exploration. The check covers any `DROP` statement (`DROP TABLE`, `DROP DATABASE`, `DROP VIEW`, `DROP DICTIONARY`, `DROP FUNCTION`, `DROP INDEX`, and so on), the `ALTER TABLE ... DROP PARTITION` / `DROP PART` / `DROP COLUMN` clauses, and every form of `TRUNCATE`. Keywords inside string literals, quoted identifiers, and SQL comments are ignored, so they neither trigger the check nor hide a statement from it.
 
 To enable destructive operations, set both flags:
 ```json
@@ -554,7 +554,7 @@ These variables configure the [clickhouse-connect](https://clickhouse.com/docs/e
   * Default: `"false"`
   * Set to `"true"` to allow DDL (CREATE, ALTER, DROP) and DML (INSERT, UPDATE, DELETE) operations
   * When disabled (default), queries run with `readonly=1` setting to prevent data modifications
-* `CLICKHOUSE_ALLOW_DROP`: Allow destructive operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY, TRUNCATE TABLE)
+* `CLICKHOUSE_ALLOW_DROP`: Allow destructive operations (any `DROP` statement, `ALTER TABLE ... DROP PARTITION` / `DROP PART` / `DROP COLUMN`, and any `TRUNCATE` statement)
   * Default: `"false"`
   * Only takes effect when `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` is also set
   * Set to `"true"` to explicitly allow destructive DROP and TRUNCATE operations
