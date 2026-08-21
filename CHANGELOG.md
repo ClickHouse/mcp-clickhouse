@@ -4,8 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+- With `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` and `CLICKHOUSE_ALLOW_DROP` unset, the server now runs `SHOW GRANTS` once at first connection and logs a warning if the ClickHouse user holds `ALL`, `DROP`, `TRUNCATE`, `DELETE`, `UPDATE`, or `ALTER` (beyond `ALTER ADD`) privileges, since the destructive-operation gate is not server-enforced. The check is fail-open and never blocks startup or queries. Grants held via roles are not expanded, so the advisory only flags direct grants.
+
 ### Changed
+- The destructive-operation gate (`CLICKHOUSE_ALLOW_DROP`) now also blocks `DELETE`, `UPDATE` (including the `ALTER TABLE ... DELETE` / `UPDATE` mutations), `REPLACE TABLE` / `REPLACE PARTITION` / `CREATE OR REPLACE`, `ALTER TABLE ... CLEAR COLUMN` / `CLEAR INDEX` / `CLEAR PROJECTION`, and `DETACH ... PERMANENTLY`. These previously ran with write access alone and now require `CLICKHOUSE_ALLOW_DROP=true` as well. Plain `DETACH` stays allowed because it is reversible with `ATTACH`.
 - Connection failures now log actionable hints for common misconfigurations (native TCP port used instead of the HTTP interface, TLS/`CLICKHOUSE_SECURE` mismatches), and a warning is logged when `CLICKHOUSE_PORT` is set to a native protocol port (9000/9440). ([#102](https://github.com/ClickHouse/mcp-clickhouse/issues/102))
+
+### Fixed
+- Destructive-operation protection no longer misses `TRUNCATE` statements that omit the `TABLE` keyword (`TRUNCATE db.name` is valid ClickHouse syntax), `TRUNCATE DATABASE`, `TRUNCATE ALL TABLES FROM`, `ALTER TABLE ... DROP PARTITION` / `DROP PART` / `DROP COLUMN`, or `DROP` of object types outside `TABLE`/`DATABASE`/`VIEW`/`DICTIONARY`. With `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` and `CLICKHOUSE_ALLOW_DROP` unset, these statements previously ran and deleted data.
+- Destructive-operation protection no longer rejects safe statements that merely contain `drop` or `truncate` inside a string literal, a quoted identifier, or a SQL comment, such as `INSERT INTO logs VALUES ('drop the table')`. Comments can no longer hide a destructive statement from the check either.
 
 ## 0.4.1 - 2026-07-17
 

@@ -266,7 +266,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
             run_query(drop_query)
 
         error_msg = str(context.exception)
-        self.assertIn("Destructive operations (DROP, TRUNCATE) are not allowed", error_msg)
+        self.assertIn("Destructive operations are not allowed", error_msg)
         self.assertIn("CLICKHOUSE_ALLOW_DROP=true", error_msg)
 
     @patch.dict(os.environ, {"CLICKHOUSE_ALLOW_WRITE_ACCESS": "true", "CLICKHOUSE_ALLOW_DROP": "false"})
@@ -282,7 +282,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
             run_query(drop_query)
 
         error_msg = str(context.exception)
-        self.assertIn("Destructive operations (DROP, TRUNCATE) are not allowed", error_msg)
+        self.assertIn("Destructive operations are not allowed", error_msg)
         self.assertIn("CLICKHOUSE_ALLOW_DROP=true", error_msg)
 
         self.client.command(f"DROP DATABASE IF EXISTS {temp_db}")
@@ -344,7 +344,7 @@ class TestClickhouseDropProtection(unittest.TestCase):
             run_query(truncate_query)
 
         error_msg = str(context.exception)
-        self.assertIn("Destructive operations (DROP, TRUNCATE) are not allowed", error_msg)
+        self.assertIn("Destructive operations are not allowed", error_msg)
         self.assertIn("CLICKHOUSE_ALLOW_DROP=true", error_msg)
 
     def test_truncate_allowed_when_drop_flag_set(self):

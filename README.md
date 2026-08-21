@@ -263,11 +263,22 @@ You can also enable both ClickHouse and chDB simultaneously:
 
 ### Optional Write Access
 
-By default, this MCP enforces read-only queries so that accidental mutations cannot happen during exploration. To allow DDL or INSERT/UPDATE statements, set the `CLICKHOUSE_ALLOW_WRITE_ACCESS` environment variable to `true`. The server keeps enforcing read-only mode if the ClickHouse instance itself disallows writes.
+By default, this MCP enforces read-only queries so that accidental mutations cannot happen during exploration. To allow DDL or INSERT statements, set the `CLICKHOUSE_ALLOW_WRITE_ACCESS` environment variable to `true`. The server keeps enforcing read-only mode if the ClickHouse instance itself disallows writes.
 
 ### Destructive Operation Protection
 
-Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), destructive operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY, TRUNCATE TABLE) require an additional opt-in flag for safety. This prevents accidental data deletion during AI exploration.
+Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), destructive operations require an additional opt-in flag for safety. The check covers any `DROP` statement (including the `ALTER TABLE ... DROP PARTITION` / `DROP PART` / `DROP COLUMN` clauses), any `TRUNCATE`, `DELETE` and `UPDATE` (both the lightweight statements and the `ALTER TABLE ... DELETE` / `ALTER TABLE ... UPDATE` mutations), `REPLACE TABLE`, `CREATE OR REPLACE`, `ALTER TABLE ... REPLACE PARTITION`, `ALTER TABLE ... CLEAR COLUMN` / `CLEAR INDEX` / `CLEAR PROJECTION`, and `DETACH ... PERMANENTLY`. Keywords inside string literals, quoted identifiers, and SQL comments are ignored, so they neither trigger the check nor hide a statement from it.
+
+This check runs in the MCP server and is a best-effort guard against accidents. It is not a security boundary. The security boundary is the ClickHouse user's grants. Read-only mode (the default) is enforced server-side via `readonly=1`. The destructive-operation gate is not server-enforced.
+
+For write mode, give the MCP server a dedicated ClickHouse user with only the privileges it needs:
+
+```sql
+CREATE USER mcp_agent IDENTIFIED BY '...';
+GRANT SELECT, INSERT, CREATE TABLE, ALTER ADD COLUMN ON mydb.* TO mcp_agent;
+```
+
+Every statement outside these grants then fails server-side with `ACCESS_DENIED`, regardless of MCP flags. The server settings `max_table_size_to_drop` and `max_partition_size_to_drop` can also cap blast radius if pinned with settings constraints.
 
 To enable destructive operations, set both flags:
 ```json
@@ -277,9 +288,9 @@ To enable destructive operations, set both flags:
 }
 ```
 
-This two-tier approach ensures that accidental drops are very difficult:
-- **Write operations** (INSERT, UPDATE, CREATE) require `CLICKHOUSE_ALLOW_WRITE_ACCESS=true`
-- **Destructive operations** (DROP, TRUNCATE) additionally require `CLICKHOUSE_ALLOW_DROP=true`
+This two-tier approach makes accidental deletion difficult:
+- **Write operations** (INSERT, CREATE, ALTER ADD COLUMN) require `CLICKHOUSE_ALLOW_WRITE_ACCESS=true`
+- **Destructive operations** (DROP, TRUNCATE, DELETE, UPDATE, and the rest of the list above) additionally require `CLICKHOUSE_ALLOW_DROP=true`
 
 ### Running Without uv (Using System Python)
 
@@ -552,13 +563,12 @@ These variables configure the [clickhouse-connect](https://clickhouse.com/docs/e
   * Set to `"false"` to disable ClickHouse tools when using chDB only
 * `CLICKHOUSE_ALLOW_WRITE_ACCESS`: Allow write operations (DDL and DML) against ClickHouse
   * Default: `"false"`
-  * Set to `"true"` to allow DDL (CREATE, ALTER, DROP) and DML (INSERT, UPDATE, DELETE) operations
+  * Set to `"true"` to allow non-destructive DDL and DML (CREATE, INSERT, ALTER ADD COLUMN). Destructive statements additionally need `CLICKHOUSE_ALLOW_DROP=true`
   * When disabled (default), queries run with `readonly=1` setting to prevent data modifications
-* `CLICKHOUSE_ALLOW_DROP`: Allow destructive operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY, TRUNCATE TABLE)
+* `CLICKHOUSE_ALLOW_DROP`: Allow destructive operations (any `DROP` or `TRUNCATE`, `DELETE` and `UPDATE` including the `ALTER TABLE` variants, `REPLACE TABLE` / `REPLACE PARTITION` / `CREATE OR REPLACE`, `CLEAR COLUMN` / `CLEAR INDEX` / `CLEAR PROJECTION`, and `DETACH ... PERMANENTLY`)
   * Default: `"false"`
   * Only takes effect when `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` is also set
-  * Set to `"true"` to explicitly allow destructive DROP and TRUNCATE operations
-  * This is a safety feature to prevent accidental data deletion during AI exploration
+  * This gate is a best-effort accident guard in the MCP server, not a security boundary. Restrict the ClickHouse user's grants for real enforcement (see [Destructive Operation Protection](#destructive-operation-protection))
 
 #### MCP server and transport
 
