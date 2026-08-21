@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -61,6 +62,9 @@ class Table:
 
 MCP_SERVER_NAME = "mcp-clickhouse"
 CLIENT_CONFIG_OVERRIDES_KEY = "clickhouse_client_config_overrides"
+_CLIENT_CONFIG_OVERRIDES_UNSET = object()
+_NESTED_CLIENT_CONFIG_KEYS = ("settings", "generic_args")
+_REJECTED_ROLE_OVERRIDE_KEYS = ("role", "ch_role")
 
 # Configure logging
 logging.basicConfig(
@@ -483,8 +487,10 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         )
 
 
-def execute_query(query: str) -> str:
-    client = create_clickhouse_client()
+def execute_query(
+    query: str, client_config_overrides: Optional[dict[str, Any]] = None
+) -> str:
+    client = create_clickhouse_client(client_config_overrides)
     try:
         _validate_query_for_destructive_ops(query)
 
@@ -507,7 +513,8 @@ def run_query(query: str) -> str:
     """
     logger.info(f"Executing query: {query}")
     try:
-        future = QUERY_EXECUTOR.submit(execute_query, query)
+        client_config_overrides = _get_client_config_overrides()
+        future = QUERY_EXECUTOR.submit(execute_query, query, client_config_overrides)
         timeout_secs = get_mcp_config().query_timeout
         try:
             return future.result(timeout=timeout_secs)
@@ -526,7 +533,8 @@ async def run_query_async(query: str) -> str:
     """Async MCP-facing wrapper for ClickHouse queries."""
     logger.info(f"Executing query: {query}")
     try:
-        future = QUERY_EXECUTOR.submit(execute_query, query)
+        client_config_overrides = _get_client_config_overrides()
+        future = QUERY_EXECUTOR.submit(execute_query, query, client_config_overrides)
         timeout_secs = get_mcp_config().query_timeout
         try:
             return await asyncio.wait_for(
@@ -636,24 +644,79 @@ def _format_connection_failure(error: Exception, client_config: dict) -> str:
     return message
 
 
-def create_clickhouse_client():
-    client_config = get_config().get_client_config()
+def _snapshot_client_config_overrides(overrides: Any) -> Optional[dict[str, Any]]:
+    """Validate and copy request-scoped ClickHouse client overrides."""
+    if overrides is None:
+        return None
+    if not isinstance(overrides, dict):
+        raise ToolError(f"{CLIENT_CONFIG_OVERRIDES_KEY} must be a dict")
 
+    snapshot = dict(overrides)
+    for key in _REJECTED_ROLE_OVERRIDE_KEYS:
+        if key in snapshot:
+            raise ToolError(
+                f"{CLIENT_CONFIG_OVERRIDES_KEY}.{key} is not supported; "
+                f"use {CLIENT_CONFIG_OVERRIDES_KEY}.settings.role"
+            )
+    for key in _NESTED_CLIENT_CONFIG_KEYS:
+        if key not in snapshot:
+            continue
+        value = snapshot[key]
+        if not isinstance(value, Mapping):
+            raise ToolError(f"{CLIENT_CONFIG_OVERRIDES_KEY}.{key} must be a mapping")
+        if key == "generic_args":
+            for role_key in _REJECTED_ROLE_OVERRIDE_KEYS:
+                if role_key in value:
+                    raise ToolError(
+                        f"{CLIENT_CONFIG_OVERRIDES_KEY}.generic_args.{role_key} "
+                        "is not supported; "
+                        f"use {CLIENT_CONFIG_OVERRIDES_KEY}.settings.role"
+                    )
+        snapshot[key] = dict(value)
+    return snapshot
+
+
+def _get_client_config_overrides() -> Optional[dict[str, Any]]:
+    """Capture ClickHouse client overrides from the active FastMCP request."""
     try:
         ctx = get_context()
-        session_config_overrides = ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY)
-        if session_config_overrides and not isinstance(session_config_overrides, dict):
-            logger.warning(
-                f"{CLIENT_CONFIG_OVERRIDES_KEY} must be a dict, got {type(session_config_overrides).__name__}. Ignoring."
-            )
-        elif session_config_overrides:
-            logger.debug(
-                f"Applying session-specific ClickHouse client config overrides: {list(session_config_overrides.keys())}"
-            )
-            client_config.update(session_config_overrides)
     except RuntimeError:
-        # If we're outside a request context, just proceed with the default config
-        pass
+        return None
+    return _snapshot_client_config_overrides(ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY))
+
+
+def _apply_client_config_overrides(
+    client_config: dict[str, Any], overrides: Optional[dict[str, Any]]
+) -> None:
+    """Merge request-scoped overrides into the base client configuration."""
+    if overrides is None:
+        return
+
+    logger.debug(
+        "Applying request-specific ClickHouse client config override keys: %s",
+        list(overrides.keys()),
+    )
+    remaining_overrides = dict(overrides)
+    for key in _NESTED_CLIENT_CONFIG_KEYS:
+        if key not in remaining_overrides:
+            continue
+        base_value = client_config.get(key, {})
+        if base_value is None:
+            base_value = {}
+        if not isinstance(base_value, Mapping):
+            raise ToolError(f"Base ClickHouse client config {key} must be a mapping")
+        client_config[key] = {**base_value, **remaining_overrides.pop(key)}
+    client_config.update(remaining_overrides)
+
+
+def create_clickhouse_client(client_config_overrides=_CLIENT_CONFIG_OVERRIDES_UNSET):
+    if client_config_overrides is _CLIENT_CONFIG_OVERRIDES_UNSET:
+        overrides = _get_client_config_overrides()
+    else:
+        overrides = _snapshot_client_config_overrides(client_config_overrides)
+
+    client_config = get_config().get_client_config()
+    _apply_client_config_overrides(client_config, overrides)
 
     port = client_config.get("port")
     if port in _NATIVE_PROTOCOL_PORTS:

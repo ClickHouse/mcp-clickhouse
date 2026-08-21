@@ -451,6 +451,17 @@ ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, {
 
 This enables advanced use cases like dynamic timeout adjustments, tenant-specific routing, or per-user connection settings.
 
+The state value must be a dictionary. Nested `settings` and `generic_args` values must be
+mappings and are merged with the base configuration. Invalid values fail the tool call before
+a ClickHouse client is created. `CLICKHOUSE_ROLE` remains active unless the override explicitly
+supplies `settings.role`. Top-level `role` and `ch_role` keys, plus the same keys under
+`generic_args`, are rejected.
+
+Treat these overrides as trusted middleware input. Middleware must authenticate and authorize
+request-derived values before setting them. A per-request ClickHouse role is connection
+configuration, not a tenant authorization boundary. Enforce tenant isolation with ClickHouse
+users, roles, and grants.
+
 ## Development
 
 1. In `test-services` directory run `docker compose up -d` to start the ClickHouse cluster.

@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Fixed
+- Per-request ClickHouse client configuration overrides now reach `run_query` worker threads. Invalid override state and role aliases fail closed, nested settings preserve the configured role, and opaque client objects remain supported. ([#191](https://github.com/ClickHouse/mcp-clickhouse/pull/191))
+
 ### Changed
 - Connection failures now log actionable hints for common misconfigurations (native TCP port used instead of the HTTP interface, TLS/`CLICKHOUSE_SECURE` mismatches), and a warning is logged when `CLICKHOUSE_PORT` is set to a native protocol port (9000/9440). ([#102](https://github.com/ClickHouse/mcp-clickhouse/issues/102))
 
