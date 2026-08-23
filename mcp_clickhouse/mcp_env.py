@@ -300,6 +300,8 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
         CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
+        CLICKHOUSE_MCP_MAX_RESULT_ROWS: Maximum rows returned by run_query
+            (default: 1000). Set to 0 to return every row.
         CLICKHOUSE_MCP_AUTH_TOKEN: Static bearer token for HTTP/SSE transports.
             One authentication mode must be configured for HTTP/SSE; the other two
             options are FASTMCP_SERVER_AUTH (FastMCP OAuth/OIDC providers) and
@@ -327,6 +329,21 @@ class MCPServerConfig:
     @property
     def query_timeout(self) -> int:
         return int(os.getenv("CLICKHOUSE_MCP_QUERY_TIMEOUT", "30"))
+
+    @property
+    def max_result_rows(self) -> int:
+        """Maximum number of rows a single query result may contain.
+
+        A query that is fast but large passes the timeout and then floods the
+        client, so result size needs its own bound. 0 disables the bound and
+        restores the previous unbounded behavior.
+        """
+        value = int(os.getenv("CLICKHOUSE_MCP_MAX_RESULT_ROWS", "1000"))
+        if value < 0:
+            raise ValueError(
+                f"CLICKHOUSE_MCP_MAX_RESULT_ROWS must be 0 or greater, got {value}"
+            )
+        return value
 
     @property
     def auth_token(self) -> Optional[str]:

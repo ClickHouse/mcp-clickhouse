@@ -83,6 +83,28 @@ class FakeQueryClient:
             result_rows=[(self.connect_timeout,)],
         )
 
+    def query_row_block_stream(self, _query, settings):
+        """Row-block streaming used by execute_query when a result bound is set."""
+        assert settings == {"readonly": "1"}
+        if self.barrier is not None:
+            self.barrier.wait(timeout=2)
+        return _FakeRowBlockStream([[(self.connect_timeout,)]], ["connect_timeout"])
+
+
+class _FakeRowBlockStream:
+    def __init__(self, blocks, column_names):
+        self._blocks = blocks
+        self.source = SimpleNamespace(column_names=column_names)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def __iter__(self):
+        return iter(self._blocks)
+
 
 class TestConfigOverrideUnit:
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
