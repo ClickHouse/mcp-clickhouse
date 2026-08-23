@@ -543,6 +543,41 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         )
 
 
+def _stream_bounded_result(
+    client, query: str, query_settings: dict, max_rows: int
+) -> tuple[List[str], List[Any], bool]:
+    """Read at most `max_rows` rows from `query`, closing the stream early.
+
+    Streaming keeps the query text untouched. Rewriting user SQL to append a
+    LIMIT would need to understand the statement, and would misfire on queries
+    that already carry their own LIMIT or FORMAT clause, and on statements that
+    cannot be wrapped in a subquery at all.
+
+    Truncation is proven rather than inferred. The loop stops on the row after
+    the bound, so a result holding exactly `max_rows` rows is reported as
+    complete; comparing the returned count against the bound alone cannot tell
+    those two cases apart.
+
+    Returns:
+        Tuple of (column names, rows, whether the result was truncated)
+    """
+    rows: List[Any] = []
+    truncated = False
+
+    with client.query_row_block_stream(query, settings=query_settings) as stream:
+        for block in stream:
+            for row in block:
+                if len(rows) >= max_rows:
+                    truncated = True
+                    break
+                rows.append(row)
+            if truncated:
+                break
+        column_names = list(stream.source.column_names)
+
+    return column_names, rows, truncated
+
+
 def execute_query(
     query: str, client_config_overrides: Optional[dict[str, Any]] = None
 ) -> str:
@@ -551,9 +586,30 @@ def execute_query(
         _validate_query_for_destructive_ops(query)
 
         query_settings = build_query_settings(client)
-        res = client.query(query, settings=query_settings)
-        logger.info(f"Query returned {len(res.result_rows)} rows")
-        return _serialize_tool_result({"columns": res.column_names, "rows": res.result_rows})
+        max_rows = get_mcp_config().max_result_rows
+
+        if max_rows == 0:
+            res = client.query(query, settings=query_settings)
+            logger.info(f"Query returned {len(res.result_rows)} rows")
+            return _serialize_tool_result({"columns": res.column_names, "rows": res.result_rows})
+
+        columns, rows, truncated = _stream_bounded_result(
+            client, query, query_settings, max_rows
+        )
+
+        result: Dict[str, Any] = {"columns": columns, "rows": rows}
+        if truncated:
+            logger.info(
+                "Query result truncated to %s rows "
+                "(raise or disable with CLICKHOUSE_MCP_MAX_RESULT_ROWS)",
+                max_rows,
+            )
+            result["truncated"] = True
+            result["max_result_rows"] = max_rows
+        else:
+            logger.info(f"Query returned {len(rows)} rows")
+
+        return _serialize_tool_result(result)
     except ToolError:
         raise
     except Exception as err:
@@ -1121,7 +1177,10 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
                 "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow destructive operations "
                 "(DROP, TRUNCATE, DELETE, UPDATE, REPLACE TABLE/PARTITION, CREATE OR REPLACE, "
                 "CLEAR COLUMN/INDEX/PROJECTION, DETACH PERMANENTLY). That gate is a best-effort "
-                "accident guard, not a security boundary."
+                "accident guard, not a security boundary. Results are capped at "
+                "CLICKHOUSE_MCP_MAX_RESULT_ROWS rows; when the cap is reached the response carries "
+                "\"truncated\": true and holds only the first rows, so aggregate or filter in SQL "
+                "rather than treating a truncated result as the full table."
             ),
         )
     )

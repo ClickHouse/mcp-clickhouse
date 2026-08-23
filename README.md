@@ -599,6 +599,17 @@ These variables control the MCP process itself, including transport, authenticat
 * `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for query tools
   * Default: `"30"`
   * Increase this if you see `Query timed out after ...` errors for heavy queries
+* `CLICKHOUSE_MCP_MAX_RESULT_ROWS`: Maximum number of rows a single `run_query` result may contain
+  * Default: `"1000"`
+  * Set to `"0"` to return every row (the previous unbounded behavior)
+  * The query timeout bounds how long a query runs, not how much it returns. A fast query over a large
+    table finishes well inside the timeout and can still return hundreds of megabytes, so result size
+    needs its own bound
+  * When the cap is reached the response gains `"truncated": true` and `"max_result_rows"`, and holds
+    only the first rows. Complete results keep exactly the shape they had before
+  * Rows are streamed and the stream is closed once the cap is reached, so the query text is never
+    rewritten and ClickHouse stops sending early
+
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None
   * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `FASTMCP_SERVER_AUTH`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for HTTP/SSE transports

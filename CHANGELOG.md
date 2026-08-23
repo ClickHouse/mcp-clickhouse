@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 ### Added
+- `run_query` results are now bounded by `CLICKHOUSE_MCP_MAX_RESULT_ROWS` (default 1000, `0` disables). The query timeout bounds how long a query runs, not how much it returns, so a fast query over a large table could return hundreds of megabytes and exhaust the client's context. Truncated responses carry `"truncated": true` and `"max_result_rows"`; complete responses keep their existing shape. Rows are streamed and the stream is closed once the bound is reached, so the query text is never rewritten. ([#223](https://github.com/ClickHouse/mcp-clickhouse/issues/223))
 - With `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` and `CLICKHOUSE_ALLOW_DROP` unset, the server now runs `SHOW GRANTS` once at first connection and logs a warning if the ClickHouse user holds `ALL`, `DROP`, `TRUNCATE`, `DELETE`, `UPDATE`, or `ALTER` (beyond `ALTER ADD`) privileges, since the destructive-operation gate is not server-enforced. The check is fail-open and never blocks startup or queries. Grants held via roles are not expanded, so the advisory only flags direct grants.
 
 ### Changed
