@@ -20,6 +20,7 @@ from fastmcp.prompts import Prompt
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from fastmcp.server.dependencies import get_context
 from fastmcp.tools import Tool
+from mcp.types import ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
@@ -1097,6 +1098,7 @@ def _register_chdb_tools():
             run_chdb_select_query_async,
             name="run_chdb_select_query",
             description="Run SQL in chDB, an in-process ClickHouse engine",
+            annotations=ToolAnnotations(readOnlyHint=True),
         )
     )
     chdb_prompt = Prompt.from_function(
@@ -1109,8 +1111,8 @@ def _register_chdb_tools():
 
 
 if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
-    mcp.add_tool(Tool.from_function(list_databases))
-    mcp.add_tool(Tool.from_function(list_tables))
+    mcp.add_tool(Tool.from_function(list_databases, annotations=ToolAnnotations(readOnlyHint=True)))
+    mcp.add_tool(Tool.from_function(list_tables, annotations=ToolAnnotations(readOnlyHint=True)))
     mcp.add_tool(
         Tool.from_function(
             run_query_async,
@@ -1123,6 +1125,7 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
                 "CLEAR COLUMN/INDEX/PROJECTION, DETACH PERMANENTLY). That gate is a best-effort "
                 "accident guard, not a security boundary."
             ),
+            annotations=ToolAnnotations(readOnlyHint=not get_config().allow_write_access),
         )
     )
     logger.info("ClickHouse tools registered")
