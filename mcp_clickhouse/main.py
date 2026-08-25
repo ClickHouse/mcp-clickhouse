@@ -1,6 +1,7 @@
 from .mcp_server import mcp
 from .mcp_env import get_mcp_config, TransportType
 from .mcp_middleware_hook import setup_middleware
+from .http_security import transport_security_middleware
 
 
 def main():
@@ -15,7 +16,12 @@ def main():
     if transport in http_transports:
         # Use the configured bind host (defaults to 127.0.0.1, can be set to 0.0.0.0)
         # and bind port (defaults to 8000)
-        mcp.run(transport=transport, host=mcp_config.bind_host, port=mcp_config.bind_port)
+        mcp.run(
+            transport=transport,
+            host=mcp_config.bind_host,
+            port=mcp_config.bind_port,
+            middleware=transport_security_middleware(mcp_config),
+        )
     else:
         # For stdio transport, no host or port is needed
         mcp.run(transport=transport)

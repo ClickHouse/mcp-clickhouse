@@ -6,7 +6,7 @@ and type conversion.
 
 from dataclasses import dataclass
 import os
-from typing import Optional
+from typing import List, Optional
 from enum import Enum
 
 
@@ -288,6 +288,11 @@ def get_chdb_config() -> ChDBConfig:
     return _CHDB_CONFIG_INSTANCE
 
 
+def _split_env_list(name: str) -> List[str]:
+    """Read a comma separated environment variable as a list, ignoring blanks."""
+    return [item.strip() for item in os.getenv(name, "").split(",") if item.strip()]
+
+
 @dataclass
 class MCPServerConfig:
     """Configuration for MCP server-level settings.
@@ -300,6 +305,10 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
         CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
+        CLICKHOUSE_MCP_ALLOWED_HOSTS: Comma separated Host header values accepted on
+            HTTP/SSE (default: unset, which accepts any host)
+        CLICKHOUSE_MCP_ALLOWED_ORIGINS: Comma separated Origin header values accepted on
+            HTTP/SSE (default: unset, which rejects every request that carries an Origin)
         CLICKHOUSE_MCP_AUTH_TOKEN: Static bearer token for HTTP/SSE transports.
             One authentication mode must be configured for HTTP/SSE; the other two
             options are FASTMCP_SERVER_AUTH (FastMCP OAuth/OIDC providers) and
@@ -327,6 +336,26 @@ class MCPServerConfig:
     @property
     def query_timeout(self) -> int:
         return int(os.getenv("CLICKHOUSE_MCP_QUERY_TIMEOUT", "30"))
+
+    @property
+    def allowed_hosts(self) -> List[str]:
+        """Host header values the HTTP/SSE transports answer for.
+
+        Empty means the server answers for any host, which is how it behaved
+        before this setting existed. An entry may be exact ("localhost:8000") or
+        use the "localhost:*" form to accept the host on any port.
+        """
+        return _split_env_list("CLICKHOUSE_MCP_ALLOWED_HOSTS")
+
+    @property
+    def allowed_origins(self) -> List[str]:
+        """Origin header values the HTTP/SSE transports accept.
+
+        Only consulted when allowed_hosts is set. Requests without an Origin
+        header are always accepted, so leaving this empty still serves every
+        non-browser client.
+        """
+        return _split_env_list("CLICKHOUSE_MCP_ALLOWED_ORIGINS")
 
     @property
     def auth_token(self) -> Optional[str]:

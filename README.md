@@ -612,6 +612,18 @@ These variables control the MCP process itself, including transport, authenticat
   * Default: `"false"` (authentication is enabled)
   * Set to `"true"` to disable authentication for local development/testing only
   * **WARNING:** Only use for local development. Do not disable when exposed to networks
+* `CLICKHOUSE_MCP_ALLOWED_HOSTS`: Comma separated `Host` header values the HTTP/SSE server answers for
+  * Default: None, meaning any `Host` header is accepted
+  * Protects against DNS rebinding: a web page the user visits can point a hostname it controls at `127.0.0.1` and reach a local server, and the browser treats the response as same-origin. The rebound request still carries the attacker's hostname, so rejecting unknown hosts closes that path.
+  * Set this whenever the server runs with `CLICKHOUSE_MCP_AUTH_DISABLED=true`, where nothing else stands between a browser page and the tools
+  * Entries are exact (`localhost:8000`) or accept any port (`localhost:*`). Example: `CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000`
+  * Requests with a non-matching or missing `Host` header get `421 Misdirected Request`. `/health` is exempt so liveness probes keep working.
+  * Behind a reverse proxy, list the hostname the proxy forwards, not the bind address
+* `CLICKHOUSE_MCP_ALLOWED_ORIGINS`: Comma separated `Origin` header values accepted on HTTP/SSE
+  * Default: None
+  * Only consulted when `CLICKHOUSE_MCP_ALLOWED_HOSTS` is set; setting it alone is a startup error
+  * Requests without an `Origin` header are always accepted, since non-browser MCP clients do not send one. A request carrying an `Origin` that is not listed gets `403 Forbidden`.
+  * Needed only for browser-based clients, e.g. `CLICKHOUSE_MCP_ALLOWED_ORIGINS=http://localhost:3000`
 
 #### Middleware Variables
 
@@ -703,6 +715,7 @@ CLICKHOUSE_MCP_SERVER_TRANSPORT=http
 CLICKHOUSE_MCP_BIND_HOST=0.0.0.0  # Bind to all interfaces
 CLICKHOUSE_MCP_BIND_PORT=4200  # Custom port (default: 8000)
 CLICKHOUSE_MCP_AUTH_TOKEN=your-generated-token  # One auth mode required for HTTP/SSE (or FASTMCP_SERVER_AUTH, or CLICKHOUSE_MCP_AUTH_DISABLED=true)
+CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000  # Reject requests for any other Host (DNS rebinding protection)
 ```
 
 For local development with HTTP transport (authentication disabled):

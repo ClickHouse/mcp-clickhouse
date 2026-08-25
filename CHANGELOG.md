@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 ### Added
+- DNS rebinding protection for the HTTP and SSE transports via `CLICKHOUSE_MCP_ALLOWED_HOSTS` and `CLICKHOUSE_MCP_ALLOWED_ORIGINS`. Requests whose `Host` header is not allow-listed are rejected with `421`, and requests carrying a non-allow-listed `Origin` with `403`; `/health` is exempt. Unset, the server keeps accepting any host, so existing deployments are unaffected. The MCP SDK ships this check but FastMCP never enables it, so it was unreachable before. ([#218](https://github.com/ClickHouse/mcp-clickhouse/issues/218))
 - With `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` and `CLICKHOUSE_ALLOW_DROP` unset, the server now runs `SHOW GRANTS` once at first connection and logs a warning if the ClickHouse user holds `ALL`, `DROP`, `TRUNCATE`, `DELETE`, `UPDATE`, or `ALTER` (beyond `ALTER ADD`) privileges, since the destructive-operation gate is not server-enforced. The check is fail-open and never blocks startup or queries. Grants held via roles are not expanded, so the advisory only flags direct grants.
 
 ### Changed
