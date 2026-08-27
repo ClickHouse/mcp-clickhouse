@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from ipaddress import IPv4Network, IPv6Network
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 import clickhouse_connect
 from cachetools import TTLCache
@@ -28,6 +28,7 @@ from fastmcp.prompts import Prompt
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from fastmcp.server.dependencies import get_context
 from fastmcp.tools import Tool
+from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -638,7 +639,7 @@ def list_tables(
     like: Optional[str] = None,
     not_like: Optional[str] = None,
     page_token: Optional[str] = None,
-    page_size: int = 50,
+    page_size: Annotated[int, Field(gt=0)] = 50,
     include_detailed_columns: bool = True,
 ) -> str:
     """List available ClickHouse tables in a database, including schema, comment,
@@ -649,7 +650,7 @@ def list_tables(
         like: Optional LIKE pattern to filter table names
         not_like: Optional NOT LIKE pattern to exclude table names
         page_token: Token for pagination, obtained from a previous call
-        page_size: Number of tables to return per page (default: 50)
+        page_size: Number of tables to return per page (default: 50, must be greater than 0)
         include_detailed_columns: Whether to include detailed column metadata (default: True).
             When False, the columns array will be empty but create_table_query still contains
             all column information. This reduces payload size for large schemas.
@@ -660,6 +661,9 @@ def list_tables(
         - next_page_token: Token for the next page, or None if no more pages
         - total_tables: Total number of tables matching the filters
     """
+    if page_size <= 0:
+        raise ToolError("page_size must be greater than 0")
+
     logger.info(
         "Listing tables in database '%s' with like=%s, not_like=%s, "
         "page_token=%s, page_size=%s, include_detailed_columns=%s",
