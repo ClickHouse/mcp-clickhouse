@@ -25,6 +25,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
+from mcp_clickhouse.health import HealthGate
 from mcp_clickhouse.http_security import transport_security_middleware
 from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
 from mcp_clickhouse.skills_advisor import CLICKHOUSE_SERVER_INSTRUCTIONS
@@ -175,6 +176,46 @@ _chdb_client = None
 _chdb_error_message: Optional[str] = None
 
 
+def _probe_clickhouse() -> None:
+    """Open a short-lived ClickHouse connection and close it again.
+
+    Deliberately not `create_clickhouse_client`. A probe must not pick up
+    request-scoped client overrides, must not consume the one-shot
+    over-privilege advisory that belongs to the first real connection, and needs
+    its own short timeouts rather than the ones sized for user queries.
+
+    Closing the client matters beyond the socket: clickhouse-connect registers a
+    dedicated pool manager in a module-level dict for TLS configurations, and
+    only `close()` removes it again.
+    """
+    timeout = get_mcp_config().health_timeout
+    client_config = get_config().get_client_config()
+    client_config["connect_timeout"] = min(client_config["connect_timeout"], timeout)
+    client_config["send_receive_timeout"] = min(client_config["send_receive_timeout"], timeout)
+
+    client = clickhouse_connect.get_client(**client_config)
+    client.close()
+
+
+_health_gate: Optional[HealthGate] = None
+
+
+def _get_health_gate() -> HealthGate:
+    """Build the health gate on first use, once the environment is loaded."""
+    global _health_gate
+    if _health_gate is None:
+        mcp_config = get_mcp_config()
+        _health_gate = HealthGate(
+            _probe_clickhouse,
+            timeout=mcp_config.health_timeout,
+            cache_ttl=mcp_config.health_cache_ttl,
+        )
+    return _health_gate
+
+
+atexit.register(lambda: _health_gate.shutdown() if _health_gate is not None else None)
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request) -> PlainTextResponse:
     """Liveness probe. Intentionally unauthenticated and minimal.
@@ -205,9 +246,13 @@ async def health_check(request: Request) -> PlainTextResponse:
                     status_code=503,
                 )
 
-        # Try to create a client connection to verify ClickHouse connectivity
-        create_clickhouse_client()
-        return PlainTextResponse("OK")
+        # Runs off the event loop, one check at a time, within a bounded wait.
+        if await _get_health_gate().healthy():
+            return PlainTextResponse("OK")
+        return PlainTextResponse(
+            "ERROR. ClickHouse connection failed. Check server logs for details.",
+            status_code=503,
+        )
     except Exception:
         # Log the underlying error server-side, but don't leak details over the wire.
         logger.exception("Health check failed: ClickHouse connection error")
