@@ -600,6 +600,13 @@ These variables control the MCP process itself, including transport, authenticat
 * `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for query tools
   * Default: `"30"`
   * Increase this if you see `Query timed out after ...` errors for heavy queries
+* `CLICKHOUSE_MCP_HEALTH_TIMEOUT`: Bound in seconds on a single `/health` check
+  * Default: `"5"`
+  * `/health` is public and unauthenticated, so its cost is bounded separately from `CLICKHOUSE_MCP_QUERY_TIMEOUT`. The value caps both the driver timeouts the check connects with and how long the route waits before answering `503`.
+* `CLICKHOUSE_MCP_HEALTH_CACHE_TTL`: Seconds a `/health` result is reused by later probes
+  * Default: `"5"`
+  * Bounds how stale an answer can be, so a backend that has just failed reads as healthy for at most this long. Set to `"0"` to check on every request.
+  * Concurrent probes always join the check already running, regardless of this setting, so a probe storm opens one ClickHouse connection rather than one per request.
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None
   * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `FASTMCP_SERVER_AUTH`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for HTTP/SSE transports

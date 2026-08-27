@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Fixed
+- The public `/health` route no longer runs its ClickHouse check on the ASGI event loop. It previously called the synchronous client factory directly, so a slow or unreachable ClickHouse stalled every other request for the full 30 second connect timeout, and concurrent probes ran one after another. The check now runs on a worker thread, concurrent probes join the one already running instead of opening a connection each, the result is reused for `CLICKHOUSE_MCP_HEALTH_CACHE_TTL` seconds, and the route answers within `CLICKHOUSE_MCP_HEALTH_TIMEOUT` seconds either way. The `200 OK` / generic `503` contract is unchanged. ([#227](https://github.com/ClickHouse/mcp-clickhouse/issues/227))
+- Health probes no longer create clients that are never closed, which left a clickhouse-connect pool manager registered per probe for TLS configurations, and no longer consume the one-shot over-privilege advisory intended for the first real connection.
+
 ### Added
 - DNS rebinding protection for every HTTP and SSE launch path, including `fastmcp run` and `fastmcp.json`. `Host` and `Origin` headers are validated via the new `CLICKHOUSE_MCP_ALLOWED_HOSTS` and `CLICKHOUSE_MCP_ALLOWED_ORIGINS` variables: a present `Origin` that is not allow-listed is rejected with `403`, and an unknown `Host` with `421`. Authentication is now enforced whenever `fastmcp run` selects HTTP or SSE, independently of `CLICKHOUSE_MCP_SERVER_TRANSPORT`, closing a launch path that previously served unauthenticated. ([#218](https://github.com/ClickHouse/mcp-clickhouse/issues/218))
 - With `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` and `CLICKHOUSE_ALLOW_DROP` unset, the server now runs `SHOW GRANTS` once at first connection and logs a warning if the ClickHouse user holds `ALL`, `DROP`, `TRUNCATE`, `DELETE`, `UPDATE`, or `ALTER` (beyond `ALTER ADD`) privileges, since the destructive-operation gate is not server-enforced. The check is fail-open and never blocks startup or queries. Grants held via roles are not expanded, so the advisory only flags direct grants.

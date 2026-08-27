@@ -316,6 +316,9 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
         CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
+        CLICKHOUSE_MCP_HEALTH_TIMEOUT: Bound in seconds on a /health check (default: 5)
+        CLICKHOUSE_MCP_HEALTH_CACHE_TTL: Seconds a /health result is reused (default: 5,
+            0 checks on every request)
         CLICKHOUSE_MCP_ALLOWED_HOSTS: Comma separated Host header values accepted on
             HTTP/SSE (default: derived from a concrete bind host and port)
         CLICKHOUSE_MCP_ALLOWED_ORIGINS: Comma separated Origin header values accepted on
@@ -347,6 +350,35 @@ class MCPServerConfig:
     @property
     def query_timeout(self) -> int:
         return int(os.getenv("CLICKHOUSE_MCP_QUERY_TIMEOUT", "30"))
+
+    @property
+    def health_timeout(self) -> float:
+        """Seconds a `/health` request may spend checking the backend.
+
+        The route is public, so its cost has to be bounded independently of the
+        query timeout. This bounds both the driver timeouts the check connects
+        with and the wait before the route answers without one.
+        """
+        value = float(os.getenv("CLICKHOUSE_MCP_HEALTH_TIMEOUT", "5"))
+        if value <= 0:
+            raise ValueError(
+                f"CLICKHOUSE_MCP_HEALTH_TIMEOUT must be greater than 0, got {value}"
+            )
+        return value
+
+    @property
+    def health_cache_ttl(self) -> float:
+        """Seconds a `/health` result stays reusable by later probes.
+
+        Bounds how stale an answer can be, and therefore how long a backend that
+        has just failed still reads as healthy. 0 checks on every request.
+        """
+        value = float(os.getenv("CLICKHOUSE_MCP_HEALTH_CACHE_TTL", "5"))
+        if value < 0:
+            raise ValueError(
+                f"CLICKHOUSE_MCP_HEALTH_CACHE_TTL must be 0 or greater, got {value}"
+            )
+        return value
 
     @property
     def allowed_hosts(self) -> List[str]:

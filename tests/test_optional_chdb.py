@@ -129,9 +129,8 @@ async def test_health_check_hides_clickhouse_connection_error_details():
 
     with (
         patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
-        patch.object(
-            mcp_server, "create_clickhouse_client", side_effect=raise_with_secrets
-        ),
+        patch.object(mcp_server, "_health_gate", None),
+        patch.object(mcp_server, "_probe_clickhouse", side_effect=raise_with_secrets),
     ):
         response = await mcp_server.health_check(request)
 
