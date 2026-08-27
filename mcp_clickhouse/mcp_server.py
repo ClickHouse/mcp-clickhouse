@@ -1,6 +1,7 @@
 import asyncio
 import atexit
 import concurrent.futures
+import inspect
 import json
 import logging
 import os
@@ -24,8 +25,9 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
-from mcp_clickhouse.skills_advisor import CLICKHOUSE_SERVER_INSTRUCTIONS
+from mcp_clickhouse.http_security import transport_security_middleware
 from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
+from mcp_clickhouse.skills_advisor import CLICKHOUSE_SERVER_INSTRUCTIONS
 
 
 @dataclass
@@ -77,17 +79,18 @@ atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
 
 load_dotenv()
 
-_HTTP_TRANSPORTS = (TransportType.HTTP.value, TransportType.SSE.value)
+_HTTP_TRANSPORTS = (TransportType.HTTP.value, "streamable-http", TransportType.SSE.value)
 
 
-def _resolve_auth(mcp_config) -> Dict[str, Any]:
-    """Resolve FastMCP auth kwargs for the current transport.
+def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]:
+    """Resolve FastMCP auth kwargs for the requested transport.
 
     An empty return dict omits the `auth` kwarg so FastMCP auto-detects its
     provider from FASTMCP_SERVER_AUTH / FASTMCP_SERVER_AUTH_* env vars.
     Returning {"auth": None} instead explicitly disables auth.
     """
-    if mcp_config.server_transport not in _HTTP_TRANSPORTS:
+    transport = transport or mcp_config.server_transport
+    if transport not in _HTTP_TRANSPORTS:
         return {}
 
     configured = {
@@ -133,10 +136,40 @@ def _resolve_auth(mcp_config) -> Dict[str, Any]:
     return {}
 
 
-mcp = FastMCP(
+class ClickHouseFastMCP(FastMCP):
+    """FastMCP server that secures every constructed HTTP transport app."""
+
+    def http_app(self, *args: Any, **kwargs: Any) -> Any:
+        """Create an authenticated HTTP app with Host and Origin validation."""
+        bound_args = inspect.signature(super().http_app).bind_partial(*args, **kwargs)
+        transport = bound_args.arguments.get("transport", TransportType.HTTP.value)
+        auth_kwargs = _resolve_auth(get_mcp_config(), transport=transport)
+        original_auth = self.auth
+        if "auth" in auth_kwargs:
+            app_auth = auth_kwargs["auth"]
+        elif original_auth is None:
+            raise ValueError("FASTMCP_SERVER_AUTH did not create an authentication provider")
+        else:
+            app_auth = original_auth
+
+        self.auth = app_auth
+        try:
+            app = super().http_app(*args, **kwargs)
+        finally:
+            self.auth = original_auth
+        if getattr(app.state, "path", None) == "/health":
+            raise ValueError(
+                "MCP transport path cannot be /health because that path is reserved "
+                "for the public health endpoint"
+            )
+        for configured_middleware in transport_security_middleware(get_mcp_config()):
+            app.add_middleware(configured_middleware.cls, **configured_middleware.kwargs)
+        return app
+
+
+mcp = ClickHouseFastMCP(
     name=MCP_SERVER_NAME,
     instructions=CLICKHOUSE_SERVER_INSTRUCTIONS,
-    **_resolve_auth(get_mcp_config()),
 )
 _chdb_client = None
 _chdb_error_message: Optional[str] = None

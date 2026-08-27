@@ -6,7 +6,7 @@ and type conversion.
 
 from dataclasses import dataclass
 import os
-from typing import Optional
+from typing import List, Optional
 from enum import Enum
 
 
@@ -288,6 +288,22 @@ def get_chdb_config() -> ChDBConfig:
     return _CHDB_CONFIG_INSTANCE
 
 
+def _split_env_list(name: str) -> List[str]:
+    """Read a comma separated environment variable as a list, ignoring blanks."""
+    return [item.strip() for item in os.getenv(name, "").split(",") if item.strip()]
+
+
+_LOOPBACK_BIND_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+_WILDCARD_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]"})
+
+
+def _format_http_host(host: str, port: int) -> str:
+    """Format a bind host as an HTTP Host header value."""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"{host}:{port}"
+
+
 @dataclass
 class MCPServerConfig:
     """Configuration for MCP server-level settings.
@@ -300,6 +316,10 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
         CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
+        CLICKHOUSE_MCP_ALLOWED_HOSTS: Comma separated Host header values accepted on
+            HTTP/SSE (default: derived from a concrete bind host and port)
+        CLICKHOUSE_MCP_ALLOWED_ORIGINS: Comma separated Origin header values accepted on
+            HTTP/SSE (default: no browser origins are allowed)
         CLICKHOUSE_MCP_AUTH_TOKEN: Static bearer token for HTTP/SSE transports.
             One authentication mode must be configured for HTTP/SSE; the other two
             options are FASTMCP_SERVER_AUTH (FastMCP OAuth/OIDC providers) and
@@ -327,6 +347,49 @@ class MCPServerConfig:
     @property
     def query_timeout(self) -> int:
         return int(os.getenv("CLICKHOUSE_MCP_QUERY_TIMEOUT", "30"))
+
+    @property
+    def allowed_hosts(self) -> List[str]:
+        """Host header values the HTTP/SSE transports answer for.
+
+        A concrete bind address supplies a secure default. Loopback binds accept
+        the IPv4, IPv6, and localhost aliases on any port. Wildcard binds require
+        an explicit non-empty setting because the public Host value cannot be
+        inferred. Entries may use a "localhost:*" any-port form.
+        """
+        name = "CLICKHOUSE_MCP_ALLOWED_HOSTS"
+        if name in os.environ:
+            allowed_hosts = _split_env_list(name)
+            if not allowed_hosts:
+                raise ValueError(f"{name} is set but contains no Host values")
+            return allowed_hosts
+
+        bind_host = self.bind_host.lower()
+        if bind_host in _WILDCARD_BIND_HOSTS:
+            raise ValueError(
+                f"{name} must contain the public host name or address when "
+                "CLICKHOUSE_MCP_BIND_HOST is a wildcard address"
+            )
+
+        if bind_host in _LOOPBACK_BIND_HOSTS:
+            return [
+                "127.0.0.1",
+                "127.0.0.1:*",
+                "localhost",
+                "localhost:*",
+                "[::1]",
+                "[::1]:*",
+            ]
+        return [_format_http_host(self.bind_host, self.bind_port)]
+
+    @property
+    def allowed_origins(self) -> List[str]:
+        """Origin header values the HTTP/SSE transports accept.
+
+        Requests without an Origin header are always accepted. An empty list
+        rejects every request that carries an Origin header.
+        """
+        return _split_env_list("CLICKHOUSE_MCP_ALLOWED_ORIGINS")
 
     @property
     def auth_token(self) -> Optional[str]:

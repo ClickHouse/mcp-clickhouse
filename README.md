@@ -47,7 +47,7 @@ When running with HTTP or SSE transport, a health check endpoint is available at
 - Returns `200 OK` (body: `OK`) if the server is healthy and can connect to ClickHouse
 - Returns `503 Service Unavailable` with a generic error message if the server cannot connect to ClickHouse
 
-The endpoint is intentionally unauthenticated so orchestrator probes (e.g. Kubernetes liveness/readiness, load balancers) can reach it without credentials. The response body is deliberately minimal to avoid leaking backend version strings or error details; debug failures via the server logs.
+GET and HEAD requests to the endpoint are intentionally unauthenticated and exempt from Host and Origin validation so orchestrator probes (e.g. Kubernetes liveness/readiness, load balancers) can use runtime-assigned pod or target IPs without extra configuration. `/health` is reserved and cannot be used as the MCP transport path. The response body is deliberately minimal to avoid leaking backend version strings or error details; debug failures via the server logs.
 
 Example:
 ```bash
@@ -125,6 +125,7 @@ See the [FastMCP docs](https://gofastmcp.com/servers/auth) for the full list of 
 For local development and testing only, you can disable authentication by setting:
 ```bash
 export CLICKHOUSE_MCP_AUTH_DISABLED=true
+export CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000
 ```
 
 **WARNING:** Only use this for local development. Do not disable authentication when the server is exposed to any network.
@@ -495,7 +496,7 @@ CLICKHOUSE_PASSWORD=clickhouse
 5. To test with HTTP transport and the health check endpoint:
    ```bash
    # For development, disable authentication
-   CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_AUTH_DISABLED=true python -m mcp_clickhouse.main
+   CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_AUTH_DISABLED=true CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000 python -m mcp_clickhouse.main
 
    # Or with authentication (generate a token first)
    CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_AUTH_TOKEN="your-token" python -m mcp_clickhouse.main
@@ -612,6 +613,19 @@ These variables control the MCP process itself, including transport, authenticat
   * Default: `"false"` (authentication is enabled)
   * Set to `"true"` to disable authentication for local development/testing only
   * **WARNING:** Only use for local development. Do not disable when exposed to networks
+* `CLICKHOUSE_MCP_ALLOWED_HOSTS`: Comma separated `Host` header values the HTTP/SSE server answers for
+  * Default for a loopback bind: bare and any-port forms of `127.0.0.1`, `localhost`, and `[::1]`
+  * If set, the value must contain at least one Host entry.
+  * A concrete non-loopback bind address defaults to that address and the configured port. A wildcard bind such as `0.0.0.0` or `::` requires an explicit non-empty value because the public Host cannot be inferred.
+  * Host validation is a defense in depth against DNS rebinding. Origin validation below is required separately by MCP.
+  * Entries are exact (`localhost:8000`) or accept any port (`localhost:*`). Example: `CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000`
+  * The `host:*` form matches only values that carry a port. A port-less Host (a standard-port deployment where the client omits `:80`/`:443`) must be listed as a bare exact entry (`example.com`) as well.
+  * Requests with a non-matching or missing `Host` header get `421 Misdirected Request`. GET and HEAD requests to `/health` are exempt from Host and Origin validation so orchestrator probes keep working.
+  * Behind a reverse proxy, list the Host value the proxy forwards. Set an explicit list when a launcher such as `fastmcp run` overrides the bind address for remote access.
+* `CLICKHOUSE_MCP_ALLOWED_ORIGINS`: Comma separated `Origin` header values accepted on HTTP/SSE
+  * Default: None, which rejects every request that carries an `Origin` header
+  * MCP requires Origin validation for HTTP/SSE transport connections. Requests without an Origin are accepted because non-browser MCP clients normally omit it. A non-matching Origin gets `403 Forbidden`. The `/health` endpoint is exempt as described above.
+  * Entries are exact (`http://localhost:3000`) or accept any port (`http://localhost:*`). As with hosts, the any-port form matches only origins that carry a port; a standard-port origin (`https://app.example.com`) must be listed exactly.
 
 #### Middleware Variables
 
@@ -703,6 +717,7 @@ CLICKHOUSE_MCP_SERVER_TRANSPORT=http
 CLICKHOUSE_MCP_BIND_HOST=0.0.0.0  # Bind to all interfaces
 CLICKHOUSE_MCP_BIND_PORT=4200  # Custom port (default: 8000)
 CLICKHOUSE_MCP_AUTH_TOKEN=your-generated-token  # One auth mode required for HTTP/SSE (or FASTMCP_SERVER_AUTH, or CLICKHOUSE_MCP_AUTH_DISABLED=true)
+CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:4200,localhost:4200,mcp.example.com:4200  # Include every Host value clients and proxies send
 ```
 
 For local development with HTTP transport (authentication disabled):
@@ -713,11 +728,12 @@ CLICKHOUSE_USER=default
 CLICKHOUSE_PASSWORD=clickhouse
 CLICKHOUSE_MCP_SERVER_TRANSPORT=http
 CLICKHOUSE_MCP_AUTH_DISABLED=true  # Only for local development!
+CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000
 ```
 
 When using HTTP transport, the server will run on the configured port (default 8000). For example, with the above configuration:
-- MCP endpoint: `http://localhost:4200/mcp`
-- Health check: `http://localhost:4200/health`
+- MCP endpoint: `http://localhost:8000/mcp`
+- Health check: `http://localhost:8000/health`
 
 You can set these variables in your environment, in a `.env` file, or in the Claude Desktop configuration:
 
