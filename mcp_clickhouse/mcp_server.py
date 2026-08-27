@@ -268,6 +268,16 @@ def _claim_health_probe_log(future: Optional[concurrent.futures.Future]) -> bool
         return True
 
 
+def _retrieve_health_probe_wrapper_result(future: asyncio.Future) -> None:
+    """Retrieve a completed health wrapper result."""
+    try:
+        future.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request) -> PlainTextResponse:
     """Liveness probe. Intentionally unauthenticated and minimal.
@@ -300,8 +310,10 @@ async def health_check(request: Request) -> PlainTextResponse:
                 )
 
         future = _get_health_probe_future(_resolve_client_config())
+        wrapped_future = asyncio.wrap_future(future)
+        wrapped_future.add_done_callback(_retrieve_health_probe_wrapper_result)
         await asyncio.wait_for(
-            asyncio.shield(asyncio.wrap_future(future)),
+            asyncio.shield(wrapped_future),
             timeout=_HEALTH_CHECK_TIMEOUT_SECONDS,
         )
         return PlainTextResponse("OK")
@@ -869,7 +881,7 @@ async def _cancel_query_async(query_id: str) -> None:
     future = CANCELLATION_EXECUTOR.submit(_cancel_query, query_id)
     try:
         await asyncio.wait_for(
-            asyncio.wrap_future(future),
+            asyncio.shield(asyncio.wrap_future(future)),
             timeout=_QUERY_CANCELLATION_WAIT_SECONDS,
         )
     except asyncio.TimeoutError:
@@ -926,35 +938,51 @@ def run_query(query: str) -> str:
         raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
 
 
-def _freeze_client_config_value(value: Any) -> tuple:
+def _freeze_client_config_value(value: Any) -> Optional[tuple]:
     """Convert a client config value into a stable cache-key component."""
     if isinstance(value, Mapping):
-        return (
-            "mapping",
-            tuple(
-                (key, _freeze_client_config_value(nested_value))
-                for key, nested_value in sorted(value.items())
-            ),
-        )
+        frozen_items = []
+        try:
+            items = sorted(value.items())
+        except TypeError:
+            return None
+        for key, nested_value in items:
+            frozen_value = _freeze_client_config_value(nested_value)
+            if frozen_value is None:
+                return None
+            frozen_items.append((key, frozen_value))
+        return ("mapping", tuple(frozen_items))
     if isinstance(value, list):
-        return ("list", tuple(_freeze_client_config_value(item) for item in value))
+        frozen_items = tuple(_freeze_client_config_value(item) for item in value)
+        if any(item is None for item in frozen_items):
+            return None
+        return ("list", frozen_items)
     if isinstance(value, tuple):
-        return ("tuple", tuple(_freeze_client_config_value(item) for item in value))
+        frozen_items = tuple(_freeze_client_config_value(item) for item in value)
+        if any(item is None for item in frozen_items):
+            return None
+        return ("tuple", frozen_items)
     if isinstance(value, (set, frozenset)):
-        return ("set", frozenset(_freeze_client_config_value(item) for item in value))
+        frozen_items = tuple(_freeze_client_config_value(item) for item in value)
+        if any(item is None for item in frozen_items):
+            return None
+        return ("set", frozenset(frozen_items))
     try:
         hash(value)
     except TypeError:
-        return ("identity", id(value))
+        return None
     return ("value", value)
 
 
-def _config_to_cache_key(config: dict) -> tuple:
-    """Convert a client config dict into a hashable cache key."""
-    return tuple(
-        (key, _freeze_client_config_value(value))
-        for key, value in sorted(config.items())
-    )
+def _config_to_cache_key(config: dict) -> Optional[tuple]:
+    """Convert a client config dict into a stable cache key when possible."""
+    frozen_config = []
+    for key, value in sorted(config.items()):
+        frozen_value = _freeze_client_config_value(value)
+        if frozen_value is None:
+            return None
+        frozen_config.append((key, frozen_value))
+    return tuple(frozen_config)
 
 
 async def run_query_async(query: str) -> str:
@@ -1295,6 +1323,8 @@ def _evict_lru_entries_locked() -> List[Any]:
 def _evict_cached_client(config: dict, failed_client) -> bool:
     """Evict only the cached client instance that produced a connection error."""
     cache_key = _config_to_cache_key(config)
+    if cache_key is None:
+        return False
     client_to_close = None
     with _client_cache_lock:
         entry = _client_cache.get(cache_key)
@@ -1344,7 +1374,7 @@ def _prepare_client_entry(
     return entry
 
 
-def _create_uncached_clickhouse_client(config: dict):
+def _create_uncached_clickhouse_client(config: dict, *, cache_owned: bool):
     """Create and validate a ClickHouse client outside the cache lock."""
     config_fields = [
         f"secure={config['secure']}",
@@ -1362,7 +1392,8 @@ def _create_uncached_clickhouse_client(config: dict):
 
     try:
         connection_config = dict(config)
-        connection_config["autogenerate_session_id"] = False
+        if cache_owned:
+            connection_config["autogenerate_session_id"] = False
         client = clickhouse_connect.get_client(**connection_config)
         version = client.server_version
         logger.info(f"Successfully connected to ClickHouse server version {version}")
@@ -1377,6 +1408,15 @@ def _acquire_clickhouse_client(config: dict) -> _ClientCacheEntry:
     """Acquire a leased cached client, creating one when needed."""
     _warn_for_native_protocol_port(config)
     cache_key = _config_to_cache_key(config)
+    if cache_key is None:
+        client = _create_uncached_clickhouse_client(config, cache_owned=True)
+        entry = _ClientCacheEntry(
+            client=client,
+            last_used=time.time(),
+            active_users=1,
+            retired=True,
+        )
+        return _prepare_client_entry(entry, config)
 
     candidate = None
     cached_entry = None
@@ -1427,7 +1467,7 @@ def _acquire_clickhouse_client(config: dict) -> _ClientCacheEntry:
         if not alive:
             logger.warning("Cached client failed ping, creating new client")
 
-    client = _create_uncached_clickhouse_client(config)
+    client = _create_uncached_clickhouse_client(config, cache_owned=True)
     new_entry = _ClientCacheEntry(client=client, last_used=time.time(), active_users=1)
     winner = new_entry
     clients_to_close = []
@@ -1466,7 +1506,7 @@ def create_clickhouse_client(
         raise TypeError("Pass client_config_overrides or config, not both")
 
     _warn_for_native_protocol_port(config)
-    client = _create_uncached_clickhouse_client(config)
+    client = _create_uncached_clickhouse_client(config, cache_owned=False)
     try:
         return _return_client(client, config)
     except Exception:

@@ -11,12 +11,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastmcp.exceptions import ToolError
 
+from mcp_clickhouse import mcp_server
 from mcp_clickhouse.mcp_server import (
     _ActiveQueryState,
     _ClientCacheEntry,
     _active_queries,
     _active_queries_lock,
     _cancel_query,
+    _cancel_query_async,
     _clear_client_cache,
     _resolve_client_config,
     execute_query,
@@ -497,3 +499,42 @@ class TestRunQueryTimeout:
                     await asyncio.wait_for(task, timeout=0.2)
             finally:
                 release.set()
+
+    @pytest.mark.asyncio
+    async def test_queued_async_cancellation_runs_after_bounded_wait(self):
+        blocker_started = [threading.Event(), threading.Event()]
+        release_blockers = threading.Event()
+        cancellation_ran = threading.Event()
+
+        def block_worker(index):
+            blocker_started[index].set()
+            release_blockers.wait(timeout=1)
+
+        blocker_futures = [
+            mcp_server.CANCELLATION_EXECUTOR.submit(block_worker, index)
+            for index in range(2)
+        ]
+        try:
+            assert all(started.wait(timeout=1) for started in blocker_started)
+
+            with (
+                patch(
+                    "mcp_clickhouse.mcp_server._cancel_query",
+                    side_effect=lambda _query_id: cancellation_ran.set(),
+                ),
+                patch("mcp_clickhouse.mcp_server._QUERY_CANCELLATION_WAIT_SECONDS", 0.02),
+            ):
+                await _cancel_query_async(str(uuid.uuid4()))
+                assert not cancellation_ran.is_set()
+                release_blockers.set()
+
+                for _ in range(100):
+                    if cancellation_ran.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+        finally:
+            release_blockers.set()
+            for future in blocker_futures:
+                future.result(timeout=1)
+
+        assert cancellation_ran.is_set()

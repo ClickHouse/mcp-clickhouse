@@ -51,6 +51,12 @@ class TestConfigToCacheKey:
         config_b = {"host": "host2", "port": 8443}
         assert _config_to_cache_key(config_a) != _config_to_cache_key(config_b)
 
+    def test_unhashable_opaque_value_is_not_cacheable(self):
+        class UnhashableOpaqueValue:
+            __hash__ = None
+
+        assert _config_to_cache_key({"pool_mgr": UnhashableOpaqueValue()}) is None
+
 
 class TestClientCaching:
     """Tests for client cache behavior."""
@@ -139,6 +145,33 @@ class TestClientCaching:
 
         call_kwargs = mock_cc.get_client.call_args[1]
         assert call_kwargs["autogenerate_session_id"] is False
+
+    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    def test_unhashable_opaque_values_bypass_cache(self, mock_cc):
+        class UnhashableOpaqueValue:
+            __hash__ = None
+
+        clients = [
+            MagicMock(server_version="24.1"),
+            MagicMock(server_version="24.2"),
+        ]
+        mock_cc.get_client.side_effect = clients
+
+        with patch("mcp_clickhouse.mcp_server.id", return_value=1, create=True):
+            first = _acquire_clickhouse_client(
+                _resolve_client_config({"pool_mgr": UnhashableOpaqueValue()})
+            )
+            _release_client_entry(first)
+            second = _acquire_clickhouse_client(
+                _resolve_client_config({"pool_mgr": UnhashableOpaqueValue()})
+            )
+            _release_client_entry(second)
+
+        assert first.client is clients[0]
+        assert second.client is clients[1]
+        assert len(_client_cache) == 0
+        clients[0].close.assert_called_once_with()
+        clients[1].close.assert_called_once_with()
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
@@ -428,6 +461,22 @@ class TestCompatibilityClientLifetime:
 
     def teardown_method(self):
         _clear_client_cache()
+
+    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    def test_default_session_id_behavior_is_preserved(self, mock_cc):
+        mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+
+        create_clickhouse_client()
+
+        assert "autogenerate_session_id" not in mock_cc.get_client.call_args.kwargs
+
+    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    def test_explicit_session_id_behavior_is_preserved(self, mock_cc):
+        mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+
+        create_clickhouse_client({"autogenerate_session_id": True})
+
+        assert mock_cc.get_client.call_args.kwargs["autogenerate_session_id"] is True
 
     @patch("mcp_clickhouse.mcp_server._CLIENT_CACHE_MAXSIZE", 2)
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")

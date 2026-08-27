@@ -1,5 +1,6 @@
 import asyncio
 import builtins
+import gc
 import logging
 import threading
 import time
@@ -290,3 +291,58 @@ async def test_concurrent_health_checks_share_one_bounded_probe(caplog):
         record for record in caplog.records if "Health check timed out" in record.message
     ]
     assert len(timeout_records) == 1
+
+
+@pytest.mark.asyncio
+async def test_timed_out_health_waiters_retrieve_late_probe_exception():
+    request = Request({"type": "http", "method": "GET", "headers": []})
+    started = threading.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    exception_contexts = []
+
+    def failing_probe(_config):
+        started.set()
+        release.wait(timeout=1)
+        raise ConnectionError("password=secret-backend-error")
+
+    loop.set_exception_handler(lambda _loop, context: exception_contexts.append(context))
+    try:
+        with (
+            patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
+            patch.object(mcp_server, "_resolve_client_config", return_value={}),
+            patch.object(mcp_server, "_probe_clickhouse_health", side_effect=failing_probe),
+            patch.object(mcp_server, "_HEALTH_CHECK_TIMEOUT_SECONDS", 0.02),
+        ):
+            tasks = [
+                asyncio.create_task(mcp_server.health_check(request)) for _ in range(20)
+            ]
+            for _ in range(100):
+                if started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert started.is_set()
+            responses = await asyncio.gather(*tasks)
+            release.set()
+
+            for _ in range(100):
+                with mcp_server._health_probe_lock:
+                    if mcp_server._health_probe_future is None:
+                        break
+                await asyncio.sleep(0.01)
+
+            del tasks
+            gc.collect()
+            await asyncio.sleep(0)
+    finally:
+        release.set()
+        loop.set_exception_handler(previous_handler)
+
+    assert all(response.status_code == 503 for response in responses)
+    leaked = [
+        context
+        for context in exception_contexts
+        if context.get("message") == "Future exception was never retrieved"
+    ]
+    assert leaked == []
