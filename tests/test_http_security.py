@@ -24,14 +24,14 @@ class _RecordingApp:
         await send({"type": "http.response.body", "body": b"reached"})
 
 
-def _send_request(middleware, path="/mcp", headers=None, scope_type="http"):
+def _send_request(middleware, path="/mcp", headers=None, scope_type="http", method="POST"):
     """Drive one request through the middleware, returning (status, body)."""
     raw_headers = [
         (name.lower().encode(), value.encode()) for name, value in (headers or {}).items()
     ]
     scope = {
         "type": scope_type,
-        "method": "POST",
+        "method": method,
         "path": path,
         "headers": raw_headers,
     }
@@ -71,6 +71,8 @@ def _middleware(app, allowed_hosts=("localhost:8000",), allowed_origins=()):
         (["localhost:*"], "localhost:8000", 200),
         (["localhost:*"], "localhost:31337", 200),
         (["localhost:*"], "localhost", 421),
+        (["localhost:*"], "localhost:8000.evil.com", 421),
+        (["localhost:8000"], "LOCALHOST:8000", 200),
         (["localhost:*"], "attacker.example.com:8000", 421),
     ],
 )
@@ -109,6 +111,7 @@ def test_empty_allow_list_rejects_every_host():
     [
         # A request without an Origin header comes from a non-browser client.
         ((), None, 200),
+        ((), "", 403),
         ((), "http://attacker.example.com", 403),
         (("http://localhost:3000",), "http://localhost:3000", 200),
         (("http://localhost:3000",), "http://attacker.example.com", 403),
@@ -127,8 +130,8 @@ def test_origin_header_is_checked_against_the_allow_list(allowed_origins, origin
     assert app.called is (expected_status == 200)
 
 
-def test_host_is_checked_before_origin():
-    """A bad host is reported as such even when the origin is also disallowed."""
+def test_invalid_origin_is_rejected_before_host_validation():
+    """A present invalid Origin always receives the MCP-required 403."""
     app = _RecordingApp()
 
     status, body = _send_request(
@@ -136,22 +139,60 @@ def test_host_is_checked_before_origin():
         headers={"host": "attacker.example.com", "origin": "http://attacker.example.com"},
     )
 
-    assert status == 421
-    assert body == b"Invalid Host header"
+    assert status == 403
+    assert body == b"Invalid Origin header"
 
 
-def test_health_endpoint_is_exempt():
-    """Liveness probes arrive under a host name the operator cannot predict."""
+@pytest.mark.parametrize(
+    "method, origin",
+    [("GET", ""), ("GET", "http://attacker.example"), ("HEAD", "http://attacker.example")],
+)
+def test_health_endpoint_is_exempt_from_transport_validation(method, origin):
     app = _RecordingApp()
 
-    status, _ = _send_request(_middleware(app), path="/health", headers={"host": "10.1.2.3:8000"})
+    status, _ = _send_request(
+        _middleware(app),
+        path="/health",
+        headers={"host": "attacker.example", "origin": origin},
+        method=method,
+    )
 
     assert status == 200
     assert app.called is True
 
 
+def test_health_exemption_uses_the_exact_path():
+    app = _RecordingApp()
+
+    status, body = _send_request(
+        _middleware(app),
+        path="/health/",
+        headers={"host": "attacker.example", "origin": "http://attacker.example"},
+        method="GET",
+    )
+
+    assert status == 403
+    assert body == b"Invalid Origin header"
+    assert app.called is False
+
+
+def test_health_exemption_only_applies_to_probe_methods():
+    app = _RecordingApp()
+
+    status, body = _send_request(
+        _middleware(app),
+        path="/health",
+        headers={"host": "attacker.example", "origin": "http://attacker.example"},
+        method="POST",
+    )
+
+    assert status == 403
+    assert body == b"Invalid Origin header"
+    assert app.called is False
+
+
 def test_non_http_scopes_pass_through():
-    """Lifespan and websocket traffic carries no headers to validate."""
+    """FastMCP's MCP transports do not use non-HTTP ASGI scopes."""
     app = _RecordingApp()
     middleware = _middleware(app)
     scope = {"type": "lifespan"}
@@ -170,13 +211,21 @@ def test_non_http_scopes_pass_through():
 class TestConfigParsing:
     """CLICKHOUSE_MCP_ALLOWED_HOSTS / _ORIGINS parsing."""
 
-    def test_unset_returns_empty_lists(self, monkeypatch: pytest.MonkeyPatch):
+    def test_unset_uses_loopback_host_defaults(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", raising=False)
         monkeypatch.delenv("CLICKHOUSE_MCP_ALLOWED_ORIGINS", raising=False)
+        monkeypatch.delenv("CLICKHOUSE_MCP_BIND_HOST", raising=False)
 
         config = MCPServerConfig()
 
-        assert config.allowed_hosts == []
+        assert config.allowed_hosts == [
+            "127.0.0.1",
+            "127.0.0.1:*",
+            "localhost",
+            "localhost:*",
+            "[::1]",
+            "[::1]:*",
+        ]
         assert config.allowed_origins == []
 
     def test_comma_separated_values_are_split_and_trimmed(self, monkeypatch: pytest.MonkeyPatch):
@@ -188,16 +237,51 @@ class TestConfigParsing:
         assert config.allowed_hosts == ["localhost:8000", "127.0.0.1:8000"]
         assert config.allowed_origins == ["http://localhost:3000"]
 
+    @pytest.mark.parametrize("value", ["", "  , "])
+    def test_explicit_empty_hosts_raise(self, monkeypatch: pytest.MonkeyPatch, value: str):
+        monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", value)
+
+        with pytest.raises(ValueError, match="contains no Host values"):
+            MCPServerConfig().allowed_hosts
+
+    @pytest.mark.parametrize("bind_host", ["0.0.0.0", "::"])
+    def test_wildcard_bind_requires_explicit_hosts(
+        self, monkeypatch: pytest.MonkeyPatch, bind_host: str
+    ):
+        monkeypatch.delenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", raising=False)
+        monkeypatch.setenv("CLICKHOUSE_MCP_BIND_HOST", bind_host)
+
+        with pytest.raises(ValueError, match="must contain the public host"):
+            MCPServerConfig().allowed_hosts
+
+    def test_concrete_bind_derives_host_and_port(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", raising=False)
+        monkeypatch.setenv("CLICKHOUSE_MCP_BIND_HOST", "mcp.internal")
+        monkeypatch.setenv("CLICKHOUSE_MCP_BIND_PORT", "4200")
+
+        assert MCPServerConfig().allowed_hosts == ["mcp.internal:4200"]
+
 
 class TestMiddlewareFactory:
     """transport_security_middleware wiring."""
 
-    def test_no_middleware_when_hosts_are_unset(self, monkeypatch: pytest.MonkeyPatch):
-        """The server keeps its previous behavior until an operator opts in."""
+    def test_default_middleware_uses_secure_loopback_hosts(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", raising=False)
         monkeypatch.delenv("CLICKHOUSE_MCP_ALLOWED_ORIGINS", raising=False)
+        monkeypatch.delenv("CLICKHOUSE_MCP_BIND_HOST", raising=False)
 
-        assert transport_security_middleware(MCPServerConfig()) == []
+        built = transport_security_middleware(MCPServerConfig())
+
+        assert len(built) == 1
+        assert built[0].kwargs["allowed_hosts"] == [
+            "127.0.0.1",
+            "127.0.0.1:*",
+            "localhost",
+            "localhost:*",
+            "[::1]",
+            "[::1]:*",
+        ]
+        assert built[0].kwargs["allowed_origins"] == []
 
     def test_middleware_is_built_from_configured_hosts(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "localhost:8000")
@@ -211,10 +295,13 @@ class TestMiddlewareFactory:
         assert built[0].kwargs["allowed_hosts"] == ["localhost:8000"]
         assert built[0].kwargs["allowed_origins"] == ["http://localhost:3000"]
 
-    def test_origins_without_hosts_is_a_configuration_error(self, monkeypatch: pytest.MonkeyPatch):
-        """Otherwise the configured origins would silently never be consulted."""
+    def test_origins_are_configured_independently_of_explicit_hosts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
         monkeypatch.delenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", raising=False)
+        monkeypatch.delenv("CLICKHOUSE_MCP_BIND_HOST", raising=False)
         monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_ORIGINS", "http://localhost:3000")
 
-        with pytest.raises(ValueError, match="CLICKHOUSE_MCP_ALLOWED_HOSTS"):
-            transport_security_middleware(MCPServerConfig())
+        built = transport_security_middleware(MCPServerConfig())
+
+        assert built[0].kwargs["allowed_origins"] == ["http://localhost:3000"]
