@@ -6,16 +6,42 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - Client connection reuse across tool calls via a config-keyed cache, eliminating per-call connection overhead. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
-- Server-side query cancellation: timed-out queries now issue `KILL QUERY` on the ClickHouse server instead of leaving zombie workers consuming threads and server resources. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+- Best-effort server-side query cancellation: timed-out queries now attempt `KILL QUERY` on the ClickHouse server so workers and server resources can be released. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
 - `CLICKHOUSE_MCP_MAX_WORKERS` environment variable to configure the query worker thread pool size (default: `10`). ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
-- Support for FastMCP OAuth/OIDC auth providers on HTTP/SSE transports via the `FASTMCP_SERVER_AUTH` environment variable (e.g. Azure Entra, Google, GitHub, WorkOS). Static token, FastMCP OAuth, and disabled mode are now mutually exclusive; configure exactly one. ([#171](https://github.com/ClickHouse/mcp-clickhouse/issues/171))
+- DNS rebinding protection for every HTTP and SSE launch path, including `fastmcp run` and `fastmcp.json`. `Host` and `Origin` headers are validated via the new `CLICKHOUSE_MCP_ALLOWED_HOSTS` and `CLICKHOUSE_MCP_ALLOWED_ORIGINS` variables: a present `Origin` that is not allow-listed is rejected with `403`, and an unknown `Host` with `421`. Authentication is now enforced whenever `fastmcp run` selects HTTP or SSE, independently of `CLICKHOUSE_MCP_SERVER_TRANSPORT`, closing a launch path that previously served unauthenticated. ([#218](https://github.com/ClickHouse/mcp-clickhouse/issues/218))
+- With `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` and `CLICKHOUSE_ALLOW_DROP` unset, the server now runs `SHOW GRANTS` once at first connection and logs a warning if the ClickHouse user holds `ALL`, `DROP`, `TRUNCATE`, `DELETE`, `UPDATE`, or `ALTER` (beyond `ALTER ADD`) privileges, since the destructive-operation gate is not server-enforced. The check is fail-open and never blocks startup or queries. Grants held via roles are not expanded, so the advisory only flags direct grants.
 
 ### Changed
 - `CLICKHOUSE_SEND_RECEIVE_TIMEOUT` is now auto-capped to `CLICKHOUSE_MCP_QUERY_TIMEOUT + 5` unless explicitly set, so HTTP reads unblock shortly after an MCP timeout fires. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+- **Breaking:** HTTP/SSE transports now validate `Host` and `Origin` by default, so existing deployments can change behavior on upgrade:
+  - A wildcard bind (`CLICKHOUSE_MCP_BIND_HOST=0.0.0.0` or `::`) now refuses to start unless `CLICKHOUSE_MCP_ALLOWED_HOSTS` is set, because the public host cannot be inferred. Migration: set `CLICKHOUSE_MCP_ALLOWED_HOSTS` to the `host:port` values clients and reverse proxies use.
+  - A request whose `Host` is not the bind address or a loopback default is rejected with `421`, and any request carrying an `Origin` not listed in `CLICKHOUSE_MCP_ALLOWED_ORIGINS` is rejected with `403`. Migration: set `CLICKHOUSE_MCP_ALLOWED_ORIGINS` for browser-based clients; non-browser clients that send no `Origin` are unaffected.
+  - The `/health` endpoint remains unauthenticated and is exempt from Host and Origin validation for GET and HEAD requests, so orchestrator liveness/readiness probes can use runtime-assigned IP Hosts without extra configuration. It is reserved and cannot be used as the MCP transport path.
+- The destructive-operation gate (`CLICKHOUSE_ALLOW_DROP`) now also blocks `DELETE`, `UPDATE` (including the `ALTER TABLE ... DELETE` / `UPDATE` mutations), `REPLACE TABLE` / `REPLACE PARTITION` / `CREATE OR REPLACE`, `ALTER TABLE ... CLEAR COLUMN` / `CLEAR INDEX` / `CLEAR PROJECTION`, and `DETACH ... PERMANENTLY`. These previously ran with write access alone and now require `CLICKHOUSE_ALLOW_DROP=true` as well. Plain `DETACH` stays allowed because it is reversible with `ATTACH`.
+- Connection failures now log actionable hints for common misconfigurations (native TCP port used instead of the HTTP interface, TLS/`CLICKHOUSE_SECURE` mismatches), and a warning is logged when `CLICKHOUSE_PORT` is set to a native protocol port (9000/9440). ([#102](https://github.com/ClickHouse/mcp-clickhouse/issues/102))
+
+### Fixed
+- `/health` now runs ClickHouse probes outside the event loop and shares one probe across concurrent requests. A stalled probe returns `503` after two seconds instead of blocking the HTTP server.
+- `list_databases` and `list_tables` now evict stale cached clients and retry once after connection errors. `run_query` is not retried because a write may already have succeeded.
+- Per-request ClickHouse client configuration overrides now reach `run_query` worker threads. Invalid override state and role aliases fail closed, nested settings preserve the configured role, and opaque client objects remain supported.
+- Destructive-operation protection no longer misses `TRUNCATE` statements that omit the `TABLE` keyword (`TRUNCATE db.name` is valid ClickHouse syntax), `TRUNCATE DATABASE`, `TRUNCATE ALL TABLES FROM`, `ALTER TABLE ... DROP PARTITION` / `DROP PART` / `DROP COLUMN`, or `DROP` of object types outside `TABLE`/`DATABASE`/`VIEW`/`DICTIONARY`. With `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` and `CLICKHOUSE_ALLOW_DROP` unset, these statements previously ran and deleted data.
+- Destructive-operation protection no longer rejects safe statements that merely contain `drop` or `truncate` inside a string literal, a quoted identifier, or a SQL comment, such as `INSERT INTO logs VALUES ('drop the table')`. Comments can no longer hide a destructive statement from the check either.
+
+## 0.4.1 - 2026-07-17
+
+### Changed
+- Added FastMCP server-level instructions that point agents to official ClickHouse Agent Skills (replacing tool-based advisory guidance).
+
+## 0.4.0 - 2026-06-03
+
+### Added
+- Support for FastMCP OAuth/OIDC auth providers on HTTP/SSE transports via the `FASTMCP_SERVER_AUTH` environment variable (e.g. Azure Entra, Google, GitHub, WorkOS). Static token, FastMCP OAuth, and disabled mode are now mutually exclusive; configure exactly one. ([#171](https://github.com/ClickHouse/mcp-clickhouse/issues/171))
+- Official multi-arch Docker images published to GitHub Container Registry on each release: `ghcr.io/clickhouse/mcp-clickhouse:vX.Y.Z`, `:X.Y`, and `:latest`.
+
+### Changed
 - `/health` endpoint is now unauthenticated across all auth modes (previously gated only under static-token mode, which was asymmetric and incompatible with redirect-based OAuth providers). Response bodies trimmed to `OK` / generic error strings to avoid leaking ClickHouse version information or connection exception details; underlying errors are logged server-side.
 
 ### Fixed
-- Session config overrides from PR #115 are now resolved on the request thread where the FastMCP context is available, so overrides are correctly applied to queries dispatched to the worker pool. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
 - Tool responses now return JSON-encoded strings, avoiding MCP protocol validation errors on successful queries. ([#154](https://github.com/ClickHouse/mcp-clickhouse/pull/154))
 - Long-running queries no longer block other tool calls. The MCP-facing `run_query` and `run_chdb_select_query` tools now await their thread-pool futures asynchronously, so concurrent tool calls are served while a slow query is in flight. ([#128](https://github.com/ClickHouse/mcp-clickhouse/issues/128))
 

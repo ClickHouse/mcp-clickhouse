@@ -1,0 +1,180 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ClickHouse/mcp-clickhouse",
+  "title": "ClickHouse",
+  "description": "Official ClickHouse MCP server for querying and exploring ClickHouse clusters and chDB.",
+  "version": "0.4.0",
+  "repository": {
+    "url": "https://github.com/ClickHouse/mcp-clickhouse",
+    "source": "github"
+  },
+  "websiteUrl": "https://clickhouse.com",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "mcp-clickhouse",
+      "version": "0.4.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "CLICKHOUSE_HOST",
+          "description": "Hostname of the ClickHouse server",
+          "isRequired": true
+        },
+        {
+          "name": "CLICKHOUSE_USER",
+          "description": "Username for ClickHouse authentication",
+          "isRequired": true
+        },
+        {
+          "name": "CLICKHOUSE_PASSWORD",
+          "description": "Password for ClickHouse authentication",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "CLICKHOUSE_PORT",
+          "description": "ClickHouse HTTP(S) port. Defaults to 8443 when CLICKHOUSE_SECURE=true, 8123 otherwise",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_SECURE",
+          "description": "Use HTTPS to connect to ClickHouse",
+          "format": "boolean",
+          "default": "true",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_VERIFY",
+          "description": "Verify SSL certificates",
+          "format": "boolean",
+          "default": "true",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_DATABASE",
+          "description": "Default database to use",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_ROLE",
+          "description": "ClickHouse role to activate for the session",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_ALLOW_WRITE_ACCESS",
+          "description": "Allow write operations (DDL and DML). Queries run read-only by default",
+          "format": "boolean",
+          "default": "false",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_ALLOW_DROP",
+          "description": "Allow destructive operations (DROP, TRUNCATE) when write access is also enabled",
+          "format": "boolean",
+          "default": "false",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_MCP_QUERY_TIMEOUT",
+          "description": "Query tool timeout in seconds",
+          "format": "number",
+          "default": "30",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_MCP_MAX_WORKERS",
+          "description": "Maximum query worker thread pool size",
+          "format": "number",
+          "default": "10",
+          "isRequired": false
+        }
+      ]
+    },
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/clickhouse/mcp-clickhouse:0.4.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "CLICKHOUSE_HOST",
+          "description": "Hostname of the ClickHouse server",
+          "isRequired": true
+        },
+        {
+          "name": "CLICKHOUSE_USER",
+          "description": "Username for ClickHouse authentication",
+          "isRequired": true
+        },
+        {
+          "name": "CLICKHOUSE_PASSWORD",
+          "description": "Password for ClickHouse authentication",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "CLICKHOUSE_PORT",
+          "description": "ClickHouse HTTP(S) port. Defaults to 8443 when CLICKHOUSE_SECURE=true, 8123 otherwise",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_SECURE",
+          "description": "Use HTTPS to connect to ClickHouse",
+          "format": "boolean",
+          "default": "true",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_VERIFY",
+          "description": "Verify SSL certificates",
+          "format": "boolean",
+          "default": "true",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_DATABASE",
+          "description": "Default database to use",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_ROLE",
+          "description": "ClickHouse role to activate for the session",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_ALLOW_WRITE_ACCESS",
+          "description": "Allow write operations (DDL and DML). Queries run read-only by default",
+          "format": "boolean",
+          "default": "false",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_ALLOW_DROP",
+          "description": "Allow destructive operations (DROP, TRUNCATE) when write access is also enabled",
+          "format": "boolean",
+          "default": "false",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_MCP_QUERY_TIMEOUT",
+          "description": "Query tool timeout in seconds",
+          "format": "number",
+          "default": "30",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_MCP_MAX_WORKERS",
+          "description": "Maximum query worker thread pool size",
+          "format": "number",
+          "default": "10",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}

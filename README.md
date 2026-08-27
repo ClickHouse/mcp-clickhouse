@@ -1,5 +1,7 @@
 # ClickHouse MCP Server
 
+<!-- mcp-name: io.github.ClickHouse/mcp-clickhouse -->
+
 [![PyPI - Version](https://img.shields.io/pypi/v/mcp-clickhouse)](https://pypi.org/project/mcp-clickhouse)
 
 An MCP server for ClickHouse.
@@ -44,8 +46,9 @@ An MCP server for ClickHouse.
 When running with HTTP or SSE transport, a health check endpoint is available at `/health`. This endpoint:
 - Returns `200 OK` (body: `OK`) if the server is healthy and can connect to ClickHouse
 - Returns `503 Service Unavailable` with a generic error message if the server cannot connect to ClickHouse
+- Returns `503` if a ClickHouse probe does not finish within two seconds. Concurrent requests share one in-flight probe
 
-The endpoint is intentionally unauthenticated so orchestrator probes (e.g. Kubernetes liveness/readiness, load balancers) can reach it without credentials. The response body is deliberately minimal to avoid leaking backend version strings or error details; debug failures via the server logs.
+GET and HEAD requests to the endpoint are intentionally unauthenticated and exempt from Host and Origin validation so orchestrator probes (e.g. Kubernetes liveness/readiness, load balancers) can use runtime-assigned pod or target IPs without extra configuration. `/health` is reserved and cannot be used as the MCP transport path. The response body is deliberately minimal to avoid leaking backend version strings or error details; debug failures via the server logs.
 
 Example:
 ```bash
@@ -123,6 +126,7 @@ See the [FastMCP docs](https://gofastmcp.com/servers/auth) for the full list of 
 For local development and testing only, you can disable authentication by setting:
 ```bash
 export CLICKHOUSE_MCP_AUTH_DISABLED=true
+export CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000
 ```
 
 **WARNING:** Only use this for local development. Do not disable authentication when the server is exposed to any network.
@@ -158,8 +162,7 @@ This MCP server supports both ClickHouse and chDB. You can enable either or both
         "CLICKHOUSE_ROLE": "<clickhouse-role>",
         "CLICKHOUSE_SECURE": "true",
         "CLICKHOUSE_VERIFY": "true",
-        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
-        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30"
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30"
       }
     }
   }
@@ -190,8 +193,7 @@ Or, if you'd like to try it out with the [ClickHouse SQL Playground](https://sql
         "CLICKHOUSE_PASSWORD": "",
         "CLICKHOUSE_SECURE": "true",
         "CLICKHOUSE_VERIFY": "true",
-        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
-        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30"
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30"
       }
     }
   }
@@ -246,7 +248,6 @@ You can also enable both ClickHouse and chDB simultaneously:
         "CLICKHOUSE_SECURE": "true",
         "CLICKHOUSE_VERIFY": "true",
         "CLICKHOUSE_CONNECT_TIMEOUT": "30",
-        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30",
         "CHDB_ENABLED": "true",
         "CHDB_DATA_PATH": "/path/to/chdb/data"
       }
@@ -261,11 +262,22 @@ You can also enable both ClickHouse and chDB simultaneously:
 
 ### Optional Write Access
 
-By default, this MCP enforces read-only queries so that accidental mutations cannot happen during exploration. To allow DDL or INSERT/UPDATE statements, set the `CLICKHOUSE_ALLOW_WRITE_ACCESS` environment variable to `true`. The server keeps enforcing read-only mode if the ClickHouse instance itself disallows writes.
+By default, this MCP enforces read-only queries so that accidental mutations cannot happen during exploration. To allow DDL or INSERT statements, set the `CLICKHOUSE_ALLOW_WRITE_ACCESS` environment variable to `true`. The server keeps enforcing read-only mode if the ClickHouse instance itself disallows writes.
 
 ### Destructive Operation Protection
 
-Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), destructive operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY, TRUNCATE TABLE) require an additional opt-in flag for safety. This prevents accidental data deletion during AI exploration.
+Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), destructive operations require an additional opt-in flag for safety. The check covers any `DROP` statement (including the `ALTER TABLE ... DROP PARTITION` / `DROP PART` / `DROP COLUMN` clauses), any `TRUNCATE`, `DELETE` and `UPDATE` (both the lightweight statements and the `ALTER TABLE ... DELETE` / `ALTER TABLE ... UPDATE` mutations), `REPLACE TABLE`, `CREATE OR REPLACE`, `ALTER TABLE ... REPLACE PARTITION`, `ALTER TABLE ... CLEAR COLUMN` / `CLEAR INDEX` / `CLEAR PROJECTION`, and `DETACH ... PERMANENTLY`. Keywords inside string literals, quoted identifiers, and SQL comments are ignored, so they neither trigger the check nor hide a statement from it.
+
+This check runs in the MCP server and is a best-effort guard against accidents. It is not a security boundary. The security boundary is the ClickHouse user's grants. Read-only mode (the default) is enforced server-side via `readonly=1`. The destructive-operation gate is not server-enforced.
+
+For write mode, give the MCP server a dedicated ClickHouse user with only the privileges it needs:
+
+```sql
+CREATE USER mcp_agent IDENTIFIED BY '...';
+GRANT SELECT, INSERT, CREATE TABLE, ALTER ADD COLUMN ON mydb.* TO mcp_agent;
+```
+
+Every statement outside these grants then fails server-side with `ACCESS_DENIED`, regardless of MCP flags. The server settings `max_table_size_to_drop` and `max_partition_size_to_drop` can also cap blast radius if pinned with settings constraints.
 
 To enable destructive operations, set both flags:
 ```json
@@ -275,9 +287,9 @@ To enable destructive operations, set both flags:
 }
 ```
 
-This two-tier approach ensures that accidental drops are very difficult:
-- **Write operations** (INSERT, UPDATE, CREATE) require `CLICKHOUSE_ALLOW_WRITE_ACCESS=true`
-- **Destructive operations** (DROP, TRUNCATE) additionally require `CLICKHOUSE_ALLOW_DROP=true`
+This two-tier approach makes accidental deletion difficult:
+- **Write operations** (INSERT, CREATE, ALTER ADD COLUMN) require `CLICKHOUSE_ALLOW_WRITE_ACCESS=true`
+- **Destructive operations** (DROP, TRUNCATE, DELETE, UPDATE, and the rest of the list above) additionally require `CLICKHOUSE_ALLOW_DROP=true`
 
 ### Running Without uv (Using System Python)
 
@@ -316,8 +328,7 @@ If you prefer to use the system Python installation instead of uv, you can insta
         "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
         "CLICKHOUSE_SECURE": "true",
         "CLICKHOUSE_VERIFY": "true",
-        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
-        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30"
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30"
       }
     }
   }
@@ -338,8 +349,7 @@ Alternatively, you can use the installed script directly:
         "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
         "CLICKHOUSE_SECURE": "true",
         "CLICKHOUSE_VERIFY": "true",
-        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
-        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30"
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30"
       }
     }
   }
@@ -449,6 +459,17 @@ ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, {
 
 This enables advanced use cases like dynamic timeout adjustments, tenant-specific routing, or per-user connection settings.
 
+The state value must be a dictionary. Nested `settings` and `generic_args` values must be
+mappings and are merged with the base configuration. Invalid values fail the tool call before
+a ClickHouse client is created. `CLICKHOUSE_ROLE` remains active unless the override explicitly
+supplies `settings.role`. Top-level `role` and `ch_role` keys, plus the same keys under
+`generic_args`, are rejected.
+
+Treat these overrides as trusted middleware input. Middleware must authenticate and authorize
+request-derived values before setting them. A per-request ClickHouse role is connection
+configuration, not a tenant authorization boundary. Enforce tenant isolation with ClickHouse
+users, roles, and grants.
+
 ## Development
 
 1. In `test-services` directory run `docker compose up -d` to start the ClickHouse cluster.
@@ -471,7 +492,7 @@ CLICKHOUSE_PASSWORD=clickhouse
 5. To test with HTTP transport and the health check endpoint:
    ```bash
    # For development, disable authentication
-   CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_AUTH_DISABLED=true python -m mcp_clickhouse.main
+   CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_AUTH_DISABLED=true CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000 python -m mcp_clickhouse.main
 
    # Or with authentication (generate a token first)
    CLICKHOUSE_MCP_SERVER_TRANSPORT=http CLICKHOUSE_MCP_AUTH_TOKEN="your-token" python -m mcp_clickhouse.main
@@ -482,61 +503,101 @@ CLICKHOUSE_PASSWORD=clickhouse
 
 ### Environment Variables
 
-The following environment variables are used to configure the ClickHouse and chDB connections:
+Configuration is split into **independent** groups. Mixing them up is a common cause of hard-to-debug connection failures:
 
-#### ClickHouse Variables
+| Group | Variables | Controls |
+|-------|-----------|----------|
+| **ClickHouse database connection** | `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_SECURE`, `CLICKHOUSE_VERIFY`, … | How **this MCP server** connects to your ClickHouse cluster over the **HTTP interface** |
+| **MCP server / transport** | `CLICKHOUSE_MCP_*`, `FASTMCP_SERVER_AUTH`, `FASTMCP_SERVER_AUTH_*` | MCP transport, authentication, and query-tool execution limits |
+| **Middleware / chDB** | `MCP_MIDDLEWARE_MODULE`, `CHDB_*` | Optional extensions |
+
+> [!IMPORTANT]
+> Variables such as `CLICKHOUSE_SECURE`, `CLICKHOUSE_VERIFY`, and `CLICKHOUSE_PORT` apply to the **ClickHouse database** connection only. They do **not** configure TLS, ports, or auth for the MCP protocol endpoint.
+>
+> Example: if the MCP server runs in Kubernetes behind an ingress that terminates TLS, that is an **MCP transport** concern. Keep `CLICKHOUSE_SECURE` aligned with how the pod reaches ClickHouse itself (HTTPS → `true`, plain HTTP → `false`). Setting `CLICKHOUSE_SECURE=false` because the MCP server is behind an ingress will make the server dial ClickHouse over HTTP—often against an HTTPS-only port—and produce opaque HTTP/TLS errors in the server logs.
+
+#### ClickHouse database connection
+
+These variables configure the [clickhouse-connect](https://clickhouse.com/docs/en/integrations/python) HTTP client and the behavior of ClickHouse-backed tools such as `run_query`, `list_databases`, and `list_tables`.
 
 ##### Required Variables
 
-* `CLICKHOUSE_HOST`: The hostname of your ClickHouse server
-* `CLICKHOUSE_USER`: The username for authentication
-* `CLICKHOUSE_PASSWORD`: The password for authentication
+* `CLICKHOUSE_HOST`: The hostname of your ClickHouse server (database endpoint, not the MCP server bind address)
+* `CLICKHOUSE_USER`: The username for **ClickHouse** authentication
+* `CLICKHOUSE_PASSWORD`: The password for **ClickHouse** authentication
 
 > [!CAUTION]
 > It is important to treat your MCP database user as you would any external client connecting to your database, granting only the minimum necessary privileges required for its operation. The use of default or administrative users should be strictly avoided at all times.
 
 ##### Optional Variables
 
-* `CLICKHOUSE_PORT`: The port number of your ClickHouse server
-  * Default: `8443` if HTTPS is enabled, `8123` if disabled
+* `CLICKHOUSE_PORT`: HTTP interface port of your ClickHouse server
+  * Default: `8443` if `CLICKHOUSE_SECURE=true`, `8123` if `CLICKHOUSE_SECURE=false`
   * Usually doesn't need to be set unless using a non-standard port
-* `CLICKHOUSE_ROLE`: The role to use for authentication
+  * **Must be an HTTP interface port**, not the native TCP protocol port used by `clickhouse-client`
+  * Common values:
+    * HTTP: `8123` (plain) / `8443` (TLS) — used by this server and ClickHouse Cloud HTTPS
+    * Native TCP (not supported here): `9000` (plain) / `9440` (TLS) — used by `clickhouse-client`
+  * If the server responds with `Port 9000 is for clickhouse-client program`, you are pointed at the native protocol; switch to the HTTP port (`8123`/`8443` or your deployment's HTTP mapping)
+* `CLICKHOUSE_ROLE`: The ClickHouse role to use for authentication
   * Default: None
   * Set this if your user requires a specific role
-* `CLICKHOUSE_SECURE`: Enable/disable HTTPS connection
+* `CLICKHOUSE_SECURE`: Enable HTTPS **for the ClickHouse database connection** (not for MCP clients)
   * Default: `"true"`
-  * Set to `"false"` for non-secure connections
-* `CLICKHOUSE_VERIFY`: Enable/disable SSL certificate verification
+  * Set to `"false"` only when the MCP server reaches ClickHouse over plain HTTP (typical for local Docker Compose on port `8123`)
+  * Leave `"true"` for ClickHouse Cloud and any HTTPS database endpoint—even if the MCP server itself is exposed via HTTP, stdio, or an ingress that terminates TLS separately
+  * Mismatching this flag with the database port (e.g. `CLICKHOUSE_SECURE=false` against port `8443`) is a frequent setup mistake and usually surfaces as confusing HTTP client errors rather than a clear "wrong scheme" message
+* `CLICKHOUSE_VERIFY`: Enable/disable SSL certificate verification for the **ClickHouse** HTTPS connection
   * Default: `"true"`
   * Set to `"false"` to disable certificate verification (not recommended for production)
   * TLS certificates: The package uses your operating system trust store for TLS certificate verification via `truststore`. We call `truststore.inject_into_ssl()` at startup to ensure proper certificate handling. Python’s default SSL behavior is used as a fallback only if an unexpected error occurs.
-* `CLICKHOUSE_SERVER_HOST_NAME`: Server hostname for SNI override and certificate validation
+* `CLICKHOUSE_SERVER_HOST_NAME`: Server hostname for SNI override and certificate validation on the **ClickHouse** connection
   * Default: None (uses the connection hostname)
   * This is useful when connecting through proxies or load balancers where the certificate hostname differs from the connection hostname. When set, this hostname will be used for both SNI (Server Name Indication) during the TLS handshake and for certificate hostname validation.
-* `CLICKHOUSE_CONNECT_TIMEOUT`: Connection timeout in seconds
+* `CLICKHOUSE_PROXY_PATH`: URL path prefix for the ClickHouse HTTP endpoint
+  * Default: None
+  * Set this when the ClickHouse HTTP interface is exposed behind a reverse proxy under a path prefix (for example, `/clickhouse`)
+* `CLICKHOUSE_CONNECT_TIMEOUT`: Connection timeout in seconds for the **ClickHouse** client
   * Default: `"30"`
   * Increase this value if you experience connection timeouts
-* `CLICKHOUSE_SEND_RECEIVE_TIMEOUT`: Send/receive timeout in seconds for the underlying HTTP connection
-  * Default: automatically set to `CLICKHOUSE_MCP_QUERY_TIMEOUT + 5` so worker threads unblock shortly after a query timeout
+* `CLICKHOUSE_SEND_RECEIVE_TIMEOUT`: Send/receive timeout in seconds for the **ClickHouse** client
+  * Default: the lower of `300` or `CLICKHOUSE_MCP_QUERY_TIMEOUT + 5`, so worker threads unblock shortly after a query timeout
   * If explicitly set, the value is used as-is (e.g. `"300"` for long-running queries)
-* `CLICKHOUSE_DATABASE`: Default database to use
+* `CLICKHOUSE_DATABASE`: Default ClickHouse database to use
   * Default: None (uses server default)
   * Set this to automatically connect to a specific database
-* `CLICKHOUSE_MCP_SERVER_TRANSPORT`: Sets the transport method for the MCP server.
+* `CLICKHOUSE_ENABLED`: Enable/disable ClickHouse database tools
+  * Default: `"true"`
+  * Set to `"false"` to disable ClickHouse tools when using chDB only
+* `CLICKHOUSE_ALLOW_WRITE_ACCESS`: Allow write operations (DDL and DML) against ClickHouse
+  * Default: `"false"`
+  * Set to `"true"` to allow non-destructive DDL and DML (CREATE, INSERT, ALTER ADD COLUMN). Destructive statements additionally need `CLICKHOUSE_ALLOW_DROP=true`
+  * When disabled (default), queries run with `readonly=1` setting to prevent data modifications
+* `CLICKHOUSE_ALLOW_DROP`: Allow destructive operations (any `DROP` or `TRUNCATE`, `DELETE` and `UPDATE` including the `ALTER TABLE` variants, `REPLACE TABLE` / `REPLACE PARTITION` / `CREATE OR REPLACE`, `CLEAR COLUMN` / `CLEAR INDEX` / `CLEAR PROJECTION`, and `DETACH ... PERMANENTLY`)
+  * Default: `"false"`
+  * Only takes effect when `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` is also set
+  * This gate is a best-effort accident guard in the MCP server, not a security boundary. Restrict the ClickHouse user's grants for real enforcement (see [Destructive Operation Protection](#destructive-operation-protection))
+
+#### MCP server and transport
+
+These variables control the MCP process itself, including transport, authentication, and query-tool execution limits. They are independent of the ClickHouse database settings above. See also [Authentication for HTTP/SSE Transports](#authentication-for-httpsse-transports).
+
+* `CLICKHOUSE_MCP_SERVER_TRANSPORT`: Sets the transport method for the MCP server
   * Default: `"stdio"`
   * Valid options: `"stdio"`, `"http"`, `"sse"`. This is useful for local development with tools like MCP Inspector.
+  * `stdio` is typical for Claude Desktop; `http`/`sse` expose a network listener (bind host/port below)
 * `CLICKHOUSE_MCP_BIND_HOST`: Host to bind the MCP server to when using HTTP or SSE transport
   * Default: `"127.0.0.1"`
   * Set to `"0.0.0.0"` to bind to all network interfaces (useful for Docker or remote access)
-  * Only used when transport is `"http"` or `"sse"`
+  * Only used when transport is `"http"` or `"sse"` — not related to `CLICKHOUSE_HOST`
 * `CLICKHOUSE_MCP_BIND_PORT`: Port to bind the MCP server to when using HTTP or SSE transport
   * Default: `"8000"`
-  * Only used when transport is `"http"` or `"sse"`
+  * Only used when transport is `"http"` or `"sse"` — not related to `CLICKHOUSE_PORT`
 * `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for query tool calls
   * Default: `"30"`
   * Increase this if you see `Query timed out after ...` errors for heavy queries
-  * When a query times out, the server issues a `KILL QUERY` on the ClickHouse server to cancel it
-  * Unless `CLICKHOUSE_SEND_RECEIVE_TIMEOUT` is explicitly set, the HTTP read timeout is automatically aligned to this value plus a small buffer, so worker threads unblock shortly after a timeout
+  * When a query times out, the server attempts to cancel it with `KILL QUERY`
+  * Unless `CLICKHOUSE_SEND_RECEIVE_TIMEOUT` is explicitly set, the HTTP read timeout is capped at this value plus five seconds
 * `CLICKHOUSE_MCP_MAX_WORKERS`: Maximum number of concurrent query worker threads
   * Default: `"10"`
   * Increase if your workload requires many concurrent tool calls
@@ -553,18 +614,19 @@ The following environment variables are used to configure the ClickHouse and chD
   * Default: `"false"` (authentication is enabled)
   * Set to `"true"` to disable authentication for local development/testing only
   * **WARNING:** Only use for local development. Do not disable when exposed to networks
-* `CLICKHOUSE_ENABLED`: Enable/disable ClickHouse functionality
-  * Default: `"true"`
-  * Set to `"false"` to disable ClickHouse tools when using chDB only
-* `CLICKHOUSE_ALLOW_WRITE_ACCESS`: Allow write operations (DDL and DML)
-  * Default: `"false"`
-  * Set to `"true"` to allow DDL (CREATE, ALTER, DROP) and DML (INSERT, UPDATE, DELETE) operations
-  * When disabled (default), queries run with `readonly=1` setting to prevent data modifications
-* `CLICKHOUSE_ALLOW_DROP`: Allow destructive operations (DROP TABLE, DROP DATABASE, DROP VIEW, DROP DICTIONARY, TRUNCATE TABLE)
-  * Default: `"false"`
-  * Only takes effect when `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` is also set
-  * Set to `"true"` to explicitly allow destructive DROP and TRUNCATE operations
-  * This is a safety feature to prevent accidental data deletion during AI exploration
+* `CLICKHOUSE_MCP_ALLOWED_HOSTS`: Comma separated `Host` header values the HTTP/SSE server answers for
+  * Default for a loopback bind: bare and any-port forms of `127.0.0.1`, `localhost`, and `[::1]`
+  * If set, the value must contain at least one Host entry.
+  * A concrete non-loopback bind address defaults to that address and the configured port. A wildcard bind such as `0.0.0.0` or `::` requires an explicit non-empty value because the public Host cannot be inferred.
+  * Host validation is a defense in depth against DNS rebinding. Origin validation below is required separately by MCP.
+  * Entries are exact (`localhost:8000`) or accept any port (`localhost:*`). Example: `CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000`
+  * The `host:*` form matches only values that carry a port. A port-less Host (a standard-port deployment where the client omits `:80`/`:443`) must be listed as a bare exact entry (`example.com`) as well.
+  * Requests with a non-matching or missing `Host` header get `421 Misdirected Request`. GET and HEAD requests to `/health` are exempt from Host and Origin validation so orchestrator probes keep working.
+  * Behind a reverse proxy, list the Host value the proxy forwards. Set an explicit list when a launcher such as `fastmcp run` overrides the bind address for remote access.
+* `CLICKHOUSE_MCP_ALLOWED_ORIGINS`: Comma separated `Origin` header values accepted on HTTP/SSE
+  * Default: None, which rejects every request that carries an `Origin` header
+  * MCP requires Origin validation for HTTP/SSE transport connections. Requests without an Origin are accepted because non-browser MCP clients normally omit it. A non-matching Origin gets `403 Forbidden`. The `/health` endpoint is exempt as described above.
+  * Entries are exact (`http://localhost:3000`) or accept any port (`http://localhost:*`). As with hosts, the any-port form matches only origins that carry a port; a standard-port origin (`https://app.example.com`) must be listed exactly.
 
 #### Middleware Variables
 
@@ -584,6 +646,12 @@ The following environment variables are used to configure the ClickHouse and chD
   * Default: `":memory:"` (in-memory database)
   * Use `:memory:` for in-memory database
   * Use a file path for persistent storage (e.g., `/path/to/chdb/data`)
+
+#### Common configuration pitfalls
+
+* **`CLICKHOUSE_SECURE` vs MCP / ingress TLS** — Turning off `CLICKHOUSE_SECURE` because the MCP server sits behind Kubernetes ingress, a reverse proxy, or is reached over plain HTTP does not disable database TLS; it only changes how this process connects to ClickHouse. Configure ingress TLS separately from the database client settings.
+* **Native protocol ports** — `CLICKHOUSE_PORT` must target ClickHouse's HTTP interface (`8123`/`8443` by default). Ports `9000`/`9440` are for the native TCP protocol (`clickhouse-client`) and will not work with this server.
+* **Host confusion** — `CLICKHOUSE_HOST` is the database hostname. `CLICKHOUSE_MCP_BIND_HOST` is only the address the MCP HTTP/SSE server listens on.
 
 #### Example Configurations
 
@@ -650,6 +718,7 @@ CLICKHOUSE_MCP_SERVER_TRANSPORT=http
 CLICKHOUSE_MCP_BIND_HOST=0.0.0.0  # Bind to all interfaces
 CLICKHOUSE_MCP_BIND_PORT=4200  # Custom port (default: 8000)
 CLICKHOUSE_MCP_AUTH_TOKEN=your-generated-token  # One auth mode required for HTTP/SSE (or FASTMCP_SERVER_AUTH, or CLICKHOUSE_MCP_AUTH_DISABLED=true)
+CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:4200,localhost:4200,mcp.example.com:4200  # Include every Host value clients and proxies send
 ```
 
 For local development with HTTP transport (authentication disabled):
@@ -660,11 +729,12 @@ CLICKHOUSE_USER=default
 CLICKHOUSE_PASSWORD=clickhouse
 CLICKHOUSE_MCP_SERVER_TRANSPORT=http
 CLICKHOUSE_MCP_AUTH_DISABLED=true  # Only for local development!
+CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000
 ```
 
 When using HTTP transport, the server will run on the configured port (default 8000). For example, with the above configuration:
-- MCP endpoint: `http://localhost:4200/mcp`
-- Health check: `http://localhost:4200/health`
+- MCP endpoint: `http://localhost:8000/mcp`
+- Health check: `http://localhost:8000/health`
 
 You can set these variables in your environment, in a `.env` file, or in the Claude Desktop configuration:
 
