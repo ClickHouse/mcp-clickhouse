@@ -84,6 +84,13 @@
           "format": "number",
           "default": "30",
           "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_MCP_MAX_WORKERS",
+          "description": "Maximum query worker thread pool size",
+          "format": "number",
+          "default": "10",
+          "isRequired": false
         }
       ]
     },
@@ -158,6 +165,13 @@
           "description": "Query tool timeout in seconds",
           "format": "number",
           "default": "30",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_MCP_MAX_WORKERS",
+          "description": "Maximum query worker thread pool size",
+          "format": "number",
+          "default": "10",
           "isRequired": false
         }
       ]

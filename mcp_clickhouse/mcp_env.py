@@ -316,6 +316,7 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
         CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
+        CLICKHOUSE_MCP_MAX_WORKERS: Maximum thread pool workers for query execution (default: 10)
         CLICKHOUSE_MCP_ALLOWED_HOSTS: Comma separated Host header values accepted on
             HTTP/SSE (default: derived from a concrete bind host and port)
         CLICKHOUSE_MCP_ALLOWED_ORIGINS: Comma separated Origin header values accepted on
@@ -347,6 +348,14 @@ class MCPServerConfig:
     @property
     def query_timeout(self) -> int:
         return int(os.getenv("CLICKHOUSE_MCP_QUERY_TIMEOUT", "30"))
+
+    @property
+    def max_workers(self) -> int:
+        """Maximum thread pool workers for query execution.
+
+        Default: 10
+        """
+        return int(os.getenv("CLICKHOUSE_MCP_MAX_WORKERS", "10"))
 
     @property
     def allowed_hosts(self) -> List[str]:

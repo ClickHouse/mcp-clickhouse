@@ -6,14 +6,19 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 import uuid
+import weakref
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import clickhouse_connect
 from cachetools import TTLCache
 from clickhouse_connect.driver.binding import format_query_value
+from clickhouse_connect.driver.exceptions import OperationalError
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -62,6 +67,22 @@ class Table:
     columns: List[Column] = field(default_factory=list)
 
 
+@dataclass
+class _ClientCacheEntry:
+    client: Any
+    last_used: float
+    active_users: int = 0
+    retired: bool = False
+    closed: bool = False
+
+
+@dataclass
+class _ActiveQueryState:
+    query: str
+    client_entry: Optional[_ClientCacheEntry] = None
+    cancelled: bool = False
+
+
 MCP_SERVER_NAME = "mcp-clickhouse"
 CLIENT_CONFIG_OVERRIDES_KEY = "clickhouse_client_config_overrides"
 _CLIENT_CONFIG_OVERRIDES_UNSET = object()
@@ -74,10 +95,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(MCP_SERVER_NAME)
 
-QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10)
-atexit.register(lambda: QUERY_EXECUTOR.shutdown(wait=True))
-
 load_dotenv()
+
+_max_workers = get_mcp_config().max_workers
+QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers)
+CANCELLATION_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+HEALTH_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+_QUERY_CANCELLATION_WAIT_SECONDS = 1.0
+_HEALTH_CHECK_TIMEOUT_SECONDS = 2.0
+
+_CLIENT_CACHE_MAXSIZE = 64
+_client_cache: OrderedDict[Tuple, _ClientCacheEntry] = OrderedDict()
+_client_cache_lock = threading.Lock()
+_CLIENT_IDLE_PING_THRESHOLD = 60
+
+_active_queries: Dict[str, _ActiveQueryState] = {}
+_active_queries_lock = threading.Lock()
+
+_health_probe_future: Optional[concurrent.futures.Future] = None
+_health_probe_lock = threading.Lock()
+_logged_health_probe_futures: weakref.WeakSet[concurrent.futures.Future] = weakref.WeakSet()
 
 _HTTP_TRANSPORTS = (TransportType.HTTP.value, "streamable-http", TransportType.SSE.value)
 
@@ -175,12 +212,79 @@ _chdb_client = None
 _chdb_error_message: Optional[str] = None
 
 
+def _probe_clickhouse_health(config: dict) -> None:
+    """Run an authenticated ClickHouse health query with a leased client."""
+    entry = _acquire_clickhouse_client(config)
+    try:
+        entry.client.command("SELECT 1")
+    finally:
+        _release_client_entry(entry)
+
+
+def _bounded_health_config(config: dict) -> dict:
+    """Cap ClickHouse network timeouts to the public health timeout."""
+    bounded = _ResolvedClientConfig(
+        dict(config),
+        overrides_applied=getattr(config, "overrides_applied", False),
+    )
+    for key in ("connect_timeout", "send_receive_timeout"):
+        value = bounded.get(key)
+        if value is None or value > _HEALTH_CHECK_TIMEOUT_SECONDS:
+            bounded[key] = _HEALTH_CHECK_TIMEOUT_SECONDS
+    return bounded
+
+
+def _clear_completed_health_probe(future: concurrent.futures.Future) -> None:
+    """Clear the shared health future when its probe finishes."""
+    global _health_probe_future
+    with _health_probe_lock:
+        if _health_probe_future is future:
+            _health_probe_future = None
+
+
+def _get_health_probe_future(config: dict) -> concurrent.futures.Future:
+    """Return the single in-flight ClickHouse health probe."""
+    global _health_probe_future
+    with _health_probe_lock:
+        if _health_probe_future is not None and not _health_probe_future.done():
+            return _health_probe_future
+        future = HEALTH_EXECUTOR.submit(
+            _probe_clickhouse_health,
+            _bounded_health_config(config),
+        )
+        _health_probe_future = future
+    future.add_done_callback(_clear_completed_health_probe)
+    return future
+
+
+def _claim_health_probe_log(future: Optional[concurrent.futures.Future]) -> bool:
+    """Return true once for each shared health probe future."""
+    if future is None:
+        return True
+    with _health_probe_lock:
+        if future in _logged_health_probe_futures:
+            return False
+        _logged_health_probe_futures.add(future)
+        return True
+
+
+def _retrieve_health_probe_wrapper_result(future: asyncio.Future) -> None:
+    """Retrieve a completed health wrapper result."""
+    try:
+        future.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request) -> PlainTextResponse:
     """Liveness probe. Intentionally unauthenticated and minimal.
 
     Debug via server logs.
     """
+    future = None
     try:
         # Check if ClickHouse is enabled by trying to create config
         # If ClickHouse is disabled, this will succeed but connection will fail
@@ -205,12 +309,28 @@ async def health_check(request: Request) -> PlainTextResponse:
                     status_code=503,
                 )
 
-        # Try to create a client connection to verify ClickHouse connectivity
-        create_clickhouse_client()
+        future = _get_health_probe_future(_resolve_client_config())
+        wrapped_future = asyncio.wrap_future(future)
+        wrapped_future.add_done_callback(_retrieve_health_probe_wrapper_result)
+        await asyncio.wait_for(
+            asyncio.shield(wrapped_future),
+            timeout=_HEALTH_CHECK_TIMEOUT_SECONDS,
+        )
         return PlainTextResponse("OK")
+    except asyncio.TimeoutError:
+        if _claim_health_probe_log(future):
+            logger.warning(
+                "Health check timed out after %.1f seconds",
+                _HEALTH_CHECK_TIMEOUT_SECONDS,
+            )
+        return PlainTextResponse(
+            "ERROR. ClickHouse connection failed. Check server logs for details.",
+            status_code=503,
+        )
     except Exception:
         # Log the underlying error server-side, but don't leak details over the wire.
-        logger.exception("Health check failed: ClickHouse connection error")
+        if _claim_health_probe_log(future):
+            logger.exception("Health check failed: ClickHouse connection error")
         return PlainTextResponse(
             "ERROR. ClickHouse connection failed. Check server logs for details.",
             status_code=503,
@@ -232,8 +352,25 @@ def _serialize_tool_result(obj: Any) -> str:
 def list_databases() -> str:
     """List available ClickHouse databases"""
     logger.info("Listing all databases")
-    client = create_clickhouse_client()
-    result = client.command("SHOW DATABASES")
+    config = _resolve_client_config()
+
+    for attempt in range(2):
+        entry = None
+        try:
+            entry = _acquire_clickhouse_client(config)
+            client = entry.client
+            result = client.command("SHOW DATABASES")
+            break
+        except Exception as err:
+            if attempt == 0 and _is_connection_error(err):
+                logger.warning("list_databases connection error, retrying: %s", err)
+                if entry is not None:
+                    _evict_cached_client(config, entry.client)
+                continue
+            raise
+        finally:
+            if entry is not None:
+                _release_client_entry(entry)
 
     # Convert newline-separated string to list and trim whitespace
     if isinstance(result, str):
@@ -408,8 +545,39 @@ def list_tables(
         page_size,
         include_detailed_columns,
     )
-    client = create_clickhouse_client()
+    config = _resolve_client_config()
 
+    for attempt in range(2):
+        entry = None
+        try:
+            entry = _acquire_clickhouse_client(config)
+            client = entry.client
+            return _list_tables_impl(
+                client, database, like, not_like, page_token,
+                page_size, include_detailed_columns,
+            )
+        except Exception as err:
+            if attempt == 0 and _is_connection_error(err):
+                logger.warning("list_tables connection error, retrying: %s", err)
+                if entry is not None:
+                    _evict_cached_client(config, entry.client)
+                continue
+            raise
+        finally:
+            if entry is not None:
+                _release_client_entry(entry)
+
+
+def _list_tables_impl(
+    client,
+    database: str,
+    like: Optional[str],
+    not_like: Optional[str],
+    page_token: Optional[str],
+    page_size: int,
+    include_detailed_columns: bool,
+) -> Dict[str, Any]:
+    """Inner implementation of list_tables, separated for retry logic."""
     if page_token and page_token in table_pagination_cache:
         cached_state = table_pagination_cache[page_token]
         cached_include_detailed = cached_state.get("include_detailed_columns", True)
@@ -576,22 +744,152 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         )
 
 
-def execute_query(
-    query: str, client_config_overrides: Optional[dict[str, Any]] = None
-) -> str:
-    client = create_clickhouse_client(client_config_overrides)
+def _is_connection_error(err: Exception) -> bool:
+    """Check if an exception indicates a broken connection rather than a query error."""
+    if isinstance(err, (OSError, ConnectionError, OperationalError)):
+        return True
+    err_str = str(err).lower()
+    return any(s in err_str for s in ("connection", "timed out", "reset by peer", "eof"))
+
+
+def _register_active_query(query_id: str, query: str) -> _ActiveQueryState:
+    """Register query state before its worker is submitted."""
+    state = _ActiveQueryState(query=query)
+    with _active_queries_lock:
+        _active_queries[query_id] = state
+    return state
+
+
+def _remove_active_query(query_id: str, state: _ActiveQueryState) -> None:
+    """Remove query state if it still belongs to this execution."""
+    with _active_queries_lock:
+        if _active_queries.get(query_id) is state:
+            _active_queries.pop(query_id)
+
+
+def _mark_active_query_cancelled(query_id: str) -> Optional[_ActiveQueryState]:
+    """Mark an active query cancelled before any server-side KILL attempt."""
+    with _active_queries_lock:
+        state = _active_queries.get(query_id)
+        if state is not None:
+            state.cancelled = True
+        return state
+
+
+def execute_query(query: str, query_id: str, client_config: dict) -> str:
+    """Execute a query in a worker thread with a pre-resolved client config."""
+    with _active_queries_lock:
+        state = _active_queries.get(query_id)
+        if state is None:
+            state = _ActiveQueryState(query=query)
+            _active_queries[query_id] = state
+
+    entry = None
     try:
+        entry = _acquire_clickhouse_client(client_config)
+        client = entry.client
+        with _active_queries_lock:
+            if state.cancelled:
+                raise ToolError("Query cancelled before execution")
+            state.client_entry = entry
+
         _validate_query_for_destructive_ops(query)
 
         query_settings = build_query_settings(client)
+        query_settings["query_id"] = query_id
+        with _active_queries_lock:
+            if state.cancelled:
+                raise ToolError("Query cancelled before execution")
         res = client.query(query, settings=query_settings)
-        logger.info(f"Query returned {len(res.result_rows)} rows")
+        logger.info(f"Query {query_id} returned {len(res.result_rows)} rows")
         return _serialize_tool_result({"columns": res.column_names, "rows": res.result_rows})
     except ToolError:
         raise
     except Exception as err:
-        logger.error(f"Error executing query: {err}")
+        # Do not retry queries because a write may already have succeeded.
+        if entry is not None and _is_connection_error(err):
+            _evict_cached_client(client_config, client)
+        logger.error(f"Error executing query {query_id}: {err}")
         raise ToolError(f"Query execution failed: {str(err)}")
+    finally:
+        _remove_active_query(query_id, state)
+        if entry is not None:
+            _release_client_entry(entry)
+
+
+def _cancel_query(query_id: str):
+    """Issue KILL QUERY on the ClickHouse server for a timed-out query.
+
+    Uses the same cached client that originated the query. Cancellation
+    failures are logged without masking the original timeout.
+    """
+    state = _mark_active_query_cancelled(query_id)
+
+    if state is None:
+        logger.debug("Query %s already completed, nothing to cancel", query_id)
+        return
+
+    try:
+        safe_id = str(uuid.UUID(query_id))
+    except ValueError:
+        logger.warning("Refusing to KILL QUERY with non-UUID query_id: %r", query_id)
+        return
+
+    client = None
+    try:
+        with _client_cache_lock:
+            client_entry = state.client_entry
+            if client_entry is None or client_entry.closed:
+                client = None
+            else:
+                client_entry.active_users += 1
+                client = client_entry.client
+        if client is None:
+            logger.warning(
+                "Query %s cancelled before client acquisition completed",
+                safe_id,
+            )
+            return
+
+        logger.info("Cancelling query %s via KILL QUERY", safe_id)
+        client.command(
+            f"KILL QUERY WHERE query_id = {format_query_value(safe_id)}"
+        )
+        logger.info("Successfully cancelled query %s", safe_id)
+    except Exception as e:
+        logger.warning("Failed to cancel query %s: %s", safe_id, e)
+    finally:
+        if client is not None:
+            _release_client_entry(client_entry)
+
+
+def _cancel_query_with_bounded_wait(query_id: str) -> None:
+    """Run cancellation in its executor and wait briefly for completion."""
+    future = CANCELLATION_EXECUTOR.submit(_cancel_query, query_id)
+    try:
+        future.result(timeout=_QUERY_CANCELLATION_WAIT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        logger.warning(
+            "Cancellation for query %s exceeded %.1f seconds",
+            query_id,
+            _QUERY_CANCELLATION_WAIT_SECONDS,
+        )
+
+
+async def _cancel_query_async(query_id: str) -> None:
+    """Await cancellation briefly without blocking the event loop."""
+    future = CANCELLATION_EXECUTOR.submit(_cancel_query, query_id)
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(asyncio.wrap_future(future)),
+            timeout=_QUERY_CANCELLATION_WAIT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Cancellation for query %s exceeded %.1f seconds",
+            query_id,
+            _QUERY_CANCELLATION_WAIT_SECONDS,
+        )
 
 
 def run_query(query: str) -> str:
@@ -601,15 +899,37 @@ def run_query(query: str) -> str:
     to allow DDL and DML statements when your ClickHouse server permits them.
     """
     logger.info(f"Executing query: {query}")
+
+    client_config = _resolve_client_config()
+    query_id = str(uuid.uuid4())
+    state = _register_active_query(query_id, query)
+
     try:
-        client_config_overrides = _get_client_config_overrides()
-        future = QUERY_EXECUTOR.submit(execute_query, query, client_config_overrides)
+        with _active_queries_lock:
+            in_flight = len(_active_queries)
+        if in_flight >= _max_workers:
+            logger.warning(
+                "Thread pool saturated: %d in-flight vs %d workers",
+                in_flight, _max_workers,
+            )
+
+        try:
+            future = QUERY_EXECUTOR.submit(execute_query, query, query_id, client_config)
+        except Exception:
+            _remove_active_query(query_id, state)
+            raise
         timeout_secs = get_mcp_config().query_timeout
         try:
             return future.result(timeout=timeout_secs)
         except concurrent.futures.TimeoutError:
-            logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
-            future.cancel()
+            logger.warning(
+                "Query %s timed out after %s seconds: %s", query_id, timeout_secs, query
+            )
+            if future.cancel():
+                _remove_active_query(query_id, state)
+            else:
+                _mark_active_query_cancelled(query_id)
+                _cancel_query_with_bounded_wait(query_id)
             raise ToolError(f"Query timed out after {timeout_secs} seconds")
     except ToolError:
         raise
@@ -618,20 +938,100 @@ def run_query(query: str) -> str:
         raise RuntimeError(f"Unexpected error during query execution: {str(e)}")
 
 
-async def run_query_async(query: str) -> str:
-    """Async MCP-facing wrapper for ClickHouse queries."""
-    logger.info(f"Executing query: {query}")
+def _freeze_client_config_value(value: Any) -> Optional[tuple]:
+    """Convert a client config value into a stable cache-key component."""
+    if isinstance(value, Mapping):
+        frozen_items = []
+        try:
+            items = sorted(value.items())
+        except TypeError:
+            return None
+        for key, nested_value in items:
+            frozen_value = _freeze_client_config_value(nested_value)
+            if frozen_value is None:
+                return None
+            frozen_items.append((key, frozen_value))
+        return ("mapping", tuple(frozen_items))
+    if isinstance(value, list):
+        frozen_items = tuple(_freeze_client_config_value(item) for item in value)
+        if any(item is None for item in frozen_items):
+            return None
+        return ("list", frozen_items)
+    if isinstance(value, tuple):
+        frozen_items = tuple(_freeze_client_config_value(item) for item in value)
+        if any(item is None for item in frozen_items):
+            return None
+        return ("tuple", frozen_items)
+    if isinstance(value, (set, frozenset)):
+        frozen_items = tuple(_freeze_client_config_value(item) for item in value)
+        if any(item is None for item in frozen_items):
+            return None
+        return ("set", frozenset(frozen_items))
     try:
-        client_config_overrides = _get_client_config_overrides()
-        future = QUERY_EXECUTOR.submit(execute_query, query, client_config_overrides)
+        hash(value)
+    except TypeError:
+        return None
+    return ("value", value)
+
+
+def _config_to_cache_key(config: dict) -> Optional[tuple]:
+    """Convert a client config dict into a stable cache key when possible."""
+    frozen_config = []
+    for key, value in sorted(config.items()):
+        frozen_value = _freeze_client_config_value(value)
+        if frozen_value is None:
+            return None
+        frozen_config.append((key, frozen_value))
+    return tuple(frozen_config)
+
+
+async def run_query_async(query: str) -> str:
+    """Async MCP-facing wrapper for ClickHouse queries.
+
+    Awaits the worker-pool future asynchronously so concurrent tool calls are
+    served while a slow query is in flight.
+    """
+    logger.info(f"Executing query: {query}")
+
+    client_config = _resolve_client_config()
+    query_id = str(uuid.uuid4())
+    state = _register_active_query(query_id, query)
+
+    try:
+        with _active_queries_lock:
+            in_flight = len(_active_queries)
+        if in_flight >= _max_workers:
+            logger.warning(
+                "Thread pool saturated: %d in-flight vs %d workers",
+                in_flight, _max_workers,
+            )
+
+        try:
+            future = QUERY_EXECUTOR.submit(execute_query, query, query_id, client_config)
+        except Exception:
+            _remove_active_query(query_id, state)
+            raise
         timeout_secs = get_mcp_config().query_timeout
         try:
             return await asyncio.wait_for(
                 asyncio.wrap_future(future), timeout=timeout_secs
             )
+        except asyncio.CancelledError:
+            if future.cancel():
+                _remove_active_query(query_id, state)
+            else:
+                _mark_active_query_cancelled(query_id)
+                await _cancel_query_async(query_id)
+            raise
         except asyncio.TimeoutError:
-            logger.warning(f"Query timed out after {timeout_secs} seconds: {query}")
-            future.cancel()
+            logger.warning(
+                "Query %s timed out after %s seconds: %s", query_id, timeout_secs, query
+            )
+            if future.cancel():
+                _remove_active_query(query_id, state)
+            else:
+                _mark_active_query_cancelled(query_id)
+                await _cancel_query_async(query_id)
             raise ToolError(f"Query timed out after {timeout_secs} seconds")
     except ToolError:
         raise
@@ -845,17 +1245,115 @@ def _apply_client_config_overrides(
     client_config.update(remaining_overrides)
 
 
-def create_clickhouse_client(client_config_overrides=_CLIENT_CONFIG_OVERRIDES_UNSET):
+class _ResolvedClientConfig(dict):
+    """Client config with request override provenance."""
+
+    def __init__(self, config: dict[str, Any], overrides_applied: bool):
+        super().__init__(config)
+        self.overrides_applied = overrides_applied
+
+
+def _resolve_client_config(
+    client_config_overrides: Any = _CLIENT_CONFIG_OVERRIDES_UNSET,
+) -> _ResolvedClientConfig:
+    """Resolve the client config on the active request thread."""
     if client_config_overrides is _CLIENT_CONFIG_OVERRIDES_UNSET:
         overrides = _get_client_config_overrides()
     else:
         overrides = _snapshot_client_config_overrides(client_config_overrides)
-    overrides_applied = bool(overrides)
 
     client_config = get_config().get_client_config()
     _apply_client_config_overrides(client_config, overrides)
 
-    port = client_config.get("port")
+    timeout_overridden = bool(overrides and "send_receive_timeout" in overrides)
+    if "CLICKHOUSE_SEND_RECEIVE_TIMEOUT" not in os.environ and not timeout_overridden:
+        query_timeout = get_mcp_config().query_timeout
+        effective_timeout = client_config.get("send_receive_timeout", 300)
+        if effective_timeout > query_timeout + 5:
+            client_config["send_receive_timeout"] = query_timeout + 5
+
+    return _ResolvedClientConfig(
+        client_config,
+        overrides_applied=bool(overrides),
+    )
+
+
+def _close_client(client) -> None:
+    """Close a ClickHouse client without masking the caller's result."""
+    try:
+        client.close()
+    except Exception:
+        logger.debug("Failed to close ClickHouse client", exc_info=True)
+
+
+def _retire_client_entry_locked(entry: _ClientCacheEntry):
+    """Retire an entry and return its client when it can be closed now."""
+    entry.retired = True
+    if entry.active_users == 0 and not entry.closed:
+        entry.closed = True
+        return entry.client
+    return None
+
+
+def _release_client_entry(entry: _ClientCacheEntry) -> None:
+    """Release a client lease and close a retired entry after its final user."""
+    client_to_close = None
+    with _client_cache_lock:
+        if entry.active_users <= 0:
+            raise RuntimeError("ClickHouse client cache entry released without a lease")
+        entry.active_users -= 1
+        if entry.retired and entry.active_users == 0 and not entry.closed:
+            entry.closed = True
+            client_to_close = entry.client
+    if client_to_close is not None:
+        _close_client(client_to_close)
+
+
+def _evict_lru_entries_locked() -> List[Any]:
+    """Retire least recently used entries until the cache is within its bound."""
+    clients_to_close = []
+    while len(_client_cache) > _CLIENT_CACHE_MAXSIZE:
+        _, entry = _client_cache.popitem(last=False)
+        client_to_close = _retire_client_entry_locked(entry)
+        if client_to_close is not None:
+            clients_to_close.append(client_to_close)
+    return clients_to_close
+
+
+def _evict_cached_client(config: dict, failed_client) -> bool:
+    """Evict only the cached client instance that produced a connection error."""
+    cache_key = _config_to_cache_key(config)
+    if cache_key is None:
+        return False
+    client_to_close = None
+    with _client_cache_lock:
+        entry = _client_cache.get(cache_key)
+        if entry is None or entry.client is not failed_client:
+            return False
+        _client_cache.pop(cache_key)
+        client_to_close = _retire_client_entry_locked(entry)
+    logger.info("Evicted stale cached ClickHouse client")
+    if client_to_close is not None:
+        _close_client(client_to_close)
+    return True
+
+
+def _return_client(client, config: dict):
+    """Run base-client checks before returning a cached or new client."""
+    overrides_applied = getattr(config, "overrides_applied", False)
+    server_config = get_config()
+    if (
+        not overrides_applied
+        and server_config.allow_write_access
+        and not server_config.allow_drop
+    ):
+        _warn_if_overprivileged(client)
+    return client
+
+
+def _warn_for_native_protocol_port(config: dict) -> None:
+    """Warn when the client is configured with a native protocol port."""
+    port = config.get("port")
     if port in _NATIVE_PROTOCOL_PORTS:
         logger.warning(
             "CLICKHOUSE_PORT=%s is a native TCP protocol port (clickhouse-client). "
@@ -863,37 +1361,181 @@ def create_clickhouse_client(client_config_overrides=_CLIENT_CONFIG_OVERRIDES_UN
             port,
         )
 
+
+def _prepare_client_entry(
+    entry: _ClientCacheEntry, config: dict
+) -> _ClientCacheEntry:
+    """Run base-client checks while the caller holds a lease."""
+    try:
+        _return_client(entry.client, config)
+    except Exception:
+        _release_client_entry(entry)
+        raise
+    return entry
+
+
+def _create_uncached_clickhouse_client(config: dict, *, cache_owned: bool):
+    """Create and validate a ClickHouse client outside the cache lock."""
     config_fields = [
-        f"secure={client_config['secure']}",
-        f"verify={client_config['verify']}",
-        f"connect_timeout={client_config['connect_timeout']}s",
-        f"send_receive_timeout={client_config['send_receive_timeout']}s",
+        f"secure={config['secure']}",
+        f"verify={config['verify']}",
+        f"connect_timeout={config['connect_timeout']}s",
+        f"send_receive_timeout={config['send_receive_timeout']}s",
     ]
-    if "server_host_name" in client_config:
-        config_fields.append(f"server_host_name={client_config['server_host_name']}")
-    log_msg = (
-        f"Creating ClickHouse client connection to {client_config['host']}:{client_config['port']} "
-        f"as {client_config['username']} "
+    if "server_host_name" in config:
+        config_fields.append(f"server_host_name={config['server_host_name']}")
+    logger.info(
+        f"Creating ClickHouse client connection to {config['host']}:{config['port']} "
+        f"as {config['username']} "
         f"({', '.join(config_fields)})"
     )
-    logger.info(log_msg)
 
     try:
-        client = clickhouse_connect.get_client(**client_config)
-        # Test the connection
+        connection_config = dict(config)
+        if cache_owned:
+            connection_config["autogenerate_session_id"] = False
+        client = clickhouse_connect.get_client(**connection_config)
         version = client.server_version
         logger.info(f"Successfully connected to ClickHouse server version {version}")
+        return client
     except Exception as e:
-        message = _format_connection_failure(e, client_config)
+        message = _format_connection_failure(e, config)
         logger.error(message)
         raise
 
-    config = get_config()
-    # Session overrides may connect as a different user. Skip the advisory
-    # without consuming the one-shot so a later base-config client still runs it.
-    if not overrides_applied and config.allow_write_access and not config.allow_drop:
-        _warn_if_overprivileged(client)
-    return client
+
+def _acquire_clickhouse_client(config: dict) -> _ClientCacheEntry:
+    """Acquire a leased cached client, creating one when needed."""
+    _warn_for_native_protocol_port(config)
+    cache_key = _config_to_cache_key(config)
+    if cache_key is None:
+        client = _create_uncached_clickhouse_client(config, cache_owned=True)
+        entry = _ClientCacheEntry(
+            client=client,
+            last_used=time.time(),
+            active_users=1,
+            retired=True,
+        )
+        return _prepare_client_entry(entry, config)
+
+    candidate = None
+    cached_entry = None
+    with _client_cache_lock:
+        entry = _client_cache.get(cache_key)
+        if entry is not None and not entry.retired and not entry.closed:
+            entry.active_users += 1
+            if time.time() - entry.last_used > _CLIENT_IDLE_PING_THRESHOLD:
+                candidate = entry
+            else:
+                entry.last_used = time.time()
+                _client_cache.move_to_end(cache_key)
+                cached_entry = entry
+    if cached_entry is not None:
+        logger.debug("Reusing cached client")
+        return _prepare_client_entry(cached_entry, config)
+
+    if candidate is not None:
+        try:
+            alive = candidate.client.ping()
+        except Exception:
+            alive = False
+
+        replacement = None
+        with _client_cache_lock:
+            current = _client_cache.get(cache_key)
+            if alive and current is candidate and not candidate.retired:
+                candidate.last_used = time.time()
+                _client_cache.move_to_end(cache_key)
+            else:
+                if current is candidate:
+                    _client_cache.pop(cache_key)
+                _retire_client_entry_locked(candidate)
+                if current is not None and current is not candidate and not current.retired:
+                    current.active_users += 1
+                    current.last_used = time.time()
+                    _client_cache.move_to_end(cache_key)
+                    replacement = current
+
+        if alive and replacement is None and not candidate.retired:
+            logger.debug("Reusing cached client (ping OK after idle)")
+            return _prepare_client_entry(candidate, config)
+
+        _release_client_entry(candidate)
+        if replacement is not None:
+            logger.debug("Reusing cached client after concurrent replacement")
+            return _prepare_client_entry(replacement, config)
+        if not alive:
+            logger.warning("Cached client failed ping, creating new client")
+
+    client = _create_uncached_clickhouse_client(config, cache_owned=True)
+    new_entry = _ClientCacheEntry(client=client, last_used=time.time(), active_users=1)
+    winner = new_entry
+    clients_to_close = []
+    with _client_cache_lock:
+        current = _client_cache.get(cache_key)
+        if current is not None and not current.retired and not current.closed:
+            current.active_users += 1
+            current.last_used = time.time()
+            _client_cache.move_to_end(cache_key)
+            winner = current
+            clients_to_close.append(client)
+        else:
+            if current is not None:
+                _client_cache.pop(cache_key)
+                client_to_close = _retire_client_entry_locked(current)
+                if client_to_close is not None:
+                    clients_to_close.append(client_to_close)
+            _client_cache[cache_key] = new_entry
+            clients_to_close.extend(_evict_lru_entries_locked())
+
+    for client_to_close in clients_to_close:
+        _close_client(client_to_close)
+
+    return _prepare_client_entry(winner, config)
+
+
+def create_clickhouse_client(
+    client_config_overrides: Any = _CLIENT_CONFIG_OVERRIDES_UNSET,
+    *,
+    config: Optional[dict] = None,
+):
+    """Create an independently owned ClickHouse client for the given config."""
+    if config is None:
+        config = _resolve_client_config(client_config_overrides)
+    elif client_config_overrides is not _CLIENT_CONFIG_OVERRIDES_UNSET:
+        raise TypeError("Pass client_config_overrides or config, not both")
+
+    _warn_for_native_protocol_port(config)
+    client = _create_uncached_clickhouse_client(config, cache_owned=False)
+    try:
+        return _return_client(client, config)
+    except Exception:
+        _close_client(client)
+        raise
+
+
+def _clear_client_cache():
+    """Retire all cached clients, closing those without active users."""
+    clients_to_close = []
+    with _client_cache_lock:
+        for entry in _client_cache.values():
+            client_to_close = _retire_client_entry_locked(entry)
+            if client_to_close is not None:
+                clients_to_close.append(client_to_close)
+        _client_cache.clear()
+    for client in clients_to_close:
+        _close_client(client)
+
+
+def _shutdown():
+    # Drain every worker before closing the clients they may hold.
+    QUERY_EXECUTOR.shutdown(wait=True)
+    CANCELLATION_EXECUTOR.shutdown(wait=True)
+    HEALTH_EXECUTOR.shutdown(wait=True)
+    _clear_client_cache()
+
+
+atexit.register(_shutdown)
 
 
 def build_query_settings(client) -> dict[str, str]:
