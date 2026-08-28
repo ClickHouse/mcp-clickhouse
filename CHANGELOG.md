@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Fixed
+- Deployments behind a reverse proxy no longer get `421 Misdirected Request` on every MCP call. A proxy rewrites `Host` to the upstream it forwards to and carries the client's host name in `X-Forwarded-Host`, so Host validation could previously only be satisfied by allow-listing the proxy's internal upstream name. Setting `CLICKHOUSE_MCP_TRUST_FORWARDED_HOST=true` validates the forwarded name instead, falling back to `Host` when the header is absent. It stays off by default because any client can send the header directly. A rejection that carries `X-Forwarded-Host` now also logs the setting that resolves it, since `/health` is exempt from validation and stays green while every MCP call fails.
+
 ### Added
 - DNS rebinding protection for every HTTP and SSE launch path, including `fastmcp run` and `fastmcp.json`. `Host` and `Origin` headers are validated via the new `CLICKHOUSE_MCP_ALLOWED_HOSTS` and `CLICKHOUSE_MCP_ALLOWED_ORIGINS` variables: a present `Origin` that is not allow-listed is rejected with `403`, and an unknown `Host` with `421`. Authentication is now enforced whenever `fastmcp run` selects HTTP or SSE, independently of `CLICKHOUSE_MCP_SERVER_TRANSPORT`, closing a launch path that previously served unauthenticated. ([#218](https://github.com/ClickHouse/mcp-clickhouse/issues/218))
 - With `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` and `CLICKHOUSE_ALLOW_DROP` unset, the server now runs `SHOW GRANTS` once at first connection and logs a warning if the ClickHouse user holds `ALL`, `DROP`, `TRUNCATE`, `DELETE`, `UPDATE`, or `ALTER` (beyond `ALTER ADD`) privileges, since the destructive-operation gate is not server-enforced. The check is fail-open and never blocks startup or queries. Grants held via roles are not expanded, so the advisory only flags direct grants.

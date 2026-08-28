@@ -318,6 +318,8 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
         CLICKHOUSE_MCP_ALLOWED_HOSTS: Comma separated Host header values accepted on
             HTTP/SSE (default: derived from a concrete bind host and port)
+        CLICKHOUSE_MCP_TRUST_FORWARDED_HOST: Validate X-Forwarded-Host instead of Host,
+            for deployments behind a trusted reverse proxy (default: false)
         CLICKHOUSE_MCP_ALLOWED_ORIGINS: Comma separated Origin header values accepted on
             HTTP/SSE (default: no browser origins are allowed)
         CLICKHOUSE_MCP_AUTH_TOKEN: Static bearer token for HTTP/SSE transports.
@@ -381,6 +383,16 @@ class MCPServerConfig:
                 "[::1]:*",
             ]
         return [_format_http_host(self.bind_host, self.bind_port)]
+
+    @property
+    def trust_forwarded_host(self) -> bool:
+        """Whether X-Forwarded-Host is validated in place of Host.
+
+        A reverse proxy rewrites Host to the upstream it forwards to, so behind
+        one the Host allow list can otherwise only hold internal names. Off by
+        default because any client can send the header directly.
+        """
+        return os.getenv("CLICKHOUSE_MCP_TRUST_FORWARDED_HOST", "false").lower() == "true"
 
     @property
     def allowed_origins(self) -> List[str]:

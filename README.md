@@ -621,7 +621,13 @@ These variables control the MCP process itself, including transport, authenticat
   * Entries are exact (`localhost:8000`) or accept any port (`localhost:*`). Example: `CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000`
   * The `host:*` form matches only values that carry a port. A port-less Host (a standard-port deployment where the client omits `:80`/`:443`) must be listed as a bare exact entry (`example.com`) as well.
   * Requests with a non-matching or missing `Host` header get `421 Misdirected Request`. GET and HEAD requests to `/health` are exempt from Host and Origin validation so orchestrator probes keep working.
-  * Behind a reverse proxy, list the Host value the proxy forwards. Set an explicit list when a launcher such as `fastmcp run` overrides the bind address for remote access.
+  * Behind a reverse proxy, either list the Host value the proxy forwards or set `CLICKHOUSE_MCP_TRUST_FORWARDED_HOST=true` and list the public host name. Set an explicit list when a launcher such as `fastmcp run` overrides the bind address for remote access.
+* `CLICKHOUSE_MCP_TRUST_FORWARDED_HOST`: Validate `X-Forwarded-Host` instead of `Host`
+  * Default: `"false"`
+  * A reverse proxy rewrites `Host` to the upstream it forwards to (nginx does this unless you set `proxy_set_header Host $host`) and puts the name the client used in `X-Forwarded-Host`. Without this setting the allow list can only hold the proxy's internal upstream name, which is infrastructure detail a platform team can rename out from under the deployment.
+  * With it set, the leftmost `X-Forwarded-Host` value is validated against `CLICKHOUSE_MCP_ALLOWED_HOSTS`, falling back to `Host` when the header is absent, so the same server still answers direct requests.
+  * **Only enable this when a reverse proxy is the sole route to the server.** Any client can send `X-Forwarded-Host` directly, so on a directly reachable server this hands the caller the value being validated. It is the same assertion uvicorn's `--proxy-headers` asks for.
+  * Note that uvicorn's `--proxy-headers` does not help on its own: it applies `X-Forwarded-For` and `X-Forwarded-Proto` and never rewrites `Host`.
 * `CLICKHOUSE_MCP_ALLOWED_ORIGINS`: Comma separated `Origin` header values accepted on HTTP/SSE
   * Default: None, which rejects every request that carries an `Origin` header
   * MCP requires Origin validation for HTTP/SSE transport connections. Requests without an Origin are accepted because non-browser MCP clients normally omit it. A non-matching Origin gets `403 Forbidden`. The `/health` endpoint is exempt as described above.
