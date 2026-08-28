@@ -5,9 +5,13 @@ and type conversion.
 """
 
 from dataclasses import dataclass
+from ipaddress import IPv4Network, IPv6Network, ip_network
 import os
 from typing import List, Optional
 from enum import Enum
+
+
+_IPV4_MAPPED_IPV6 = ip_network("::ffff:0:0/96")
 
 
 class TransportType(str, Enum):
@@ -318,8 +322,8 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
         CLICKHOUSE_MCP_ALLOWED_HOSTS: Comma separated Host header values accepted on
             HTTP/SSE (default: derived from a concrete bind host and port)
-        CLICKHOUSE_MCP_TRUST_FORWARDED_HOST: Validate X-Forwarded-Host instead of Host,
-            for deployments behind a trusted reverse proxy (default: false)
+        CLICKHOUSE_MCP_TRUSTED_PROXIES: Comma separated proxy IP addresses or CIDR
+            networks whose X-Forwarded-* headers are trusted (default: none)
         CLICKHOUSE_MCP_ALLOWED_ORIGINS: Comma separated Origin header values accepted on
             HTTP/SSE (default: no browser origins are allowed)
         CLICKHOUSE_MCP_AUTH_TOKEN: Static bearer token for HTTP/SSE transports.
@@ -385,14 +389,36 @@ class MCPServerConfig:
         return [_format_http_host(self.bind_host, self.bind_port)]
 
     @property
-    def trust_forwarded_host(self) -> bool:
-        """Whether X-Forwarded-Host is validated in place of Host.
-
-        A reverse proxy rewrites Host to the upstream it forwards to, so behind
-        one the Host allow list can otherwise only hold internal names. Off by
-        default because any client can send the header directly.
-        """
-        return os.getenv("CLICKHOUSE_MCP_TRUST_FORWARDED_HOST", "false").lower() == "true"
+    def trusted_proxies(self) -> List[IPv4Network | IPv6Network]:
+        """Get proxy addresses allowed to supply X-Forwarded-* headers."""
+        name = "CLICKHOUSE_MCP_TRUSTED_PROXIES"
+        networks = []
+        for value in _split_env_list(name):
+            if value == "*":
+                raise ValueError(f"{name} cannot trust every address")
+            if "%" in value:
+                raise ValueError(f"Scoped IPv6 addresses are not supported in {name}: {value}")
+            try:
+                network = ip_network(value)
+            except ValueError as exc:
+                raise ValueError(f"Invalid IP address or CIDR in {name}: {value}") from exc
+            if isinstance(network, IPv6Network) and network.subnet_of(_IPV4_MAPPED_IPV6):
+                # Normalize IPv4-mapped IPv6 to IPv4 so dual-stack peers match
+                # and ::ffff:0:0/96 hits the trust-all rejection below.
+                network = ip_network(
+                    f"{network.network_address.ipv4_mapped}/{network.prefixlen - 96}"
+                )
+            if network.prefixlen == 0:
+                raise ValueError(f"{name} cannot trust every address")
+            if isinstance(network, IPv6Network) and network.overlaps(_IPV4_MAPPED_IPV6):
+                # A supernet of the mapped range would trust every IPv4 peer on
+                # a dual-stack bind, equivalent to the rejected 0.0.0.0/0.
+                raise ValueError(
+                    f"{name} entries cannot contain the whole IPv4-mapped range "
+                    f"::ffff:0:0/96: {value}"
+                )
+            networks.append(network)
+        return networks
 
     @property
     def allowed_origins(self) -> List[str]:
