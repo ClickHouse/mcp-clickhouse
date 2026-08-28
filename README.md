@@ -46,6 +46,7 @@ An MCP server for ClickHouse.
 When running with HTTP or SSE transport, a health check endpoint is available at `/health`. This endpoint:
 - Returns `200 OK` (body: `OK`) if the server is healthy and can connect to ClickHouse
 - Returns `503 Service Unavailable` with a generic error message if the server cannot connect to ClickHouse
+- Returns `503` if a ClickHouse probe does not finish within two seconds. Concurrent requests share one in-flight probe
 
 GET and HEAD requests to the endpoint are intentionally unauthenticated and exempt from Host and Origin validation so orchestrator probes (e.g. Kubernetes liveness/readiness, load balancers) can use runtime-assigned pod or target IPs without extra configuration. `/health` is reserved and cannot be used as the MCP transport path. The response body is deliberately minimal to avoid leaking backend version strings or error details; debug failures via the server logs.
 
@@ -161,8 +162,7 @@ This MCP server supports both ClickHouse and chDB. You can enable either or both
         "CLICKHOUSE_ROLE": "<clickhouse-role>",
         "CLICKHOUSE_SECURE": "true",
         "CLICKHOUSE_VERIFY": "true",
-        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
-        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30"
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30"
       }
     }
   }
@@ -193,8 +193,7 @@ Or, if you'd like to try it out with the [ClickHouse SQL Playground](https://sql
         "CLICKHOUSE_PASSWORD": "",
         "CLICKHOUSE_SECURE": "true",
         "CLICKHOUSE_VERIFY": "true",
-        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
-        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30"
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30"
       }
     }
   }
@@ -249,7 +248,6 @@ You can also enable both ClickHouse and chDB simultaneously:
         "CLICKHOUSE_SECURE": "true",
         "CLICKHOUSE_VERIFY": "true",
         "CLICKHOUSE_CONNECT_TIMEOUT": "30",
-        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30",
         "CHDB_ENABLED": "true",
         "CHDB_DATA_PATH": "/path/to/chdb/data"
       }
@@ -330,8 +328,7 @@ If you prefer to use the system Python installation instead of uv, you can insta
         "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
         "CLICKHOUSE_SECURE": "true",
         "CLICKHOUSE_VERIFY": "true",
-        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
-        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30"
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30"
       }
     }
   }
@@ -352,8 +349,7 @@ Alternatively, you can use the installed script directly:
         "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
         "CLICKHOUSE_SECURE": "true",
         "CLICKHOUSE_VERIFY": "true",
-        "CLICKHOUSE_CONNECT_TIMEOUT": "30",
-        "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "30"
+        "CLICKHOUSE_CONNECT_TIMEOUT": "30"
       }
     }
   }
@@ -565,8 +561,8 @@ These variables configure the [clickhouse-connect](https://clickhouse.com/docs/e
   * Default: `"30"`
   * Increase this value if you experience connection timeouts
 * `CLICKHOUSE_SEND_RECEIVE_TIMEOUT`: Send/receive timeout in seconds for the **ClickHouse** client
-  * Default: `"300"`
-  * Increase this value for long-running queries
+  * Default: the lower of `300` or `CLICKHOUSE_MCP_QUERY_TIMEOUT + 5`, so worker threads unblock shortly after a query timeout
+  * If explicitly set, the value is used as-is (e.g. `"300"` for long-running queries)
 * `CLICKHOUSE_DATABASE`: Default ClickHouse database to use
   * Default: None (uses server default)
   * Set this to automatically connect to a specific database
@@ -597,9 +593,14 @@ These variables control the MCP process itself, including transport, authenticat
 * `CLICKHOUSE_MCP_BIND_PORT`: Port to bind the MCP server to when using HTTP or SSE transport
   * Default: `"8000"`
   * Only used when transport is `"http"` or `"sse"` — not related to `CLICKHOUSE_PORT`
-* `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for query tools
+* `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for query tool calls
   * Default: `"30"`
   * Increase this if you see `Query timed out after ...` errors for heavy queries
+  * When a query times out, the server attempts to cancel it with `KILL QUERY`
+  * Unless `CLICKHOUSE_SEND_RECEIVE_TIMEOUT` is explicitly set, the HTTP read timeout is capped at this value plus five seconds
+* `CLICKHOUSE_MCP_MAX_WORKERS`: Maximum number of concurrent query worker threads
+  * Default: `"10"`
+  * Increase if your workload requires many concurrent tool calls
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None
   * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `FASTMCP_SERVER_AUTH`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for HTTP/SSE transports

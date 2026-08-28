@@ -14,6 +14,7 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
 from mcp_clickhouse.mcp_server import (
     CLIENT_CONFIG_OVERRIDES_KEY,
+    _clear_client_cache,
     _get_client_config_overrides,
     create_clickhouse_client,
     mcp,
@@ -75,7 +76,8 @@ class FakeQueryClient:
         self.server_version = "24.10"
 
     def query(self, _query, settings):
-        assert settings == {"readonly": "1"}
+        assert settings["readonly"] == "1"
+        assert settings["query_id"]
         if self.barrier is not None:
             self.barrier.wait(timeout=2)
         return SimpleNamespace(
@@ -85,6 +87,12 @@ class FakeQueryClient:
 
 
 class TestConfigOverrideUnit:
+    def setup_method(self):
+        _clear_client_cache()
+
+    def teardown_method(self):
+        _clear_client_cache()
+
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     @patch("mcp_clickhouse.mcp_server.get_context")
     def test_overrides_merged_into_client_config(self, mock_get_context, mock_cc):
@@ -267,18 +275,21 @@ class TestConfigOverrideUnit:
 
     @patch("mcp_clickhouse.mcp_server.execute_query", return_value="result")
     @patch("mcp_clickhouse.mcp_server._get_client_config_overrides")
-    def test_sync_run_query_passes_captured_overrides(self, mock_get_overrides, mock_execute):
+    def test_sync_run_query_passes_resolved_config(self, mock_get_overrides, mock_execute):
         overrides = {"connect_timeout": 41}
         mock_get_overrides.return_value = overrides
 
         assert run_query("SELECT 1") == "result"
 
-        mock_execute.assert_called_once_with("SELECT 1", overrides)
+        query, query_id, config = mock_execute.call_args.args
+        assert query == "SELECT 1"
+        assert query_id
+        assert config["connect_timeout"] == 41
 
     @pytest.mark.asyncio
     @patch("mcp_clickhouse.mcp_server.execute_query", return_value="result")
     @patch("mcp_clickhouse.mcp_server._get_client_config_overrides")
-    async def test_async_run_query_passes_captured_overrides(
+    async def test_async_run_query_passes_resolved_config(
         self, mock_get_overrides, mock_execute
     ):
         overrides = {"connect_timeout": 42}
@@ -286,7 +297,10 @@ class TestConfigOverrideUnit:
 
         assert await run_query_async("SELECT 1") == "result"
 
-        mock_execute.assert_called_once_with("SELECT 1", overrides)
+        query, query_id, config = mock_execute.call_args.args
+        assert query == "SELECT 1"
+        assert query_id
+        assert config["connect_timeout"] == 42
 
 
 @pytest.fixture
@@ -295,6 +309,12 @@ def mcp_server():
 
 
 class TestConfigOverrideMcpBoundary:
+    def setup_method(self):
+        _clear_client_cache()
+
+    def teardown_method(self):
+        _clear_client_cache()
+
     @pytest.mark.asyncio
     async def test_registered_run_query_receives_context_overrides(self, mcp_server):
         middleware = ConfigOverrideMiddleware({"connect_timeout": 99})

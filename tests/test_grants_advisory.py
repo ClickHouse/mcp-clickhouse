@@ -29,8 +29,10 @@ _CLIENT_CONFIG = {
 
 @pytest.fixture(autouse=True)
 def reset_advisory_flag():
+    mcp_server._clear_client_cache()
     mcp_server._grants_advisory_done = False
     yield
+    mcp_server._clear_client_cache()
     mcp_server._grants_advisory_done = False
 
 

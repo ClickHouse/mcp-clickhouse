@@ -7,10 +7,18 @@ from clickhouse_connect.driver.exceptions import OperationalError
 
 from mcp_clickhouse.mcp_server import (
     _NATIVE_PROTOCOL_PORTS,
+    _clear_client_cache,
     _connection_error_hints,
     _format_connection_failure,
     create_clickhouse_client,
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_client_cache():
+    _clear_client_cache()
+    yield
+    _clear_client_cache()
 
 
 def test_native_protocol_ports_constant():
