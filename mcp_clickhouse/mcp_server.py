@@ -29,7 +29,11 @@ from fastmcp.tools import Tool
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from mcp_clickhouse.agents_schema import enrich_result_payload
+from mcp_clickhouse.agents_schema import (
+    discovery_enabled,
+    enrich_result_payload,
+    query_may_need_enrichment,
+)
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 from mcp_clickhouse.http_security import transport_security_middleware
 from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
@@ -101,6 +105,9 @@ load_dotenv()
 _max_workers = get_mcp_config().max_workers
 QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers)
 CANCELLATION_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+# Dedicated small pool for Agents Schema enrichment so abandoned (timed-out)
+# metadata lookups can never occupy query workers.
+ENRICHMENT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 HEALTH_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 _QUERY_CANCELLATION_WAIT_SECONDS = 1.0
 _HEALTH_CHECK_TIMEOUT_SECONDS = 2.0
@@ -804,7 +811,6 @@ def execute_query(query: str, query_id: str, client_config: dict) -> str:
         res = client.query(query, settings=query_settings)
         logger.info(f"Query {query_id} returned {len(res.result_rows)} rows")
         payload = {"columns": res.column_names, "rows": res.result_rows}
-        payload = enrich_result_payload(client, query, payload)
         return _serialize_tool_result(payload)
     except ToolError:
         raise
@@ -895,6 +901,52 @@ async def _cancel_query_async(query_id: str) -> None:
         )
 
 
+# Enrichment runs only after the base result is secured and gets its own small
+# budget, so a stalled metadata lookup can never turn a completed query into a
+# timeout or drop its rows.
+_ENRICHMENT_WAIT_SECONDS = 3.0
+
+
+def _enrichment_job(serialized: str, query: str, client_config: dict) -> str:
+    entry = _acquire_clickhouse_client(client_config)
+    try:
+        payload = json.loads(serialized)
+        payload = enrich_result_payload(entry.client, query, payload)
+        return _serialize_tool_result(payload)
+    finally:
+        _release_client_entry(entry)
+
+
+def _enrich_serialized_result(serialized: str, query: str, client_config: dict) -> str:
+    """Best-effort Agents Schema enrichment of an already-complete result."""
+    if not discovery_enabled() or not query_may_need_enrichment(query):
+        return serialized
+    try:
+        future = ENRICHMENT_EXECUTOR.submit(_enrichment_job, serialized, query, client_config)
+        return future.result(timeout=_ENRICHMENT_WAIT_SECONDS)
+    except Exception as err:
+        logger.debug("agents schema enrichment skipped: %s", err)
+        return serialized
+
+
+async def _enrich_serialized_result_async(
+    serialized: str, query: str, client_config: dict
+) -> str:
+    """Async variant: awaits the enrichment worker without blocking the loop."""
+    if not discovery_enabled() or not query_may_need_enrichment(query):
+        return serialized
+    try:
+        future = ENRICHMENT_EXECUTOR.submit(_enrichment_job, serialized, query, client_config)
+        return await asyncio.wait_for(
+            asyncio.wrap_future(future), timeout=_ENRICHMENT_WAIT_SECONDS
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as err:
+        logger.debug("agents schema enrichment skipped: %s", err)
+        return serialized
+
+
 def run_query(query: str) -> str:
     """Execute a SQL query against ClickHouse.
 
@@ -923,7 +975,8 @@ def run_query(query: str) -> str:
             raise
         timeout_secs = get_mcp_config().query_timeout
         try:
-            return future.result(timeout=timeout_secs)
+            result = future.result(timeout=timeout_secs)
+            return _enrich_serialized_result(result, query, client_config)
         except concurrent.futures.TimeoutError:
             logger.warning(
                 "Query %s timed out after %s seconds: %s", query_id, timeout_secs, query
@@ -1016,9 +1069,10 @@ async def run_query_async(query: str) -> str:
             raise
         timeout_secs = get_mcp_config().query_timeout
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 asyncio.wrap_future(future), timeout=timeout_secs
             )
+            return await _enrich_serialized_result_async(result, query, client_config)
         except asyncio.CancelledError:
             if future.cancel():
                 _remove_active_query(query_id, state)

@@ -71,6 +71,16 @@ def discovery_enabled() -> bool:
     return get_mcp_config().agents_schema_discovery
 
 
+def query_may_need_enrichment(query: str) -> bool:
+    """Cheap pre-check (regex only, no I/O) so callers can skip enrichment work
+    entirely for queries that reference no enrichable tables."""
+    try:
+        referenced = _referenced_tables(query)
+        return bool(referenced) and not any(db == AGENTS_DATABASE for db, _ in referenced)
+    except Exception:
+        return False
+
+
 def enrich_result_payload(client: Any, query: str, payload: dict) -> dict:
     """Attach an agents_schema_context block to a query result payload.
 
@@ -90,7 +100,10 @@ def enrich_result_payload(client: Any, query: str, payload: dict) -> dict:
         if agents_tables and "dbt_model" in agents_tables:
             context.extend(_dbt_model_notes(client, referenced, current_db))
         context.extend(_engine_safety_notes(client, referenced, current_db))
-        if agents_tables:
+        # The discovery hint requires the spec-mandated root table, so an
+        # unrelated database that happens to be named agents is not branded
+        # as publishing the standard.
+        if agents_tables and "root" in agents_tables:
             context.append(
                 f"This service publishes Agents Schema metadata: query "
                 f"`SELECT provider, key, content FROM {AGENTS_DATABASE}.root` for governed "
@@ -158,7 +171,14 @@ def _agents_tables(client: Any) -> frozenset[str]:
 
 
 def _client_cache_key(client: Any) -> str:
-    return getattr(client, "uri", None) or str(id(client))
+    # Include the connecting user so sessions with different grants never share
+    # cached visibility of the agents database.
+    uri = getattr(client, "uri", None)
+    if not uri:
+        return str(id(client))
+    user = getattr(client, "username", None) or getattr(client, "user", "") or ""
+    database = _current_database(client)
+    return f"{uri}|{user}|{database}"
 
 
 def _engine_safety_notes(
@@ -187,10 +207,19 @@ def _engine_safety_notes(
     for database, name, engine in result.result_rows:
         if not _matches_reference(referenced, database, name, current_db):
             continue
+        if "Replacing" in engine:
+            remedy = (
+                "Add FINAL after the table name or pick the latest row per key "
+                "(e.g. argMax by the version column) before aggregating."
+            )
+        else:
+            remedy = (
+                "Add FINAL after the table name or aggregate with the Sign "
+                "column (e.g. sum(value * Sign)) before reading totals."
+            )
         notes.append(
             f"`{database}`.`{name}` uses {engine}: it can contain multiple row "
-            f"versions until merges complete. Add FINAL after the table name or "
-            f"deduplicate (e.g. argMax by the version column) before aggregating."
+            f"versions until merges complete. {remedy}"
         )
     with _cache_lock:
         if len(_engine_cache) >= _CACHE_MAX_ENTRIES:

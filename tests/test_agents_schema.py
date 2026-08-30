@@ -76,6 +76,10 @@ class ReferencedTablesTests(unittest.TestCase):
 class EnrichResultPayloadTests(unittest.TestCase):
     def setUp(self):
         _clear_enrichment_caches()
+        # Hermetic against an ambient kill-switch value in the host environment.
+        env_patcher = patch.dict("os.environ", {"CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY": "true"})
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
 
     def test_no_agents_database_and_safe_engine_leaves_payload_unchanged(self):
         client = _FakeClient({})
@@ -126,6 +130,52 @@ class EnrichResultPayloadTests(unittest.TestCase):
 
         items = result["agents_schema_context"]["items"]
         self.assertTrue(any("FINAL" in item for item in items))
+
+    def test_discovery_hint_requires_root_table(self):
+        client = _FakeClient(
+            {
+                "database = {db:String}": [["dbt_model"]],
+                "dbt_model": [["fct_revenue", "analytics", "Governed revenue fact table."]],
+                "engine LIKE": [],
+            }
+        )
+        payload = {"columns": ["c"], "rows": [[1]]}
+
+        result = enrich_result_payload(
+            client, "SELECT sum(amount_usd) FROM analytics.fct_revenue", payload
+        )
+
+        items = result["agents_schema_context"]["items"]
+        self.assertTrue(any("Governed revenue fact table." in item for item in items))
+        self.assertFalse(any("agents.root" in item for item in items))
+
+    def test_collapsing_engines_get_sign_guidance(self):
+        client = _FakeClient(
+            {
+                "database = {db:String}": [],
+                "engine LIKE": [["analytics", "events", "CollapsingMergeTree"]],
+            }
+        )
+        payload = {"columns": ["c"], "rows": [[1]]}
+
+        result = enrich_result_payload(client, "SELECT count() FROM analytics.events", payload)
+
+        items = result["agents_schema_context"]["items"]
+        self.assertTrue(any("Sign" in item for item in items))
+        self.assertFalse(any("argMax" in item for item in items))
+
+    def test_probe_cache_is_scoped_per_user(self):
+        responses = {"database = {db:String}": [["root"]]}
+        alice = _FakeClient(responses)
+        alice.uri, alice.username = "http://host:8123", "alice"
+        bob = _FakeClient({"database = {db:String}": []})
+        bob.uri, bob.username = "http://host:8123", "bob"
+
+        enrich_result_payload(alice, "SELECT 1 FROM analytics.t", {"rows": []})
+        enrich_result_payload(bob, "SELECT 1 FROM analytics.t", {"rows": []})
+
+        probe_queries = [q for c in (alice, bob) for q, _ in c.queries if "database =" in q]
+        self.assertEqual(len(probe_queries), 2)
 
     def test_cloud_shared_engine_variants_get_final_warning(self):
         client = _FakeClient(
@@ -250,6 +300,7 @@ async def test_run_query_tool_payload_includes_agents_schema_context():
         "CLICKHOUSE_HOST": "localhost",
         "CLICKHOUSE_USER": "default",
         "CLICKHOUSE_PASSWORD": "",
+        "CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY": "true",
     }
     try:
         with patch.dict("os.environ", env):
