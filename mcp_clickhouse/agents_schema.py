@@ -39,6 +39,10 @@ _MULTI_VERSION_ENGINES = (
     "VersionedCollapsingMergeTree",
 )
 
+# Best-effort extraction: plain FROM/JOIN references only. CTE names and table
+# functions resolve to no metadata and enrich nothing; exotic identifiers are
+# simply skipped. Correctness here is not load-bearing because every lookup is
+# fail-open.
 _TABLE_REF_RE = re.compile(
     r"\b(?:FROM|JOIN)\s+(?:`?([A-Za-z_][A-Za-z0-9_]*)`?\.)?`?([A-Za-z_][A-Za-z0-9_]*)`?",
     re.IGNORECASE,
