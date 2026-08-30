@@ -29,6 +29,7 @@ from fastmcp.tools import Tool
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
+from mcp_clickhouse.agents_schema import enrich_result_payload
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 from mcp_clickhouse.http_security import transport_security_middleware
 from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
@@ -802,7 +803,9 @@ def execute_query(query: str, query_id: str, client_config: dict) -> str:
                 raise ToolError("Query cancelled before execution")
         res = client.query(query, settings=query_settings)
         logger.info(f"Query {query_id} returned {len(res.result_rows)} rows")
-        return _serialize_tool_result({"columns": res.column_names, "rows": res.result_rows})
+        payload = {"columns": res.column_names, "rows": res.result_rows}
+        payload = enrich_result_payload(client, query, payload)
+        return _serialize_tool_result(payload)
     except ToolError:
         raise
     except Exception as err:
