@@ -910,7 +910,9 @@ def _enrichment_job(serialized: str, query: str, client_config: dict) -> str:
     entry = _acquire_clickhouse_client(client_config)
     try:
         payload = json.loads(serialized)
-        payload = enrich_result_payload(entry.client, query, payload)
+        payload = enrich_result_payload(
+            entry.client, query, payload, user=client_config.get("username") or ""
+        )
         return _serialize_tool_result(payload)
     finally:
         _release_client_entry(entry)
@@ -1587,6 +1589,7 @@ def _shutdown():
     # Drain every worker before closing the clients they may hold.
     QUERY_EXECUTOR.shutdown(wait=True)
     CANCELLATION_EXECUTOR.shutdown(wait=True)
+    ENRICHMENT_EXECUTOR.shutdown(wait=True)
     HEALTH_EXECUTOR.shutdown(wait=True)
     _clear_client_cache()
 

@@ -165,17 +165,58 @@ class EnrichResultPayloadTests(unittest.TestCase):
         self.assertFalse(any("argMax" in item for item in items))
 
     def test_probe_cache_is_scoped_per_user(self):
-        responses = {"database = {db:String}": [["root"]]}
-        alice = _FakeClient(responses)
-        alice.uri, alice.username = "http://host:8123", "alice"
+        # The user is passed explicitly (from the server's client config); the
+        # real clickhouse-connect client object exposes no user attribute.
+        alice = _FakeClient({"database = {db:String}": [["root"]]})
+        alice.uri = "http://host:8123"
         bob = _FakeClient({"database = {db:String}": []})
-        bob.uri, bob.username = "http://host:8123", "bob"
+        bob.uri = "http://host:8123"
 
-        enrich_result_payload(alice, "SELECT 1 FROM analytics.t", {"rows": []})
-        enrich_result_payload(bob, "SELECT 1 FROM analytics.t", {"rows": []})
+        enrich_result_payload(alice, "SELECT 1 FROM analytics.t", {"rows": []}, user="alice")
+        enrich_result_payload(bob, "SELECT 1 FROM analytics.t", {"rows": []}, user="bob")
 
         probe_queries = [q for c in (alice, bob) for q, _ in c.queries if "database =" in q]
         self.assertEqual(len(probe_queries), 2)
+
+    def test_engine_warnings_and_hint_survive_dbt_note_cap(self):
+        # Five dbt descriptions alone would fill MAX_CONTEXT_ITEMS; correctness
+        # notes and the discovery hint must not be truncated away by them.
+        dbt_rows = [
+            [f"model_{i}", "analytics", f"Description {i}."] for i in range(5)
+        ]
+        client = _FakeClient(
+            {
+                "database = {db:String}": [["root"], ["dbt_model"]],
+                "dbt_model": dbt_rows,
+                "engine LIKE": [["analytics", "model_0", "ReplacingMergeTree"]],
+            }
+        )
+        query = "SELECT 1 FROM " + " JOIN ".join(f"analytics.model_{i}" for i in range(5))
+
+        result = enrich_result_payload(client, query, {"rows": []})
+
+        items = result["agents_schema_context"]["items"]
+        self.assertTrue(any("FINAL" in item for item in items))
+        self.assertTrue(any("agents.root" in item for item in items))
+
+    def test_engine_note_cache_distinguishes_reference_sets(self):
+        # Both queries share table names and candidate databases, but reference
+        # different table sets; the second must not receive the first's notes.
+        responses = {
+            "database = {db:String}": [],
+            "engine LIKE": [
+                ["a", "t", "ReplacingMergeTree"],
+                ["b", "t", "ReplacingMergeTree"],
+                ["c", "t", "ReplacingMergeTree"],
+            ],
+        }
+        client = _FakeClient(responses, database="c")
+
+        with_bare = enrich_result_payload(client, "SELECT 1 FROM a.t JOIN b.t JOIN t", {"rows": []})
+        without_bare = enrich_result_payload(client, "SELECT 1 FROM a.t JOIN b.t", {"rows": []})
+
+        self.assertEqual(len(with_bare["agents_schema_context"]["items"]), 3)
+        self.assertEqual(len(without_bare["agents_schema_context"]["items"]), 2)
 
     def test_cloud_shared_engine_variants_get_final_warning(self):
         client = _FakeClient(
