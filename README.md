@@ -605,7 +605,7 @@ These variables control the MCP process itself, including transport, authenticat
 * `CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY`: Enrich `run_query` results with Agents Schema metadata about the referenced tables
   * Default: `"true"`
   * When enabled and the connected service has an `agents` database, results include an `agents_schema_context` block (see `run_query` under [ClickHouse Tools](#clickhouse-tools)). Engine-safety warnings for multi-version engines are added even without an `agents` database
-  * Enrichment only sees what the connecting ClickHouse user can see. If the metadata context never appears, either no Agents Schema sync has published an `agents` database on this service, or the MCP user lacks `SELECT` on it — the two look identical from the client side because ClickHouse hides databases the user cannot access. To tell them apart, run `SELECT count() FROM agents.root` as an admin. Engine warnings do not need the `agents` database (they only read `system.tables`)
+  * Enrichment only sees what the connecting ClickHouse user can see. If the metadata context never appears, either no Agents Schema sync has published an `agents` database on this service, or the MCP user lacks `SELECT` on it — the two look identical from the client side because ClickHouse hides databases the user cannot access. To tell them apart, confirm the sync has run against this service, or run `SELECT count() FROM agents.root` with an account that can see the database (for example the one the Agents Schema sync connects with). Engine warnings do not need the `agents` database (they only read `system.tables`)
   * Set to `"false"` to disable enrichment entirely
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None
