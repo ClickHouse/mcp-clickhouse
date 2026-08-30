@@ -91,6 +91,13 @@
           "format": "number",
           "default": "10",
           "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY",
+          "description": "Enrich run_query results with Agents Schema metadata about referenced tables",
+          "format": "boolean",
+          "default": "true",
+          "isRequired": false
         }
       ]
     },
@@ -172,6 +179,13 @@
           "description": "Maximum query worker thread pool size",
           "format": "number",
           "default": "10",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY",
+          "description": "Enrich run_query results with Agents Schema metadata about referenced tables",
+          "format": "boolean",
+          "default": "true",
           "isRequired": false
         }
       ]

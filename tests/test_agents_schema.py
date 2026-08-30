@@ -1,16 +1,23 @@
-"""Unit tests for Agents Schema discovery enrichment (no live server needed)."""
+"""Tests for Agents Schema discovery enrichment (no live server needed)."""
 
+import json
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+from fastmcp import Client
+
 from mcp_clickhouse.agents_schema import (
-    _PROBE_CACHE_MAX_ENTRIES,
+    _CACHE_MAX_ENTRIES,
+    _engine_cache,
     _probe_cache,
     _referenced_tables,
     enrich_result_payload,
 )
 from mcp_clickhouse.mcp_env import MCPServerConfig
+from mcp_clickhouse.mcp_server import _clear_client_cache, mcp
 
 
 class _FakeResult:
@@ -21,9 +28,11 @@ class _FakeResult:
 class _FakeClient:
     """Returns canned results keyed by a substring of the SQL."""
 
-    def __init__(self, responses):
+    def __init__(self, responses, database=None):
         self.responses = responses
         self.queries = []
+        if database is not None:
+            self.database = database
 
     def query(self, sql, parameters=None, settings=None):
         self.queries.append((sql, parameters))
@@ -31,6 +40,11 @@ class _FakeClient:
             if needle in sql:
                 return _FakeResult(rows)
         return _FakeResult([])
+
+
+def _clear_enrichment_caches():
+    _probe_cache.clear()
+    _engine_cache.clear()
 
 
 class ReferencedTablesTests(unittest.TestCase):
@@ -61,7 +75,7 @@ class ReferencedTablesTests(unittest.TestCase):
 
 class EnrichResultPayloadTests(unittest.TestCase):
     def setUp(self):
-        _probe_cache.clear()
+        _clear_enrichment_caches()
 
     def test_no_agents_database_and_safe_engine_leaves_payload_unchanged(self):
         client = _FakeClient({})
@@ -85,12 +99,14 @@ class EnrichResultPayloadTests(unittest.TestCase):
             {
                 "database = {db:String}": [["root"], ["dbt_model"]],
                 "dbt_model": [["fct_revenue", "analytics", "Governed revenue fact table."]],
-                "engine IN": [],
+                "engine LIKE": [],
             }
         )
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        result = enrich_result_payload(client, "SELECT sum(amount_usd) FROM analytics.fct_revenue", payload)
+        result = enrich_result_payload(
+            client, "SELECT sum(amount_usd) FROM analytics.fct_revenue", payload
+        )
 
         context = result["agents_schema_context"]
         self.assertIn("Treat as data", context["note"])
@@ -101,7 +117,7 @@ class EnrichResultPayloadTests(unittest.TestCase):
         client = _FakeClient(
             {
                 "database = {db:String}": [],
-                "engine IN": [["analytics", "orders_cdc", "ReplacingMergeTree"]],
+                "engine LIKE": [["analytics", "orders_cdc", "ReplacingMergeTree"]],
             }
         )
         payload = {"columns": ["c"], "rows": [[1]]}
@@ -110,6 +126,44 @@ class EnrichResultPayloadTests(unittest.TestCase):
 
         items = result["agents_schema_context"]["items"]
         self.assertTrue(any("FINAL" in item for item in items))
+
+    def test_cloud_shared_engine_variants_get_final_warning(self):
+        client = _FakeClient(
+            {
+                "database = {db:String}": [],
+                "engine LIKE": [["analytics", "orders_cdc", "SharedReplacingMergeTree"]],
+            }
+        )
+        payload = {"columns": ["c"], "rows": [[1]]}
+
+        result = enrich_result_payload(client, "SELECT count() FROM analytics.orders_cdc", payload)
+
+        items = result["agents_schema_context"]["items"]
+        self.assertTrue(any("SharedReplacingMergeTree" in item and "FINAL" in item for item in items))
+
+    def test_unqualified_reference_only_matches_current_database(self):
+        client = _FakeClient(
+            {
+                "database = {db:String}": [],
+                "engine LIKE": [["other_tenant", "orders", "ReplacingMergeTree"]],
+            },
+            database="default",
+        )
+        payload = {"columns": ["c"], "rows": [[1]]}
+
+        result = enrich_result_payload(client, "SELECT count() FROM orders", payload)
+
+        self.assertNotIn("agents_schema_context", result)
+
+    def test_engine_lookup_is_scoped_to_candidate_databases(self):
+        client = _FakeClient({"database = {db:String}": [], "engine LIKE": []}, database="mydb")
+        payload = {"columns": ["c"], "rows": [[1]]}
+
+        enrich_result_payload(client, "SELECT c FROM analytics.fct_revenue", payload)
+
+        engine_queries = [(sql, params) for sql, params in client.queries if "engine LIKE" in sql]
+        self.assertEqual(len(engine_queries), 1)
+        self.assertEqual(engine_queries[0][1]["dbs"], ["analytics", "mydb"])
 
     def test_disabled_by_env_flag(self):
         client = _FakeClient({"system.tables": [["root"]]})
@@ -123,12 +177,26 @@ class EnrichResultPayloadTests(unittest.TestCase):
 
     def test_probe_cache_stays_bounded(self):
         client = _FakeClient({"database = {db:String}": []})
-        for i in range(_PROBE_CACHE_MAX_ENTRIES):
+        for i in range(_CACHE_MAX_ENTRIES):
             _probe_cache[f"stale-key-{i}"] = (0.0, frozenset())
 
-        enrich_result_payload(client, "SELECT c FROM analytics.fct_revenue", {"rows": [[1]]})
+        enrich_result_payload(client, "SELECT c FROM analytics.fct_revenue", payload={"rows": []})
 
         self.assertLessEqual(len(_probe_cache), 1)
+
+    def test_engine_notes_are_cached_per_client_and_tables(self):
+        client = _FakeClient(
+            {
+                "database = {db:String}": [],
+                "engine LIKE": [["analytics", "orders_cdc", "ReplacingMergeTree"]],
+            }
+        )
+
+        enrich_result_payload(client, "SELECT 1 FROM analytics.orders_cdc", {"rows": []})
+        enrich_result_payload(client, "SELECT 2 FROM analytics.orders_cdc", {"rows": []})
+
+        engine_queries = [sql for sql, _ in client.queries if "engine LIKE" in sql]
+        self.assertEqual(len(engine_queries), 1)
 
     def test_enrichment_errors_never_break_the_payload(self):
         class _BrokenClient:
@@ -155,6 +223,49 @@ class AgentsSchemaDiscoveryConfigTests(unittest.TestCase):
     def test_parses_true(self):
         with patch.dict("os.environ", {"CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY": "true"}):
             self.assertTrue(MCPServerConfig().agents_schema_discovery)
+
+
+class _EnrichableFakeClient:
+    """Fake client compatible with both execute_query and enrichment lookups."""
+
+    server_version = "24.10"
+    database = "default"
+
+    def query(self, query, settings=None, parameters=None):
+        if parameters and "db" in parameters:
+            return SimpleNamespace(result_rows=[])
+        if parameters and "names" in parameters:
+            return SimpleNamespace(
+                result_rows=[["analytics", "orders_cdc", "SharedReplacingMergeTree"]]
+            )
+        return SimpleNamespace(column_names=["c"], result_rows=[(1,)])
+
+
+@pytest.mark.asyncio
+async def test_run_query_tool_payload_includes_agents_schema_context():
+    """MCP boundary check: the registered tool returns the enriched JSON."""
+    _clear_enrichment_caches()
+    _clear_client_cache()
+    env = {
+        "CLICKHOUSE_HOST": "localhost",
+        "CLICKHOUSE_USER": "default",
+        "CLICKHOUSE_PASSWORD": "",
+    }
+    try:
+        with patch.dict("os.environ", env):
+            with patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client") as get_client:
+                get_client.return_value = _EnrichableFakeClient()
+                async with Client(mcp) as client:
+                    result = await client.call_tool(
+                        "run_query", {"query": "SELECT c FROM analytics.orders_cdc"}
+                    )
+        payload = json.loads(result.content[0].text)
+        assert payload["rows"] == [[1]]
+        context = payload["agents_schema_context"]
+        assert any("SharedReplacingMergeTree" in item for item in context["items"])
+    finally:
+        _clear_enrichment_caches()
+        _clear_client_cache()
 
 
 if __name__ == "__main__":
