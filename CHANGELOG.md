@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 ### Added
+- `run_query` results are enriched with an `agents_schema_context` block when the connected service publishes [Agents Schema](https://github.com/dbt-labs/agents_schema) metadata (an `agents` database): governed dbt model descriptions for the queried tables, a metadata discovery hint, and warnings for engines that need `FINAL` or deduplication before aggregating (the engine warnings apply even without an `agents` database). Context lookups reuse the caller's ClickHouse user, degrade silently on any failure, and can be disabled with the new `CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY=false` variable. ([#231](https://github.com/ClickHouse/mcp-clickhouse/pull/231))
 - Client connection reuse across tool calls via a config-keyed cache, eliminating per-call connection overhead. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
 - Best-effort server-side query cancellation: timed-out queries now attempt `KILL QUERY` on the ClickHouse server so workers and server resources can be released. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
 - `CLICKHOUSE_MCP_MAX_WORKERS` environment variable to configure the query worker thread pool size (default: `10`). ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))

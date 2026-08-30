@@ -13,16 +13,17 @@ tables first. Context queries run on the same client (and therefore the
 same ClickHouse user) as the original query, so callers only ever see
 metadata they are allowed to read.
 
-Set ``CLICKHOUSE_AGENTS_SCHEMA_DISCOVERY=false`` to disable.
+Set ``CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY=false`` to disable.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import re
 import time
 from typing import Any, Optional
+
+from mcp_clickhouse.mcp_env import get_mcp_config
 
 logger = logging.getLogger("mcp-clickhouse")
 
@@ -47,7 +48,7 @@ _probe_cache: dict[str, tuple[float, frozenset[str]]] = {}
 
 
 def discovery_enabled() -> bool:
-    return os.getenv("CLICKHOUSE_AGENTS_SCHEMA_DISCOVERY", "true").lower() == "true"
+    return get_mcp_config().agents_schema_discovery
 
 
 def enrich_result_payload(client: Any, query: str, payload: dict) -> dict:
@@ -89,11 +90,16 @@ def enrich_result_payload(client: Any, query: str, payload: dict) -> dict:
     return payload
 
 
+_EXCLUDED_DATABASES = {"system", "information_schema"}
+_EXCLUDED_TABLES = {"select", "values", "numbers", "system"}
+
+
 def _referenced_tables(query: str) -> set[tuple[Optional[str], str]]:
     return {
         (db.lower() if db else None, table)
         for db, table in _TABLE_REF_RE.findall(query)
-        if table.lower() not in {"select", "values", "numbers", "system"}
+        if table.lower() not in _EXCLUDED_TABLES
+        and (db.lower() if db else None) not in _EXCLUDED_DATABASES
     }
 
 

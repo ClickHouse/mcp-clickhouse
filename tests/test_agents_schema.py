@@ -1,5 +1,6 @@
 """Unit tests for Agents Schema discovery enrichment (no live server needed)."""
 
+import os
 import unittest
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ from mcp_clickhouse.agents_schema import (
     _referenced_tables,
     enrich_result_payload,
 )
+from mcp_clickhouse.mcp_env import MCPServerConfig
 
 
 class _FakeResult:
@@ -47,6 +49,12 @@ class ReferencedTablesTests(unittest.TestCase):
 
     def test_ignores_subquery_keywords(self):
         refs = _referenced_tables("SELECT * FROM (SELECT 1) t")
+        self.assertEqual(refs, set())
+
+    def test_ignores_system_and_information_schema_databases(self):
+        refs = _referenced_tables(
+            "SELECT * FROM system.tables t JOIN information_schema.columns c USING (name)"
+        )
         self.assertEqual(refs, set())
 
 
@@ -106,7 +114,7 @@ class EnrichResultPayloadTests(unittest.TestCase):
         client = _FakeClient({"system.tables": [["root"]]})
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        with patch.dict("os.environ", {"CLICKHOUSE_AGENTS_SCHEMA_DISCOVERY": "false"}):
+        with patch.dict("os.environ", {"CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY": "false"}):
             result = enrich_result_payload(client, "SELECT c FROM analytics.fct_revenue", payload)
 
         self.assertNotIn("agents_schema_context", result)
@@ -122,6 +130,21 @@ class EnrichResultPayloadTests(unittest.TestCase):
         result = enrich_result_payload(_BrokenClient(), "SELECT c FROM analytics.t", payload)
 
         self.assertEqual(result, {"columns": ["c"], "rows": [[1]]})
+
+
+class AgentsSchemaDiscoveryConfigTests(unittest.TestCase):
+    def test_defaults_to_enabled(self):
+        with patch.dict("os.environ"):
+            os.environ.pop("CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY", None)
+            self.assertTrue(MCPServerConfig().agents_schema_discovery)
+
+    def test_parses_false(self):
+        with patch.dict("os.environ", {"CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY": "False"}):
+            self.assertFalse(MCPServerConfig().agents_schema_discovery)
+
+    def test_parses_true(self):
+        with patch.dict("os.environ", {"CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY": "true"}):
+            self.assertTrue(MCPServerConfig().agents_schema_discovery)
 
 
 if __name__ == "__main__":
