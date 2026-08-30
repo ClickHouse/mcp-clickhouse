@@ -12,9 +12,10 @@ Prefetching context into the query result makes consultation a server
 guarantee instead of relying on the agent choosing to explore metadata
 tables first. Context queries run on the same client (and therefore the
 same ClickHouse user) as the original query, so callers only ever see
-metadata they are allowed to read. Each context query is capped with
-``max_execution_time`` so enrichment cannot consume a meaningful share of
-the tool's query timeout budget.
+metadata they are allowed to read. Enrichment runs only after the base
+result is complete, and each context query is capped with
+``max_execution_time``, so a slow lookup can only cost the caller a small,
+bounded wait — never the query result.
 
 Set ``CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY=false`` to disable.
 """
@@ -45,8 +46,9 @@ _MULTI_VERSION_ENGINE_PREDICATE = (
     "(engine LIKE '%ReplacingMergeTree' OR engine LIKE '%CollapsingMergeTree')"
 )
 
-# Keep enrichment cheap: cap every context query so it cannot eat into the
-# caller's CLICKHOUSE_MCP_QUERY_TIMEOUT budget in a meaningful way.
+# Keep enrichment cheap: cap every context query server-side so a stalled
+# lookup releases its enrichment worker quickly (the caller additionally
+# stops waiting after the enrichment wait budget in mcp_server).
 _CONTEXT_QUERY_SETTINGS = {"max_execution_time": 2}
 
 # Best-effort extraction: plain FROM/JOIN references only. CTE names and table
@@ -64,7 +66,7 @@ _TABLE_REF_RE = re.compile(
 _CACHE_MAX_ENTRIES = 256
 _cache_lock = threading.Lock()
 _probe_cache: dict[str, tuple[float, frozenset[str]]] = {}
-_engine_cache: dict[tuple[str, tuple[str, ...], tuple[str, ...]], tuple[float, list[str]]] = {}
+_engine_cache: dict[tuple, tuple[float, list[str]]] = {}
 
 
 def discovery_enabled() -> bool:
@@ -188,7 +190,9 @@ def _engine_safety_notes(
     if not names:
         return []
     databases = _candidate_databases(referenced, current_db)
-    cache_key = (_client_cache_key(client), tuple(names), tuple(databases))
+    # Keyed by the exact reference set: two queries can share (names, databases)
+    # while referencing different table sets, and must not share cached notes.
+    cache_key = (_client_cache_key(client), frozenset(referenced), current_db)
     now = time.monotonic()
     with _cache_lock:
         cached = _engine_cache.get(cache_key)

@@ -810,8 +810,7 @@ def execute_query(query: str, query_id: str, client_config: dict) -> str:
                 raise ToolError("Query cancelled before execution")
         res = client.query(query, settings=query_settings)
         logger.info(f"Query {query_id} returned {len(res.result_rows)} rows")
-        payload = {"columns": res.column_names, "rows": res.result_rows}
-        return _serialize_tool_result(payload)
+        return _serialize_tool_result({"columns": res.column_names, "rows": res.result_rows})
     except ToolError:
         raise
     except Exception as err:
