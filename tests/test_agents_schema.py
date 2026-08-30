@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from mcp_clickhouse.agents_schema import (
+    _PROBE_CACHE_MAX_ENTRIES,
     _probe_cache,
     _referenced_tables,
     enrich_result_payload,
@@ -119,6 +120,15 @@ class EnrichResultPayloadTests(unittest.TestCase):
 
         self.assertNotIn("agents_schema_context", result)
         self.assertEqual(client.queries, [])
+
+    def test_probe_cache_stays_bounded(self):
+        client = _FakeClient({"database = {db:String}": []})
+        for i in range(_PROBE_CACHE_MAX_ENTRIES):
+            _probe_cache[f"stale-key-{i}"] = (0.0, frozenset())
+
+        enrich_result_payload(client, "SELECT c FROM analytics.fct_revenue", {"rows": [[1]]})
+
+        self.assertLessEqual(len(_probe_cache), 1)
 
     def test_enrichment_errors_never_break_the_payload(self):
         class _BrokenClient:

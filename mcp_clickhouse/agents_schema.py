@@ -48,6 +48,9 @@ _TABLE_REF_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Bounded: request-scoped client overrides can create many distinct clients,
+# so the cache resets rather than growing without limit.
+_PROBE_CACHE_MAX_ENTRIES = 256
 _probe_cache: dict[str, tuple[float, frozenset[str]]] = {}
 
 
@@ -118,6 +121,8 @@ def _agents_tables(client: Any) -> frozenset[str]:
         parameters={"db": AGENTS_DATABASE},
     )
     tables = frozenset(row[0] for row in result.result_rows)
+    if len(_probe_cache) >= _PROBE_CACHE_MAX_ENTRIES:
+        _probe_cache.clear()
     _probe_cache[cache_key] = (now, tables)
     return tables
 
