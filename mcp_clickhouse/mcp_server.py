@@ -922,10 +922,13 @@ def _enrich_serialized_result(serialized: str, query: str, client_config: dict) 
     """Best-effort Agents Schema enrichment of an already-complete result."""
     if not discovery_enabled() or not query_may_need_enrichment(query):
         return serialized
+    future = None
     try:
         future = ENRICHMENT_EXECUTOR.submit(_enrichment_job, serialized, query, client_config)
         return future.result(timeout=_ENRICHMENT_WAIT_SECONDS)
     except Exception as err:
+        if future is not None:
+            future.cancel()  # frees the worker slot if the job is still queued
         logger.debug("agents schema enrichment skipped: %s", err)
         return serialized
 
@@ -936,6 +939,7 @@ async def _enrich_serialized_result_async(
     """Async variant: awaits the enrichment worker without blocking the loop."""
     if not discovery_enabled() or not query_may_need_enrichment(query):
         return serialized
+    future = None
     try:
         future = ENRICHMENT_EXECUTOR.submit(_enrichment_job, serialized, query, client_config)
         return await asyncio.wait_for(
@@ -944,6 +948,8 @@ async def _enrich_serialized_result_async(
     except asyncio.CancelledError:
         raise
     except Exception as err:
+        if future is not None:
+            future.cancel()  # frees the worker slot if the job is still queued
         logger.debug("agents schema enrichment skipped: %s", err)
         return serialized
 

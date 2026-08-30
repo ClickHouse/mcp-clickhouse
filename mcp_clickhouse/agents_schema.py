@@ -67,6 +67,7 @@ _CACHE_MAX_ENTRIES = 256
 _cache_lock = threading.Lock()
 _probe_cache: dict[str, tuple[float, frozenset[str]]] = {}
 _engine_cache: dict[tuple, tuple[float, list[str]]] = {}
+_current_db_cache: dict[str, tuple[float, str]] = {}
 
 
 def discovery_enabled() -> bool:
@@ -96,14 +97,18 @@ def enrich_result_payload(client: Any, query: str, payload: dict, user: str = ""
         referenced = _referenced_tables(query)
         if not referenced or any(db == AGENTS_DATABASE for db, _ in referenced):
             return payload
-        current_db = _current_database(client)
+        current_db = _current_database(client, user)
+        # Exact-case resolution: ClickHouse identifiers are case-sensitive, so
+        # the query's spelling is the database name. Unqualified references
+        # resolve to the session's current database.
+        resolved = {(db if db is not None else current_db, table) for db, table in referenced}
 
         agents_tables = _agents_tables(client, user)
 
         dbt_notes: list[str] = []
         if agents_tables and "dbt_model" in agents_tables:
-            dbt_notes = _dbt_model_notes(client, referenced, current_db)
-        engine_notes = _engine_safety_notes(client, referenced, current_db, user)
+            dbt_notes = _dbt_model_notes(client, resolved)
+        engine_notes = _engine_safety_notes(client, resolved, user)
         hints: list[str] = []
         # The discovery hint requires the spec-mandated root table, so an
         # unrelated database that happens to be named agents is not branded
@@ -142,25 +147,38 @@ _EXCLUDED_TABLES = {"select", "values", "numbers", "system"}
 
 
 def _referenced_tables(query: str) -> set[tuple[Optional[str], str]]:
+    # Database and table spelling is preserved: ClickHouse identifiers are
+    # case-sensitive, so case-folding could attach another database's metadata.
     return {
-        (db.lower() if db else None, table)
+        (db if db else None, table)
         for db, table in _TABLE_REF_RE.findall(query)
         if table.lower() not in _EXCLUDED_TABLES
-        and (db.lower() if db else None) not in _EXCLUDED_DATABASES
+        and (db.lower() if db else "") not in _EXCLUDED_DATABASES
     }
 
 
-def _current_database(client: Any) -> str:
+def _current_database(client: Any, user: str = "") -> str:
     database = getattr(client, "database", None)
-    return database if isinstance(database, str) and database else "default"
-
-
-def _candidate_databases(
-    referenced: set[tuple[Optional[str], str]], current_db: str
-) -> list[str]:
-    databases = {db for db, _ in referenced if db}
-    databases.add(current_db.lower())
-    return sorted(databases)
+    if isinstance(database, str) and database:
+        return database
+    # No database configured on the client: the session default is a server
+    # setting, so resolve (and cache) it instead of guessing "default".
+    base_key = _client_base_key(client, user)
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _current_db_cache.get(base_key)
+        if cached and now - cached[0] < _CACHE_TTL_SECONDS:
+            return cached[1]
+    try:
+        result = client.query("SELECT currentDatabase()", settings=_CONTEXT_QUERY_SETTINGS)
+        resolved = result.result_rows[0][0]
+    except Exception:
+        return "default"
+    with _cache_lock:
+        if len(_current_db_cache) >= _CACHE_MAX_ENTRIES:
+            _current_db_cache.clear()
+        _current_db_cache[base_key] = (now, resolved)
+    return resolved
 
 
 def _agents_tables(client: Any, user: str = "") -> frozenset[str]:
@@ -183,45 +201,45 @@ def _agents_tables(client: Any, user: str = "") -> frozenset[str]:
     return tables
 
 
-def _client_cache_key(client: Any, user: str = "") -> str:
+def _client_base_key(client: Any, user: str = "") -> str:
     # Include the connecting user so sessions with different grants never share
     # cached visibility of the agents database. The user comes from the
     # server's client config: the driver client object does not expose it.
     uri = getattr(client, "uri", None)
     if not uri:
         return str(id(client))
-    database = _current_database(client)
-    return f"{uri}|{user}|{database}"
+    return f"{uri}|{user}"
+
+
+def _client_cache_key(client: Any, user: str = "") -> str:
+    return f"{_client_base_key(client, user)}|{_current_database(client, user)}"
 
 
 def _engine_safety_notes(
-    client: Any, referenced: set[tuple[Optional[str], str]], current_db: str, user: str = ""
+    client: Any, resolved: set[tuple[str, str]], user: str = ""
 ) -> list[str]:
-    names = sorted({table for _, table in referenced})
-    if not names:
+    if not resolved:
         return []
-    databases = _candidate_databases(referenced, current_db)
-    # Keyed by the exact reference set: two queries can share (names, databases)
+    pairs = sorted(resolved)
+    # Keyed by the exact reference set: two queries can share table names
     # while referencing different table sets, and must not share cached notes.
-    cache_key = (_client_cache_key(client, user), frozenset(referenced), current_db)
+    cache_key = (_client_cache_key(client, user), tuple(pairs))
     now = time.monotonic()
     with _cache_lock:
         cached = _engine_cache.get(cache_key)
         if cached and now - cached[0] < _CACHE_TTL_SECONDS:
             return list(cached[1])
-    # lowerUTF8 matches the Python-side case-fold of referenced databases.
     result = client.query(
         "SELECT database, name, engine FROM system.tables "
-        "WHERE name IN {names:Array(String)} "
-        "AND lowerUTF8(database) IN {dbs:Array(String)} "
+        "WHERE (database, name) IN {pairs:Array(Tuple(String, String))} "
         f"AND {_MULTI_VERSION_ENGINE_PREDICATE} "
         "LIMIT 10",
-        parameters={"names": names, "dbs": databases},
+        parameters={"pairs": pairs},
         settings=_CONTEXT_QUERY_SETTINGS,
     )
     notes = []
     for database, name, engine in result.result_rows:
-        if not _matches_reference(referenced, database, name, current_db):
+        if (database, name) not in resolved:
             continue
         if "Replacing" in engine:
             remedy = (
@@ -244,37 +262,24 @@ def _engine_safety_notes(
     return notes
 
 
-def _dbt_model_notes(
-    client: Any, referenced: set[tuple[Optional[str], str]], current_db: str
-) -> list[str]:
-    names = sorted({table for _, table in referenced})
-    if not names:
+def _dbt_model_notes(client: Any, resolved: set[tuple[str, str]]) -> list[str]:
+    if not resolved:
         return []
+    pairs = sorted(resolved)
+    # Exact (schema, name) matching happens in SQL so unrelated same-name
+    # models can never consume the LIMIT before the relevant ones.
     result = client.query(
         f"SELECT name, schema_name, description FROM {AGENTS_DATABASE}.dbt_model "
-        "WHERE name IN {names:Array(String)} AND description != '' "
-        "ORDER BY name, schema_name LIMIT 5",
-        parameters={"names": names},
+        "WHERE (schema_name, name) IN {pairs:Array(Tuple(String, String))} "
+        "AND description != '' "
+        "ORDER BY schema_name, name LIMIT 5",
+        parameters={"pairs": pairs},
         settings=_CONTEXT_QUERY_SETTINGS,
     )
     notes = []
     for name, schema_name, description in result.result_rows:
-        if not _matches_reference(referenced, schema_name, name, current_db):
+        if (schema_name, name) not in resolved:
             continue
         text = (description or "")[:MAX_DESCRIPTION_CHARS]
         notes.append(f"dbt model `{schema_name}`.`{name}`: {text}")
     return notes
-
-
-def _matches_reference(
-    referenced: set[tuple[Optional[str], str]],
-    database: Optional[str],
-    name: str,
-    current_db: str,
-) -> bool:
-    db = (database or "").lower()
-    if (db, name) in referenced:
-        return True
-    # Unqualified references only match tables in the session's own database,
-    # so metadata from a similarly named table elsewhere is never attached.
-    return (None, name) in referenced and db == current_db.lower()

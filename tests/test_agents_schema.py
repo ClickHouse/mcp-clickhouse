@@ -246,15 +246,52 @@ class EnrichResultPayloadTests(unittest.TestCase):
 
         self.assertNotIn("agents_schema_context", result)
 
-    def test_engine_lookup_is_scoped_to_candidate_databases(self):
+    def test_engine_lookup_is_scoped_to_exact_references(self):
         client = _FakeClient({"database = {db:String}": [], "engine LIKE": []}, database="mydb")
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        enrich_result_payload(client, "SELECT c FROM analytics.fct_revenue", payload)
+        enrich_result_payload(client, "SELECT c FROM analytics.fct_revenue JOIN bare_table", payload)
 
         engine_queries = [(sql, params) for sql, params in client.queries if "engine LIKE" in sql]
         self.assertEqual(len(engine_queries), 1)
-        self.assertEqual(engine_queries[0][1]["dbs"], ["analytics", "mydb"])
+        self.assertEqual(
+            engine_queries[0][1]["pairs"],
+            [("analytics", "fct_revenue"), ("mydb", "bare_table")],
+        )
+
+    def test_database_case_is_preserved(self):
+        # ClickHouse identifiers are case-sensitive: metadata for CaseReview3.t
+        # must never be attached to a query about casereview3.t (or vice versa).
+        responses = {
+            "database = {db:String}": [],
+            "engine LIKE": [["CaseReview3", "t", "ReplacingMergeTree"]],
+        }
+        exact = enrich_result_payload(
+            _FakeClient(responses, database="default"), "SELECT 1 FROM CaseReview3.t", {"rows": []}
+        )
+        folded = enrich_result_payload(
+            _FakeClient(responses, database="default"), "SELECT 1 FROM casereview3.t", {"rows": []}
+        )
+
+        self.assertIn("agents_schema_context", exact)
+        self.assertNotIn("agents_schema_context", folded)
+
+    def test_current_database_is_resolved_from_server_when_unset(self):
+        # get_client without a database leaves client.database unset; the
+        # session default is a server setting, not necessarily "default".
+        client = _FakeClient(
+            {
+                "currentDatabase": [["analytics"]],
+                "database = {db:String}": [],
+                "engine LIKE": [["analytics", "orders", "ReplacingMergeTree"]],
+            }
+        )
+        client.uri = "http://host:8123"
+
+        result = enrich_result_payload(client, "SELECT count() FROM orders", {"rows": []})
+
+        items = result["agents_schema_context"]["items"]
+        self.assertTrue(any("`analytics`.`orders`" in item for item in items))
 
     def test_disabled_by_env_flag(self):
         client = _FakeClient({"system.tables": [["root"]]})
@@ -325,7 +362,7 @@ class _EnrichableFakeClient:
     def query(self, query, settings=None, parameters=None):
         if parameters and "db" in parameters:
             return SimpleNamespace(result_rows=[])
-        if parameters and "names" in parameters:
+        if parameters and "pairs" in parameters:
             return SimpleNamespace(
                 result_rows=[["analytics", "orders_cdc", "SharedReplacingMergeTree"]]
             )
