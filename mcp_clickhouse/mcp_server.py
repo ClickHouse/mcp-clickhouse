@@ -12,7 +12,9 @@ import uuid
 import weakref
 from collections import OrderedDict
 from collections.abc import Mapping
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
+from ipaddress import IPv4Network, IPv6Network
 from typing import Any, Dict, List, Optional, Tuple
 
 import clickhouse_connect
@@ -28,6 +30,7 @@ from fastmcp.server.dependencies import get_context
 from fastmcp.tools import Tool
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 from mcp_clickhouse.http_security import transport_security_middleware
@@ -117,6 +120,7 @@ _health_probe_lock = threading.Lock()
 _logged_health_probe_futures: weakref.WeakSet[concurrent.futures.Future] = weakref.WeakSet()
 
 _HTTP_TRANSPORTS = (TransportType.HTTP.value, "streamable-http", TransportType.SSE.value)
+_BUILTIN_HTTP_RAW_CLIENT = ContextVar("builtin_http_raw_client", default=False)
 
 
 def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]:
@@ -173,14 +177,50 @@ def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]
     return {}
 
 
+def _proxy_header_trusted_hosts(
+    trusted_proxies: List[IPv4Network | IPv6Network],
+) -> List[str]:
+    """Uvicorn trusted_hosts entries with IPv4-mapped IPv6 forms added.
+
+    Uvicorn compares the raw peer without unmapping, so on a dual-stack bind an
+    IPv4 proxy seen as ::ffff:a.b.c.d only matches the mapped form.
+    """
+    trusted_hosts = []
+    for network in trusted_proxies:
+        trusted_hosts.append(str(network))
+        if isinstance(network, IPv4Network):
+            trusted_hosts.append(f"::ffff:{network.network_address}/{network.prefixlen + 96}")
+    return trusted_hosts
+
+
 class ClickHouseFastMCP(FastMCP):
     """FastMCP server that secures every constructed HTTP transport app."""
 
-    def http_app(self, *args: Any, **kwargs: Any) -> Any:
+    def http_app(
+        self,
+        *args: Any,
+        raw_client_address_preserved: bool = False,
+        **kwargs: Any,
+    ) -> Any:
         """Create an authenticated HTTP app with Host and Origin validation."""
-        bound_args = inspect.signature(super().http_app).bind_partial(*args, **kwargs)
+        upstream_http_app = super().http_app
+        bound_args = inspect.signature(upstream_http_app).bind_partial(*args, **kwargs)
         transport = bound_args.arguments.get("transport", TransportType.HTTP.value)
-        auth_kwargs = _resolve_auth(get_mcp_config(), transport=transport)
+        mcp_config = get_mcp_config()
+        trusted_proxies = mcp_config.trusted_proxies
+        if _BUILTIN_HTTP_RAW_CLIENT.get():
+            # Consume the runner's single app construction so later calls in
+            # the same context do not inherit the assertion.
+            _BUILTIN_HTTP_RAW_CLIENT.set(False)
+            raw_client_address_preserved = True
+        if trusted_proxies and not raw_client_address_preserved:
+            raise ValueError(
+                "CLICKHOUSE_MCP_TRUSTED_PROXIES requires a raw ASGI client address. "
+                "Disable proxy-header processing in the outer ASGI server and pass "
+                "raw_client_address_preserved=True."
+            )
+
+        auth_kwargs = _resolve_auth(mcp_config, transport=transport)
         original_auth = self.auth
         if "auth" in auth_kwargs:
             app_auth = auth_kwargs["auth"]
@@ -191,7 +231,7 @@ class ClickHouseFastMCP(FastMCP):
 
         self.auth = app_auth
         try:
-            app = super().http_app(*args, **kwargs)
+            app = upstream_http_app(*args, **kwargs)
         finally:
             self.auth = original_auth
         if getattr(app.state, "path", None) == "/health":
@@ -199,9 +239,94 @@ class ClickHouseFastMCP(FastMCP):
                 "MCP transport path cannot be /health because that path is reserved "
                 "for the public health endpoint"
             )
-        for configured_middleware in transport_security_middleware(get_mcp_config()):
+        if trusted_proxies:
+            app.add_middleware(
+                ProxyHeadersMiddleware,
+                trusted_hosts=_proxy_header_trusted_hosts(trusted_proxies),
+            )
+        for configured_middleware in transport_security_middleware(mcp_config):
             app.add_middleware(configured_middleware.cls, **configured_middleware.kwargs)
         return app
+
+    def sse_app(
+        self,
+        path: Optional[str] = None,
+        message_path: Optional[str] = None,
+        middleware: Optional[list] = None,
+        *,
+        raw_client_address_preserved: bool = False,
+    ) -> Any:
+        """Create a secured SSE app.
+
+        FastMCP 2.12 and 2.13 build this app without going through http_app,
+        skipping auth and transport validation. Deprecated upstream; prefer
+        http_app(transport="sse"). Intended for startup-time construction: the
+        temporary message_path settings mutation is not concurrency-safe.
+        """
+        settings = self._deprecated_settings
+        original_message_path = settings.message_path
+        if message_path is not None:
+            settings.message_path = message_path
+        try:
+            return self.http_app(
+                path=path,
+                middleware=middleware,
+                transport=TransportType.SSE.value,
+                raw_client_address_preserved=raw_client_address_preserved,
+            )
+        finally:
+            settings.message_path = original_message_path
+
+    def streamable_http_app(
+        self,
+        path: Optional[str] = None,
+        middleware: Optional[list] = None,
+        *,
+        raw_client_address_preserved: bool = False,
+    ) -> Any:
+        """Create a secured streamable HTTP app.
+
+        Deprecated upstream; prefer http_app().
+        """
+        return self.http_app(
+            path=path,
+            middleware=middleware,
+            transport=TransportType.HTTP.value,
+            raw_client_address_preserved=raw_client_address_preserved,
+        )
+
+    async def run_http_async(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        """Run HTTP with Host validation before trusted proxy header processing."""
+        upstream_run_http = super().run_http_async
+        trusted_proxies = get_mcp_config().trusted_proxies
+        if not trusted_proxies:
+            await upstream_run_http(*args, **kwargs)
+            return
+
+        upstream_signature = inspect.signature(upstream_run_http)
+        if "uvicorn_config" not in upstream_signature.parameters:
+            raise RuntimeError(
+                "CLICKHOUSE_MCP_TRUSTED_PROXIES requires a FastMCP version whose "
+                "HTTP runner supports uvicorn_config"
+            )
+        bound_args = upstream_signature.bind_partial(*args, **kwargs)
+        inner_uvicorn_config = dict(bound_args.arguments.get("uvicorn_config") or {})
+        if inner_uvicorn_config.get("proxy_headers"):
+            raise ValueError(
+                "uvicorn_config['proxy_headers'] must be false when "
+                "CLICKHOUSE_MCP_TRUSTED_PROXIES is configured"
+            )
+        inner_uvicorn_config["proxy_headers"] = False
+        bound_args.arguments["uvicorn_config"] = inner_uvicorn_config
+        token = _BUILTIN_HTTP_RAW_CLIENT.set(True)
+        try:
+            await upstream_run_http(*bound_args.args, **bound_args.kwargs)
+        finally:
+            _BUILTIN_HTTP_RAW_CLIENT.reset(token)
 
 
 mcp = ClickHouseFastMCP(

@@ -622,11 +622,59 @@ These variables control the MCP process itself, including transport, authenticat
   * Entries are exact (`localhost:8000`) or accept any port (`localhost:*`). Example: `CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000`
   * The `host:*` form matches only values that carry a port. A port-less Host (a standard-port deployment where the client omits `:80`/`:443`) must be listed as a bare exact entry (`example.com`) as well.
   * Requests with a non-matching or missing `Host` header get `421 Misdirected Request`. GET and HEAD requests to `/health` are exempt from Host and Origin validation so orchestrator probes keep working.
-  * Behind a reverse proxy, list the Host value the proxy forwards. Set an explicit list when a launcher such as `fastmcp run` overrides the bind address for remote access.
+  * Behind a reverse proxy, prefer preserving the original `Host` header. You can instead list the upstream `Host` value the proxy sends. Set an explicit list when a launcher such as `fastmcp run` overrides the bind address for remote access.
+* `CLICKHOUSE_MCP_TRUSTED_PROXIES`: Proxy IP addresses or CIDR networks whose `X-Forwarded-*` headers are trusted
+  * Default: None. `X-Forwarded-Host` is ignored. Existing Uvicorn handling of `X-Forwarded-For` and `X-Forwarded-Proto` is unchanged.
+  * Entries must be IP addresses or CIDR networks, such as `127.0.0.1,10.20.0.0/24,2001:db8::1`. CIDRs must use their network address, so `10.20.0.1/24` is rejected. Host names, scoped IPv6 addresses, `*`, `0.0.0.0/0`, and `::/0` are also rejected.
+  * Trust is based on the immediate raw socket peer. A request from any other peer, or a request without a client address, ignores `X-Forwarded-Host` and validates `Host`.
+  * A trusted peer may send exactly one `X-Forwarded-Host` header containing one non-empty value. Duplicate fields, empty values, and comma separated lists get `421 Misdirected Request`. If the header is absent, `Host` is validated.
+  * Use the narrowest possible address or network. The MCP server must only be reachable through proxies in the configured ranges. Every trusted proxy must strip and overwrite client supplied `X-Forwarded-Host` and `X-Forwarded-Proto` values, and construct `X-Forwarded-For` from the verified connection peer.
+  * The built-in server and `fastmcp run` disable Uvicorn's outer proxy-header handling, validate Host from the raw peer, then apply `X-Forwarded-For` and `X-Forwarded-Proto`. Explicitly enabling `uvicorn_config["proxy_headers"]` fails startup in this mode.
+  * Direct ASGI embedding must disable proxy-header handling in the outer ASGI server and call `mcp.http_app(raw_client_address_preserved=True)`. Without that explicit assertion, app construction fails when trusted proxies are configured.
 * `CLICKHOUSE_MCP_ALLOWED_ORIGINS`: Comma separated `Origin` header values accepted on HTTP/SSE
   * Default: None, which rejects every request that carries an `Origin` header
   * MCP requires Origin validation for HTTP/SSE transport connections. Requests without an Origin are accepted because non-browser MCP clients normally omit it. A non-matching Origin gets `403 Forbidden`. The `/health` endpoint is exempt as described above.
   * Entries are exact (`http://localhost:3000`) or accept any port (`http://localhost:*`). As with hosts, the any-port form matches only origins that carry a port; a standard-port origin (`https://app.example.com`) must be listed exactly.
+
+##### Reverse proxy Host handling
+
+Preserve `Host` when possible. This keeps forwarded Host trust disabled:
+
+```nginx
+location / {
+    proxy_pass http://mcp-clickhouse:8000;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host "";
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+Sanitize `X-Forwarded-For` and `X-Forwarded-Proto` independently of `X-Forwarded-Host` trust. Uvicorn may trust those headers based on the proxy peer even when `CLICKHOUSE_MCP_TRUSTED_PROXIES` is unset.
+
+```env
+CLICKHOUSE_MCP_ALLOWED_HOSTS=mcp.example.com
+```
+
+Stock nginx changes `Host` to the upstream name for proxied requests. It does not create or overwrite `X-Forwarded-Host`. If preserving `Host` is not possible, overwrite the forwarded header at the trusted edge:
+
+```nginx
+location / {
+    proxy_pass http://mcp-clickhouse:8000;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+```env
+CLICKHOUSE_MCP_ALLOWED_HOSTS=mcp.example.com
+CLICKHOUSE_MCP_TRUSTED_PROXIES=10.20.0.8
+```
+
+The second configuration is safe only when `10.20.0.8` is the proxy's immediate source address, the server port is isolated from other clients, and nginx overwrites the incoming forwarding headers as shown. For a proxy chain, each trusted hop must discard unverified incoming values before constructing the new forwarding headers.
+
+On an IPv6 or dual-stack bind, IPv4 proxies may appear as IPv4-mapped addresses such as `::ffff:10.20.0.8`; these are matched against IPv4 entries automatically. Envoy's `append_x_forwarded_host` appends to an existing `X-Forwarded-Host` rather than overwriting it, producing a comma separated list that is rejected, so configure the trusted hop to overwrite the header instead. On Kubernetes with source NAT (for example `externalTrafficPolicy: Cluster`) the observed peer may be a node IP rather than the proxy pod, so trust the pod or node CIDR as appropriate; ingress-nginx overwrites both `Host` and `X-Forwarded-Host` itself.
 
 #### Middleware Variables
 
