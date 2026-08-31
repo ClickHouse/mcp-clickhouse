@@ -876,6 +876,7 @@ dependencies = [
     { name = "fastmcp" },
     { name = "python-dotenv" },
     { name = "truststore" },
+    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -893,12 +894,13 @@ requires-dist = [
     { name = "cachetools", specifier = ">=5.5.0" },
     { name = "chdb", marker = "extra == 'chdb'", specifier = ">=3.3.0" },
     { name = "clickhouse-connect", specifier = ">=0.8.16" },
-    { name = "fastmcp", specifier = ">=2.0.0,<3.0.0" },
+    { name = "fastmcp", specifier = ">=2.12.3,<3.0.0" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "truststore", specifier = ">=0.10" },
+    { name = "uvicorn", specifier = ">=0.31.0" },
 ]
 provides-extras = ["chdb", "dev"]
 

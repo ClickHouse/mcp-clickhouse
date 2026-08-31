@@ -5,9 +5,13 @@ and type conversion.
 """
 
 from dataclasses import dataclass
+from ipaddress import IPv4Network, IPv6Network, ip_network
 import os
-from typing import Optional
+from typing import List, Optional
 from enum import Enum
+
+
+_IPV4_MAPPED_IPV6 = ip_network("::ffff:0:0/96")
 
 
 class TransportType(str, Enum):
@@ -288,6 +292,22 @@ def get_chdb_config() -> ChDBConfig:
     return _CHDB_CONFIG_INSTANCE
 
 
+def _split_env_list(name: str) -> List[str]:
+    """Read a comma separated environment variable as a list, ignoring blanks."""
+    return [item.strip() for item in os.getenv(name, "").split(",") if item.strip()]
+
+
+_LOOPBACK_BIND_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+_WILDCARD_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]"})
+
+
+def _format_http_host(host: str, port: int) -> str:
+    """Format a bind host as an HTTP Host header value."""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"{host}:{port}"
+
+
 @dataclass
 class MCPServerConfig:
     """Configuration for MCP server-level settings.
@@ -300,6 +320,13 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
         CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
+        CLICKHOUSE_MCP_MAX_WORKERS: Maximum thread pool workers for query execution (default: 10)
+        CLICKHOUSE_MCP_ALLOWED_HOSTS: Comma separated Host header values accepted on
+            HTTP/SSE (default: derived from a concrete bind host and port)
+        CLICKHOUSE_MCP_TRUSTED_PROXIES: Comma separated proxy IP addresses or CIDR
+            networks whose X-Forwarded-* headers are trusted (default: none)
+        CLICKHOUSE_MCP_ALLOWED_ORIGINS: Comma separated Origin header values accepted on
+            HTTP/SSE (default: no browser origins are allowed)
         CLICKHOUSE_MCP_AUTH_TOKEN: Static bearer token for HTTP/SSE transports.
             One authentication mode must be configured for HTTP/SSE; the other two
             options are FASTMCP_SERVER_AUTH (FastMCP OAuth/OIDC providers) and
@@ -327,6 +354,89 @@ class MCPServerConfig:
     @property
     def query_timeout(self) -> int:
         return int(os.getenv("CLICKHOUSE_MCP_QUERY_TIMEOUT", "30"))
+
+    @property
+    def max_workers(self) -> int:
+        """Maximum thread pool workers for query execution.
+
+        Default: 10
+        """
+        return int(os.getenv("CLICKHOUSE_MCP_MAX_WORKERS", "10"))
+
+    @property
+    def allowed_hosts(self) -> List[str]:
+        """Host header values the HTTP/SSE transports answer for.
+
+        A concrete bind address supplies a secure default. Loopback binds accept
+        the IPv4, IPv6, and localhost aliases on any port. Wildcard binds require
+        an explicit non-empty setting because the public Host value cannot be
+        inferred. Entries may use a "localhost:*" any-port form.
+        """
+        name = "CLICKHOUSE_MCP_ALLOWED_HOSTS"
+        if name in os.environ:
+            allowed_hosts = _split_env_list(name)
+            if not allowed_hosts:
+                raise ValueError(f"{name} is set but contains no Host values")
+            return allowed_hosts
+
+        bind_host = self.bind_host.lower()
+        if bind_host in _WILDCARD_BIND_HOSTS:
+            raise ValueError(
+                f"{name} must contain the public host name or address when "
+                "CLICKHOUSE_MCP_BIND_HOST is a wildcard address"
+            )
+
+        if bind_host in _LOOPBACK_BIND_HOSTS:
+            return [
+                "127.0.0.1",
+                "127.0.0.1:*",
+                "localhost",
+                "localhost:*",
+                "[::1]",
+                "[::1]:*",
+            ]
+        return [_format_http_host(self.bind_host, self.bind_port)]
+
+    @property
+    def trusted_proxies(self) -> List[IPv4Network | IPv6Network]:
+        """Get proxy addresses allowed to supply X-Forwarded-* headers."""
+        name = "CLICKHOUSE_MCP_TRUSTED_PROXIES"
+        networks = []
+        for value in _split_env_list(name):
+            if value == "*":
+                raise ValueError(f"{name} cannot trust every address")
+            if "%" in value:
+                raise ValueError(f"Scoped IPv6 addresses are not supported in {name}: {value}")
+            try:
+                network = ip_network(value)
+            except ValueError as exc:
+                raise ValueError(f"Invalid IP address or CIDR in {name}: {value}") from exc
+            if isinstance(network, IPv6Network) and network.subnet_of(_IPV4_MAPPED_IPV6):
+                # Normalize IPv4-mapped IPv6 to IPv4 so dual-stack peers match
+                # and ::ffff:0:0/96 hits the trust-all rejection below.
+                network = ip_network(
+                    f"{network.network_address.ipv4_mapped}/{network.prefixlen - 96}"
+                )
+            if network.prefixlen == 0:
+                raise ValueError(f"{name} cannot trust every address")
+            if isinstance(network, IPv6Network) and network.overlaps(_IPV4_MAPPED_IPV6):
+                # A supernet of the mapped range would trust every IPv4 peer on
+                # a dual-stack bind, equivalent to the rejected 0.0.0.0/0.
+                raise ValueError(
+                    f"{name} entries cannot contain the whole IPv4-mapped range "
+                    f"::ffff:0:0/96: {value}"
+                )
+            networks.append(network)
+        return networks
+
+    @property
+    def allowed_origins(self) -> List[str]:
+        """Origin header values the HTTP/SSE transports accept.
+
+        Requests without an Origin header are always accepted. An empty list
+        rejects every request that carries an Origin header.
+        """
+        return _split_env_list("CLICKHOUSE_MCP_ALLOWED_ORIGINS")
 
     @property
     def auth_token(self) -> Optional[str]:

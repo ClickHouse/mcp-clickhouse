@@ -15,7 +15,11 @@ def main():
     if transport in http_transports:
         # Use the configured bind host (defaults to 127.0.0.1, can be set to 0.0.0.0)
         # and bind port (defaults to 8000)
-        mcp.run(transport=transport, host=mcp_config.bind_host, port=mcp_config.bind_port)
+        mcp.run(
+            transport=transport,
+            host=mcp_config.bind_host,
+            port=mcp_config.bind_port,
+        )
     else:
         # For stdio transport, no host or port is needed
         mcp.run(transport=transport)
