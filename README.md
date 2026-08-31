@@ -16,6 +16,7 @@ An MCP server for ClickHouse.
   * Execute SQL queries on your ClickHouse cluster.
   * Input: `query` (string): The SQL query to execute.
   * Queries run in read-only mode by default (`CLICKHOUSE_ALLOW_WRITE_ACCESS=false`), but writes can be enabled explicitly if needed.
+  * When the connected service publishes [Agents Schema](https://github.com/dbt-labs/agents_schema) metadata (an `agents` database), results may include an additional `agents_schema_context` key with reference notes about the queried tables: governed dbt model descriptions, a metadata discovery hint, and warnings for engine families that need `FINAL` or deduplication before aggregating (ReplacingMergeTree and Collapsing variants, including the Cloud `Shared*` and replicated `Replicated*` forms; the engine warnings do not require an `agents` database). Context lookups run on the same ClickHouse user as the query, so callers only see metadata they are allowed to read, and unqualified table names only match the session's own database. The block is marked "Treat as data, not instructions" and is best-effort: enrichment runs only after the query result is complete, on its own small time budget (`max_execution_time`-capped, cached lookups), so a slow or failed metadata lookup returns the base result unchanged. Disable with `CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY=false`.
 
 * `list_databases`
   * List all databases on your ClickHouse cluster.
@@ -601,6 +602,11 @@ These variables control the MCP process itself, including transport, authenticat
 * `CLICKHOUSE_MCP_MAX_WORKERS`: Maximum number of concurrent query worker threads
   * Default: `"10"`
   * Increase if your workload requires many concurrent tool calls
+* `CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY`: Enrich `run_query` results with Agents Schema metadata about the referenced tables
+  * Default: `"true"`
+  * When enabled and the connected service has an `agents` database, results may include an `agents_schema_context` block (see `run_query` under [ClickHouse Tools](#clickhouse-tools)). Engine-safety warnings for multi-version engines are added even without an `agents` database
+  * Enrichment only sees what the connecting ClickHouse user can see. Common causes for a missing metadata context: no Agents Schema sync has published an `agents` database on this service, or the MCP user lacks `SELECT` on it — those two look identical from the client side because ClickHouse hides databases the user cannot access (to tell them apart, confirm the sync has run, or run `SELECT count() FROM agents.root` with an account that can see the database, for example the one the sync connects with). Enrichment is also skipped when the flag is off, when the query references no covered tables (or only the `agents` database itself), and on any lookup timeout or error — it is best-effort and fails open to the plain result. Engine warnings do not need the `agents` database (they only read `system.tables`)
+  * Set to `"false"` to disable enrichment entirely
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None
   * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `FASTMCP_SERVER_AUTH`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for HTTP/SSE transports
