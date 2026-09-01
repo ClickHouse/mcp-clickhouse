@@ -29,6 +29,19 @@ exported sync helpers (`mcp_clickhouse.list_databases`, `list_tables`) keep thei
 signatures so direct Python callers are unaffected. Tool names, arguments,
 docstrings, and JSON output are unchanged.
 
+Details settled during implementation:
+
+- Only the async MCP-facing wrappers read request context state. The exported
+  sync helpers and `create_clickhouse_client()` no longer implicitly consult
+  `get_context()`; callers pass overrides explicitly. This is the only way to
+  avoid awaiting inside sync code and it makes the trust boundary explicit.
+- The metadata tools wait on the shared `CLICKHOUSE_MCP_QUERY_TIMEOUT` and raise
+  a timeout `ToolError` like `run_query`, but do not register for `KILL QUERY`.
+  The send/receive timeout cap releases the worker thread.
+- The `run_http_async` guard for upstream versions lacking `uvicorn_config`, and
+  the tests that faked older FastMCP signatures, are removed because the pin
+  guarantees the FastMCP 4 signatures.
+
 ## D4. `FASTMCP_SERVER_AUTH` env-var auto-loading is replaced by a module hook
 
 FastMCP 3+ removed `settings.server_auth_class` and per-provider

@@ -466,18 +466,25 @@ Each hook receives a `MiddlewareContext` object containing the message and metad
 
 ### Dynamic Client Configuration via Context State
 
-Middleware can override ClickHouse client configuration on a per-request basis using the `CLIENT_CONFIG_OVERRIDES_KEY` context state key. The server merges these overrides with the base configuration from environment variables.
+Middleware can override ClickHouse client configuration on a per-request basis using the `CLIENT_CONFIG_OVERRIDES_KEY` context state key. The server merges these overrides with the base configuration from environment variables. FastMCP context state is asynchronous, so set it from an `async` middleware hook and `await` the call:
 
 ```python
 from fastmcp.server.dependencies import get_context
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from mcp_clickhouse.mcp_server import CLIENT_CONFIG_OVERRIDES_KEY
 
-ctx = get_context()
-ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, {
-    "connect_timeout": 60,
-    "send_receive_timeout": 120
-})
+
+class TimeoutOverrideMiddleware(Middleware):
+    async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
+        ctx = get_context()
+        await ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, {
+            "connect_timeout": 60,
+            "send_receive_timeout": 120
+        })
+        return await call_next(context)
 ```
+
+Overrides are scoped to the current request. The sessionless MCP protocol used by FastMCP 4 carries no state between requests, so middleware must set overrides on every call that needs them.
 
 This enables advanced use cases like dynamic timeout adjustments, tenant-specific routing, or per-user connection settings.
 
@@ -615,10 +622,10 @@ These variables control the MCP process itself, including transport, authenticat
 * `CLICKHOUSE_MCP_BIND_PORT`: Port to bind the MCP server to when using HTTP or SSE transport
   * Default: `"8000"`
   * Only used when transport is `"http"` or `"sse"` — not related to `CLICKHOUSE_PORT`
-* `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for query tool calls
+* `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for `run_query`, `list_databases`, and `list_tables` tool calls
   * Default: `"30"`
   * Increase this if you see `Query timed out after ...` errors for heavy queries
-  * When a query times out, the server attempts to cancel it with `KILL QUERY`
+  * When a `run_query` call times out, the server attempts to cancel it with `KILL QUERY`; metadata tools return a timeout error and release the worker when the HTTP read timeout expires
   * Unless `CLICKHOUSE_SEND_RECEIVE_TIMEOUT` is explicitly set, the HTTP read timeout is capped at this value plus five seconds
 * `CLICKHOUSE_MCP_MAX_WORKERS`: Maximum number of concurrent query worker threads
   * Default: `"10"`

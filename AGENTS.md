@@ -19,6 +19,7 @@ Act like an experienced maintainer of a public Python MCP server and database in
 - `mcp_clickhouse/mcp_env.py`: environment-backed configuration and validation. Treat this as the source of truth for configuration semantics.
 - `mcp_clickhouse/main.py`: runtime entry point and transport startup.
 - `mcp_clickhouse/mcp_middleware_hook.py`: optional user-provided middleware loading.
+- `mcp_clickhouse/mcp_auth_hook.py`: optional user-provided auth provider loading for HTTP/SSE (`CLICKHOUSE_MCP_AUTH_MODULE`).
 - `mcp_clickhouse/chdb_prompt.py`: the public chDB prompt content.
 - `mcp_clickhouse/skills_advisor.py`: server-level instructions advertised to MCP clients.
 - `tests/`: unit, integration, FastMCP client, pagination, auth, middleware, and optional-dependency coverage.
@@ -48,7 +49,7 @@ This module has meaningful import-time behavior. `mcp_server.py` loads `.env`, r
 - Tool results are deliberately JSON-encoded strings. Do not return raw dictionaries or lists without verifying FastMCP protocol behavior and updating all affected tests and documentation.
 - Test public tool behavior through `fastmcp.Client` when the MCP boundary matters. Direct helper tests alone do not validate registration, serialization, or protocol errors.
 - Pagination tokens are stateful, single-use cache entries with expiry. Preserve filter and option validation, expiry behavior, and cleanup when changing pagination.
-- Context-state client configuration overrides are request-scoped. Do not let one MCP session's overrides leak into another session or mutate the base configuration.
+- Context-state client configuration overrides are request-scoped. FastMCP context state is async; only the async MCP-facing tool wrappers read it, and they pass the snapshot explicitly to the sync helpers. Do not let one request's overrides leak into another or mutate the base configuration.
 - chDB initialization and registration are conditional. A missing optional dependency must not prevent ClickHouse-only startup.
 
 ## Security And Operational Safety
@@ -57,7 +58,7 @@ Security defaults are part of the product contract, not incidental implementatio
 
 - ClickHouse queries are read-only by default. Do not weaken `CLICKHOUSE_ALLOW_WRITE_ACCESS=false` behavior.
 - Destructive operations require the separate `CLICKHOUSE_ALLOW_DROP=true` opt-in in addition to write access. Preserve this two-step protection and add regression tests for any changes in this area.
-- HTTP and SSE transports require exactly one authentication mode: a static token, a FastMCP auth provider, or the explicit development-only auth disable flag. Stdio behavior is intentionally different.
+- HTTP and SSE transports require exactly one authentication mode: a static token, an auth provider module (`CLICKHOUSE_MCP_AUTH_MODULE` exposing `create_auth_provider()`), or the explicit development-only auth disable flag. FastMCP no longer loads providers from `FASTMCP_SERVER_AUTH*` environment variables and the server rejects that variable at HTTP startup. Stdio behavior is intentionally different.
 - Keep `/health` unauthenticated for orchestrator probes, but keep its response minimal. Never expose connection errors, hostnames, credentials, filesystem paths, tokens, or backend version details in the response body.
 - Never log passwords, auth tokens, or full sensitive configuration values. When logging overrides, log keys rather than values.
 - Treat middleware modules and context-provided client overrides as trust boundaries. Validate types and fail clearly without exposing secrets.
