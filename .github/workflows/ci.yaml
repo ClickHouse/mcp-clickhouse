@@ -39,6 +39,8 @@ jobs:
           CLICKHOUSE_SECURE: "false"
           CLICKHOUSE_VERIFY: "false"
           CHDB_ENABLED: "true"
+          # Fail on camelCase MCP field reads; the SDK v2 bridge only warns. See MIGRATION_DECISIONS.md D6.
+          FASTMCP_MCP_CAMELCASE_COMPAT: "false"
         run: |
           uv run pytest tests
 

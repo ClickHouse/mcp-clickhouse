@@ -4,7 +4,7 @@ import asyncio
 import json
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastmcp import Client
@@ -54,7 +54,7 @@ class ConfigOverrideMiddleware(Middleware):
 
     async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
         ctx = get_context()
-        ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, self.overrides)
+        await ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, self.overrides)
         return await call_next(context)
 
 
@@ -64,7 +64,9 @@ class QueryOverrideMiddleware(Middleware):
     async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
         query = context.message.arguments["query"]
         ctx = get_context()
-        ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, {"connect_timeout": int(query.split()[-1])})
+        await ctx.set_state(
+            CLIENT_CONFIG_OVERRIDES_KEY, {"connect_timeout": int(query.split()[-1])}
+        )
         return await call_next(context)
 
 
@@ -74,6 +76,9 @@ class FakeQueryClient:
         self.barrier = barrier
         self.server_settings = {}
         self.server_version = "24.10"
+
+    def command(self, _query):
+        return f"db_{self.connect_timeout}"
 
     def query(self, _query, settings):
         assert settings["readonly"] == "1"
@@ -94,42 +99,30 @@ class TestConfigOverrideUnit:
         _clear_client_cache()
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    @patch("mcp_clickhouse.mcp_server.get_context")
-    def test_overrides_merged_into_client_config(self, mock_get_context, mock_cc):
-        mock_ctx = MagicMock()
-        mock_ctx.get_state.return_value = {"connect_timeout": 99, "send_receive_timeout": 199}
-        mock_get_context.return_value = mock_ctx
+    def test_overrides_merged_into_client_config(self, mock_cc):
         mock_cc.get_client.return_value = MagicMock(server_version="24.1")
 
-        create_clickhouse_client()
+        create_clickhouse_client({"connect_timeout": 99, "send_receive_timeout": 199})
 
         call_kwargs = mock_cc.get_client.call_args.kwargs
         assert call_kwargs["connect_timeout"] == 99
         assert call_kwargs["send_receive_timeout"] == 199
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    @patch("mcp_clickhouse.mcp_server.get_context")
-    def test_empty_overrides_no_change(self, mock_get_context, mock_cc):
-        mock_ctx = MagicMock()
-        mock_ctx.get_state.return_value = {}
-        mock_get_context.return_value = mock_ctx
+    def test_empty_overrides_no_change(self, mock_cc):
         mock_cc.get_client.return_value = MagicMock(server_version="24.1")
 
-        create_clickhouse_client()
+        create_clickhouse_client({})
 
         call_kwargs = mock_cc.get_client.call_args.kwargs
         assert "host" in call_kwargs
         assert "username" in call_kwargs
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    @patch("mcp_clickhouse.mcp_server.get_context")
-    def test_none_overrides_no_change(self, mock_get_context, mock_cc):
-        mock_ctx = MagicMock()
-        mock_ctx.get_state.return_value = None
-        mock_get_context.return_value = mock_ctx
+    def test_none_overrides_no_change(self, mock_cc):
         mock_cc.get_client.return_value = MagicMock(server_version="24.1")
 
-        create_clickhouse_client()
+        create_clickhouse_client(None)
 
         assert "host" in mock_cc.get_client.call_args.kwargs
 
@@ -141,18 +134,28 @@ class TestConfigOverrideUnit:
 
         assert "host" in mock_cc.get_client.call_args.kwargs
 
-    @pytest.mark.parametrize("invalid_overrides", [[], "", 0, False])
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @pytest.mark.asyncio
+    @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
+    async def test_capture_returns_none_outside_request(self, _mock_get_context):
+        assert await _get_client_config_overrides() is None
+
+    @pytest.mark.asyncio
     @patch("mcp_clickhouse.mcp_server.get_context")
-    def test_invalid_context_state_fails_before_client_creation(
-        self, mock_get_context, mock_cc, invalid_overrides
-    ):
+    async def test_capture_reads_async_context_state(self, mock_get_context):
         mock_ctx = MagicMock()
-        mock_ctx.get_state.return_value = invalid_overrides
+        mock_ctx.get_state = AsyncMock(return_value={"connect_timeout": 7})
         mock_get_context.return_value = mock_ctx
 
+        assert await _get_client_config_overrides() == {"connect_timeout": 7}
+        mock_ctx.get_state.assert_awaited_once_with(CLIENT_CONFIG_OVERRIDES_KEY)
+
+    @pytest.mark.parametrize("invalid_overrides", [[], "", 0, False])
+    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    def test_invalid_context_state_fails_before_client_creation(
+        self, mock_cc, invalid_overrides
+    ):
         with pytest.raises(ToolError) as exc_info:
-            create_clickhouse_client()
+            create_clickhouse_client(invalid_overrides)
 
         assert repr(invalid_overrides) not in str(exc_info.value)
         assert CLIENT_CONFIG_OVERRIDES_KEY in str(exc_info.value)
@@ -252,8 +255,11 @@ class TestConfigOverrideUnit:
 
         assert mock_cc.get_client.call_args.kwargs["pool_mgr"] is pool_manager
 
+    @pytest.mark.asyncio
     @patch("mcp_clickhouse.mcp_server.get_context")
-    def test_capture_snapshots_mappings_but_preserves_opaque_objects(self, mock_get_context):
+    async def test_capture_snapshots_mappings_but_preserves_opaque_objects(
+        self, mock_get_context
+    ):
         pool_manager = object()
         settings = {"max_threads": 2}
         state = {
@@ -262,10 +268,10 @@ class TestConfigOverrideUnit:
             "pool_mgr": pool_manager,
         }
         mock_ctx = MagicMock()
-        mock_ctx.get_state.return_value = state
+        mock_ctx.get_state = AsyncMock(return_value=state)
         mock_get_context.return_value = mock_ctx
 
-        snapshot = _get_client_config_overrides()
+        snapshot = await _get_client_config_overrides()
         state["connect_timeout"] = 50
         settings["max_threads"] = 3
 
@@ -274,21 +280,19 @@ class TestConfigOverrideUnit:
         assert snapshot["pool_mgr"] is pool_manager
 
     @patch("mcp_clickhouse.mcp_server.execute_query", return_value="result")
-    @patch("mcp_clickhouse.mcp_server._get_client_config_overrides")
-    def test_sync_run_query_passes_resolved_config(self, mock_get_overrides, mock_execute):
-        overrides = {"connect_timeout": 41}
-        mock_get_overrides.return_value = overrides
-
+    def test_sync_run_query_uses_base_config(self, mock_execute):
+        """The sync helper never reads request state; it runs on the base config."""
         assert run_query("SELECT 1") == "result"
 
         query, query_id, config = mock_execute.call_args.args
         assert query == "SELECT 1"
         assert query_id
-        assert config["connect_timeout"] == 41
+        assert "host" in config
+        assert config.overrides_applied is False
 
     @pytest.mark.asyncio
     @patch("mcp_clickhouse.mcp_server.execute_query", return_value="result")
-    @patch("mcp_clickhouse.mcp_server._get_client_config_overrides")
+    @patch("mcp_clickhouse.mcp_server._get_client_config_overrides", new_callable=AsyncMock)
     async def test_async_run_query_passes_resolved_config(
         self, mock_get_overrides, mock_execute
     ):
@@ -329,6 +333,23 @@ class TestConfigOverrideMcpBoundary:
 
             assert json.loads(result.content[0].text)["rows"] == [[99]]
             assert get_client.call_args.kwargs["connect_timeout"] == 99
+        finally:
+            mcp_server.middleware.remove(middleware)
+
+    @pytest.mark.asyncio
+    async def test_registered_list_databases_receives_context_overrides(self, mcp_server):
+        middleware = ConfigOverrideMiddleware({"connect_timeout": 98})
+        mcp_server.add_middleware(middleware)
+        try:
+            with patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client") as get_client:
+                get_client.side_effect = lambda **kwargs: FakeQueryClient(
+                    kwargs["connect_timeout"]
+                )
+                async with Client(mcp_server) as client:
+                    result = await client.call_tool("list_databases", {})
+
+            assert json.loads(result.content[0].text) == ["db_98"]
+            assert get_client.call_args.kwargs["connect_timeout"] == 98
         finally:
             mcp_server.middleware.remove(middleware)
 

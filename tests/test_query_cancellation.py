@@ -41,8 +41,7 @@ class TestQueryIdTracking:
             _active_queries.clear()
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
-    def test_query_id_passed_in_settings(self, _mock_ctx, mock_cc):
+    def test_query_id_passed_in_settings(self, mock_cc):
         """query_id should be included in the settings dict passed to client.query()."""
         mock_client = MagicMock(server_version="24.1")
         mock_client.server_settings = {}
@@ -61,8 +60,7 @@ class TestQueryIdTracking:
         assert settings["query_id"] == "test-query-id-123"
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
-    def test_active_queries_tracked_and_cleaned(self, _mock_ctx, mock_cc):
+    def test_active_queries_tracked_and_cleaned(self, mock_cc):
         """execute_query should register in _active_queries and clean up on completion."""
         mock_client = MagicMock(server_version="24.1")
         mock_client.server_settings = {}
@@ -85,8 +83,7 @@ class TestQueryIdTracking:
             assert "tracking-test-id" not in _active_queries
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
-    def test_active_queries_cleaned_on_error(self, _mock_ctx, mock_cc):
+    def test_active_queries_cleaned_on_error(self, mock_cc):
         """execute_query should clean up _active_queries even on error."""
         mock_client = MagicMock(server_version="24.1")
         mock_client.server_settings = {}
@@ -217,8 +214,7 @@ class TestRunQueryTimeout:
 
     @patch("mcp_clickhouse.mcp_server._cancel_query")
     @patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR")
-    @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
-    def test_timeout_triggers_cancel(self, _mock_ctx, mock_executor, mock_cancel):
+    def test_timeout_triggers_cancel(self, mock_executor, mock_cancel):
         """When run_query times out, it should call _cancel_query with the query_id."""
         mock_future = MagicMock()
         mock_future.result.side_effect = concurrent.futures.TimeoutError()

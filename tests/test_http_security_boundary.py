@@ -2,11 +2,11 @@ import asyncio
 import warnings
 from pathlib import Path
 
+import fastmcp
 import pytest
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from fastmcp.utilities.mcp_server_config import MCPServerConfig as FastMCPFileConfig
-from starlette.applications import Starlette
 from starlette.exceptions import StarletteDeprecationWarning
 from starlette.responses import JSONResponse, PlainTextResponse
 
@@ -281,71 +281,6 @@ def test_raw_client_assertion_without_trusted_proxies_is_a_no_op(
     assert response.status_code == 200
 
 
-@pytest.mark.parametrize(
-    "app_method,path,method",
-    [
-        ("sse_app", "/sse", "GET"),
-        ("streamable_http_app", "/mcp", "POST"),
-    ],
-)
-def test_legacy_app_builders_carry_transport_security(
-    monkeypatch: pytest.MonkeyPatch, app_method: str, path: str, method: str
-):
-    _clear_http_env(monkeypatch)
-    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
-    app = getattr(ClickHouseFastMCP("test"), app_method)()
-
-    response = TestClient(app).request(method, path, headers={"host": "attacker.example"})
-
-    assert response.status_code == 421
-    assert response.text == "Invalid Host header"
-
-
-@pytest.mark.parametrize("app_method", ["sse_app", "streamable_http_app"])
-def test_legacy_app_builders_respect_the_trusted_proxy_embedding_guard(
-    monkeypatch: pytest.MonkeyPatch, app_method: str
-):
-    _clear_http_env(monkeypatch)
-    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
-    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
-    monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.0.0.0/24")
-    server = ClickHouseFastMCP("test")
-
-    with pytest.raises(ValueError, match="raw ASGI client address"):
-        getattr(server, app_method)()
-
-    app = getattr(server, app_method)(raw_client_address_preserved=True)
-    assert len(_proxy_headers_entries(app)) == 1
-
-
-def test_sse_app_applies_and_restores_message_path(monkeypatch: pytest.MonkeyPatch):
-    _clear_http_env(monkeypatch)
-    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
-    server = ClickHouseFastMCP("test")
-    original_message_path = server._deprecated_settings.message_path
-
-    app = server.sse_app(message_path="/custom-messages/")
-
-    assert server._deprecated_settings.message_path == original_message_path
-    assert any(getattr(route, "path", None) == "/custom-messages" for route in app.routes)
-
-
-def test_sse_app_restores_message_path_when_the_embedding_guard_raises(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _clear_http_env(monkeypatch)
-    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
-    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
-    monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.0.0.0/24")
-    server = ClickHouseFastMCP("test")
-    original_message_path = server._deprecated_settings.message_path
-
-    with pytest.raises(ValueError, match="raw ASGI client address"):
-        server.sse_app(message_path="/custom-messages/")
-
-    assert server._deprecated_settings.message_path == original_message_path
-
-
 def test_direct_http_app_requires_raw_client_address_assertion(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -473,11 +408,11 @@ def test_http_app_rejects_health_transport_path(
 def test_http_app_rejects_health_transport_path_from_fastmcp_settings(
     monkeypatch: pytest.MonkeyPatch, transport: str, setting_name: str
 ):
+    """FastMCP 4 reads the default transport path from its global settings."""
     _clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        server = ClickHouseFastMCP("test", **{setting_name: "/health"})
+    monkeypatch.setattr(fastmcp.settings, setting_name, "/health")
+    server = ClickHouseFastMCP("test")
 
     with pytest.raises(ValueError, match="MCP transport path cannot be /health"):
         server.http_app(transport=transport)
@@ -603,118 +538,6 @@ def test_run_http_async_preserves_uvicorn_behavior_without_trusted_proxies(
     )
 
     assert called["uvicorn_config"] is uvicorn_config
-
-
-def test_http_app_adapts_to_older_fastmcp_signature(monkeypatch: pytest.MonkeyPatch):
-    _clear_http_env(monkeypatch)
-    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
-    seen = {}
-
-    def old_http_app(
-        self,
-        path=None,
-        middleware=None,
-        json_response=None,
-        stateless_http=None,
-        transport="http",
-    ):
-        seen["transport"] = transport
-        app = Starlette()
-        app.state.path = path or ("/sse" if transport == "sse" else "/mcp")
-        return app
-
-    monkeypatch.setattr(FastMCP, "http_app", old_http_app)
-
-    ClickHouseFastMCP("test").http_app(None, None, None, None, "sse")
-
-    assert seen["transport"] == "sse"
-
-
-def test_trusted_proxy_runner_requires_upstream_uvicorn_config_support(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _clear_http_env(monkeypatch)
-    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
-    monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.0.0.0/24")
-    called = False
-
-    async def old_run_http_async(
-        self,
-        show_banner=True,
-        transport="http",
-        host=None,
-        port=None,
-        log_level=None,
-        path=None,
-    ):
-        nonlocal called
-        called = True
-
-    monkeypatch.setattr(FastMCP, "run_http_async", old_run_http_async)
-
-    with pytest.raises(RuntimeError, match="supports uvicorn_config"):
-        asyncio.run(ClickHouseFastMCP("test").run_http_async(show_banner=False))
-
-    assert called is False
-
-
-def _run_http_async_without_middleware_option(called):
-    """Upstream runner stand-in whose signature lacks the middleware option."""
-
-    async def old_run_http_async(
-        self,
-        show_banner=True,
-        transport="http",
-        host=None,
-        port=None,
-        log_level=None,
-        path=None,
-        uvicorn_config=None,
-    ):
-        called["uvicorn_config"] = uvicorn_config
-        called["app"] = self.http_app(transport=transport)
-
-    return old_run_http_async
-
-
-def test_trusted_proxy_runner_adapts_to_fewer_upstream_options(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _clear_http_env(monkeypatch)
-    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
-    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
-    monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.0.0.0/24")
-    called = {}
-
-    monkeypatch.setattr(
-        FastMCP, "run_http_async", _run_http_async_without_middleware_option(called)
-    )
-
-    asyncio.run(ClickHouseFastMCP("test").run_http_async(show_banner=False))
-
-    assert called["uvicorn_config"] == {"proxy_headers": False}
-    assert called["app"] is not None
-
-
-def test_trusted_proxy_runner_rejects_options_the_upstream_lacks(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _clear_http_env(monkeypatch)
-    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
-    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
-    monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.0.0.0/24")
-
-    monkeypatch.setattr(
-        FastMCP, "run_http_async", _run_http_async_without_middleware_option({})
-    )
-
-    with pytest.raises(TypeError, match="middleware"):
-        asyncio.run(
-            ClickHouseFastMCP("test").run_http_async(
-                show_banner=False,
-                middleware=[object()],
-            )
-        )
 
 
 def test_builtin_runner_raw_client_assertion_is_consumed_by_one_app(

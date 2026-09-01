@@ -246,56 +246,13 @@ class ClickHouseFastMCP(FastMCP):
                 ProxyHeadersMiddleware,
                 trusted_hosts=_proxy_header_trusted_hosts(trusted_proxies),
             )
+        # FastMCP 4 ships its own host_origin_protection option. It is left at its
+        # default (off) on purpose: the middleware below covers Host and Origin
+        # validation, trusted proxies, and the /health exemption, and enabling both
+        # would double-validate with different status codes.
         for configured_middleware in transport_security_middleware(mcp_config):
             app.add_middleware(configured_middleware.cls, **configured_middleware.kwargs)
         return app
-
-    def sse_app(
-        self,
-        path: Optional[str] = None,
-        message_path: Optional[str] = None,
-        middleware: Optional[list] = None,
-        *,
-        raw_client_address_preserved: bool = False,
-    ) -> Any:
-        """Create a secured SSE app.
-
-        FastMCP 2.12 and 2.13 build this app without going through http_app,
-        skipping auth and transport validation. Deprecated upstream; prefer
-        http_app(transport="sse"). Intended for startup-time construction: the
-        temporary message_path settings mutation is not concurrency-safe.
-        """
-        settings = self._deprecated_settings
-        original_message_path = settings.message_path
-        if message_path is not None:
-            settings.message_path = message_path
-        try:
-            return self.http_app(
-                path=path,
-                middleware=middleware,
-                transport=TransportType.SSE.value,
-                raw_client_address_preserved=raw_client_address_preserved,
-            )
-        finally:
-            settings.message_path = original_message_path
-
-    def streamable_http_app(
-        self,
-        path: Optional[str] = None,
-        middleware: Optional[list] = None,
-        *,
-        raw_client_address_preserved: bool = False,
-    ) -> Any:
-        """Create a secured streamable HTTP app.
-
-        Deprecated upstream; prefer http_app().
-        """
-        return self.http_app(
-            path=path,
-            middleware=middleware,
-            transport=TransportType.HTTP.value,
-            raw_client_address_preserved=raw_client_address_preserved,
-        )
 
     async def run_http_async(
         self,
@@ -310,11 +267,6 @@ class ClickHouseFastMCP(FastMCP):
             return
 
         upstream_signature = inspect.signature(upstream_run_http)
-        if "uvicorn_config" not in upstream_signature.parameters:
-            raise RuntimeError(
-                "CLICKHOUSE_MCP_TRUSTED_PROXIES requires a FastMCP version whose "
-                "HTTP runner supports uvicorn_config"
-            )
         bound_args = upstream_signature.bind_partial(*args, **kwargs)
         inner_uvicorn_config = dict(bound_args.arguments.get("uvicorn_config") or {})
         if inner_uvicorn_config.get("proxy_headers"):
@@ -548,10 +500,42 @@ else:
     _serialize_tool_result = _serialize_tool_result_with_stdlib
 
 
+async def _run_metadata_tool(tool_name: str, fn, *args: Any) -> str:
+    """Run a blocking metadata helper on QUERY_EXECUTOR without blocking the loop.
+
+    Metadata queries are not registered for server-side KILL QUERY; the client
+    config's send_receive_timeout, capped near the MCP query timeout, releases
+    the worker after a stalled request.
+    """
+    future = QUERY_EXECUTOR.submit(fn, *args)
+    timeout_secs = get_mcp_config().query_timeout
+    try:
+        return await asyncio.wait_for(asyncio.wrap_future(future), timeout=timeout_secs)
+    except asyncio.CancelledError:
+        future.cancel()
+        raise
+    except asyncio.TimeoutError:
+        future.cancel()
+        logger.warning("%s timed out after %s seconds", tool_name, timeout_secs)
+        raise ToolError(f"{tool_name} timed out after {timeout_secs} seconds")
+
+
 def list_databases() -> str:
     """List available ClickHouse databases"""
+    return _list_databases_with_config(_resolve_client_config())
+
+
+async def list_databases_async() -> str:
+    """List available ClickHouse databases"""
+    overrides = await _get_client_config_overrides()
+    return await _run_metadata_tool(
+        "list_databases", _list_databases_with_config, _resolve_client_config(overrides)
+    )
+
+
+def _list_databases_with_config(config: dict) -> str:
+    """List databases with an already resolved client config."""
     logger.info("Listing all databases")
-    config = _resolve_client_config()
 
     for attempt in range(2):
         entry = None
@@ -737,6 +721,54 @@ def list_tables(
         - next_page_token: Token for the next page, or None if no more pages
         - total_tables: Total number of tables matching the filters
     """
+    return _list_tables_with_config(
+        _resolve_client_config(),
+        database,
+        like,
+        not_like,
+        page_token,
+        page_size,
+        include_detailed_columns,
+    )
+
+
+async def list_tables_async(
+    database: str,
+    like: Optional[str] = None,
+    not_like: Optional[str] = None,
+    page_token: Optional[str] = None,
+    page_size: Annotated[int, Field(gt=0)] = 50,
+    include_detailed_columns: bool = True,
+) -> str:
+    overrides = await _get_client_config_overrides()
+    return await _run_metadata_tool(
+        "list_tables",
+        _list_tables_with_config,
+        _resolve_client_config(overrides),
+        database,
+        like,
+        not_like,
+        page_token,
+        page_size,
+        include_detailed_columns,
+    )
+
+
+# The async wrapper is the registered MCP tool; share the docstring so the
+# exposed description stays identical to the sync helper.
+list_tables_async.__doc__ = list_tables.__doc__
+
+
+def _list_tables_with_config(
+    config: dict,
+    database: str,
+    like: Optional[str],
+    not_like: Optional[str],
+    page_token: Optional[str],
+    page_size: int,
+    include_detailed_columns: bool,
+) -> str:
+    """List tables with an already resolved client config."""
     if page_size <= 0:
         raise ToolError("page_size must be greater than 0")
 
@@ -750,7 +782,6 @@ def list_tables(
         page_size,
         include_detailed_columns,
     )
-    config = _resolve_client_config()
 
     for attempt in range(2):
         entry = None
@@ -1198,7 +1229,7 @@ async def run_query_async(query: str) -> str:
     """
     logger.info(f"Executing query: {query}")
 
-    client_config = _resolve_client_config()
+    client_config = _resolve_client_config(await _get_client_config_overrides())
     query_id = str(uuid.uuid4())
     state = _register_active_query(query_id, query)
 
@@ -1417,13 +1448,18 @@ def _snapshot_client_config_overrides(overrides: Any) -> Optional[dict[str, Any]
     return snapshot
 
 
-def _get_client_config_overrides() -> Optional[dict[str, Any]]:
-    """Capture ClickHouse client overrides from the active FastMCP request."""
+async def _get_client_config_overrides() -> Optional[dict[str, Any]]:
+    """Capture ClickHouse client overrides from the active FastMCP request.
+
+    Context state is async in FastMCP 3+, so this runs on the event loop inside
+    the async MCP-facing tool wrappers. Outside a request it returns None.
+    """
     try:
         ctx = get_context()
     except RuntimeError:
         return None
-    return _snapshot_client_config_overrides(ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY))
+    overrides = await ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY)
+    return _snapshot_client_config_overrides(overrides)
 
 
 def _apply_client_config_overrides(
@@ -1461,9 +1497,15 @@ class _ResolvedClientConfig(dict):
 def _resolve_client_config(
     client_config_overrides: Any = _CLIENT_CONFIG_OVERRIDES_UNSET,
 ) -> _ResolvedClientConfig:
-    """Resolve the client config on the active request thread."""
+    """Resolve the client config, merging explicit request-scoped overrides.
+
+    Overrides live in async FastMCP context state, so the async tool wrappers
+    capture them with _get_client_config_overrides and pass them in. Callers
+    that pass nothing, such as the sync helpers and the health probe, get the
+    base configuration.
+    """
     if client_config_overrides is _CLIENT_CONFIG_OVERRIDES_UNSET:
-        overrides = _get_client_config_overrides()
+        overrides = None
     else:
         overrides = _snapshot_client_config_overrides(client_config_overrides)
 
@@ -1993,8 +2035,8 @@ def _register_chdb_tools():
 
 
 if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
-    mcp.add_tool(Tool.from_function(list_databases))
-    mcp.add_tool(Tool.from_function(list_tables))
+    mcp.add_tool(Tool.from_function(list_databases_async, name="list_databases"))
+    mcp.add_tool(Tool.from_function(list_tables_async, name="list_tables"))
     mcp.add_tool(
         Tool.from_function(
             run_query_async,

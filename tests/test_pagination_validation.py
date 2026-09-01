@@ -31,6 +31,6 @@ async def test_list_tables_page_size_schema_requires_positive_value():
         tools = await client.list_tools()
 
     list_tables_tool = next(tool for tool in tools if tool.name == "list_tables")
-    page_size_schema = list_tables_tool.inputSchema["properties"]["page_size"]
+    page_size_schema = list_tables_tool.input_schema["properties"]["page_size"]
 
     assert page_size_schema["exclusiveMinimum"] == 0
