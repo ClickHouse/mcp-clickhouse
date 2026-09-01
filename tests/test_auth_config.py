@@ -1,7 +1,28 @@
-import pytest
+import sys
+import types
 
+import pytest
+from fastmcp.server.auth import AuthProvider
+from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+
+from mcp_clickhouse.mcp_auth_hook import load_auth_provider
 from mcp_clickhouse.mcp_env import MCPServerConfig
 from mcp_clickhouse.mcp_server import _resolve_auth
+
+
+def _install_auth_module(monkeypatch: pytest.MonkeyPatch, name: str, **attrs) -> None:
+    """Register an in-memory module so CLICKHOUSE_MCP_AUTH_MODULE can import it."""
+    module = types.ModuleType(name)
+    for key, value in attrs.items():
+        setattr(module, key, value)
+    monkeypatch.setitem(sys.modules, name, module)
+
+
+def _static_provider(token: str = "module-token") -> StaticTokenVerifier:
+    return StaticTokenVerifier(
+        tokens={token: {"client_id": "module-client", "scopes": []}},
+        required_scopes=[],
+    )
 
 
 def test_auth_token_configuration(monkeypatch: pytest.MonkeyPatch):
@@ -29,11 +50,29 @@ def test_auth_enabled_by_default(monkeypatch: pytest.MonkeyPatch):
     """Test that auth is enabled by default (auth_disabled=False)."""
     monkeypatch.delenv("CLICKHOUSE_MCP_AUTH_DISABLED", raising=False)
     monkeypatch.delenv("CLICKHOUSE_MCP_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CLICKHOUSE_MCP_AUTH_MODULE", raising=False)
 
     config = MCPServerConfig()
 
     assert config.auth_disabled is False
     assert config.auth_token is None
+    assert config.auth_module is None
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("my_auth", "my_auth"),
+        ("  pkg.auth_module  ", "pkg.auth_module"),
+        ("", None),
+        ("   ", None),
+    ],
+)
+def test_auth_module_parsing(monkeypatch: pytest.MonkeyPatch, raw: str, expected):
+    """CLICKHOUSE_MCP_AUTH_MODULE is trimmed and blank values are unset."""
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", raw)
+
+    assert MCPServerConfig().auth_module == expected
 
 
 def test_auth_token_with_stdio_transport(monkeypatch: pytest.MonkeyPatch):
@@ -75,18 +114,86 @@ def _clear_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for var in (
         "CLICKHOUSE_MCP_AUTH_TOKEN",
         "CLICKHOUSE_MCP_AUTH_DISABLED",
+        "CLICKHOUSE_MCP_AUTH_MODULE",
         "FASTMCP_SERVER_AUTH",
     ):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_resolve_auth_oauth_omits_auth_kwarg(monkeypatch: pytest.MonkeyPatch):
-    """FASTMCP_SERVER_AUTH alone returns empty kwargs (no `auth` key)."""
+def test_resolve_auth_stdio_returns_no_kwargs(monkeypatch: pytest.MonkeyPatch):
+    """Non-HTTP transports do not resolve or require any auth mode."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "stdio")
+
+    assert _resolve_auth(MCPServerConfig()) == {}
+
+
+def test_resolve_auth_module_returns_the_provider(monkeypatch: pytest.MonkeyPatch):
+    """CLICKHOUSE_MCP_AUTH_MODULE alone resolves to the module's provider."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    provider = _static_provider()
+    _install_auth_module(monkeypatch, "auth_mod_ok", create_auth_provider=lambda: provider)
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", "auth_mod_ok")
+
+    assert _resolve_auth(MCPServerConfig()) == {"auth": provider}
+
+
+def test_resolve_auth_module_without_factory_raises(monkeypatch: pytest.MonkeyPatch):
+    """A module without create_auth_provider() fails clearly."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    _install_auth_module(monkeypatch, "auth_mod_no_factory", create_auth_provider="not-callable")
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", "auth_mod_no_factory")
+
+    with pytest.raises(ValueError, match="must define a callable create_auth_provider"):
+        _resolve_auth(MCPServerConfig())
+
+
+def test_resolve_auth_module_returning_wrong_type_raises(monkeypatch: pytest.MonkeyPatch):
+    """create_auth_provider() must return a fastmcp AuthProvider."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    _install_auth_module(
+        monkeypatch, "auth_mod_wrong_type", create_auth_provider=lambda: {"not": "a provider"}
+    )
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", "auth_mod_wrong_type")
+
+    with pytest.raises(ValueError, match="expected a fastmcp.server.auth.AuthProvider"):
+        _resolve_auth(MCPServerConfig())
+
+
+def test_resolve_auth_module_import_failure_raises(monkeypatch: pytest.MonkeyPatch):
+    """An unimportable module fails with an ImportError naming the module."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", "definitely_missing_auth_module_xyz")
+
+    with pytest.raises(ImportError, match="definitely_missing_auth_module_xyz"):
+        _resolve_auth(MCPServerConfig())
+
+
+def test_resolve_auth_rejects_legacy_fastmcp_server_auth(monkeypatch: pytest.MonkeyPatch):
+    """FASTMCP_SERVER_AUTH is rejected with a migration message, never ignored."""
     _clear_auth_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
     monkeypatch.setenv("FASTMCP_SERVER_AUTH", "fastmcp.server.auth.providers.jwt.JWTVerifier")
 
-    assert _resolve_auth(MCPServerConfig()) == {}
+    with pytest.raises(ValueError, match="CLICKHOUSE_MCP_AUTH_MODULE"):
+        _resolve_auth(MCPServerConfig())
+
+
+def test_resolve_auth_rejects_legacy_fastmcp_server_auth_even_with_token(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A stale FASTMCP_SERVER_AUTH fails startup even when another mode is valid."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH", "fastmcp.server.auth.providers.jwt.JWTVerifier")
+
+    with pytest.raises(ValueError, match="no longer supported"):
+        _resolve_auth(MCPServerConfig())
 
 
 def test_resolve_auth_disabled_passes_explicit_none(monkeypatch: pytest.MonkeyPatch):
@@ -103,16 +210,36 @@ def test_resolve_auth_rejects_multiple_modes(monkeypatch: pytest.MonkeyPatch):
     _clear_auth_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret")
-    monkeypatch.setenv("FASTMCP_SERVER_AUTH", "fastmcp.server.auth.providers.jwt.JWTVerifier")
+    _install_auth_module(monkeypatch, "auth_mod_unused", create_auth_provider=_static_provider)
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", "auth_mod_unused")
 
-    with pytest.raises(ValueError, match="mutually exclusive"):
+    with pytest.raises(ValueError, match="mutually exclusive") as exc_info:
         _resolve_auth(MCPServerConfig())
+
+    assert "CLICKHOUSE_MCP_AUTH_MODULE" in str(exc_info.value)
+    assert "secret" not in str(exc_info.value)
 
 
 def test_resolve_auth_http_without_any_mode_raises(monkeypatch: pytest.MonkeyPatch):
-    """HTTP transport with no auth configured raises ValueError."""
+    """HTTP transport with no auth configured raises ValueError naming every mode."""
     _clear_auth_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as exc_info:
         _resolve_auth(MCPServerConfig())
+
+    message = str(exc_info.value)
+    assert "CLICKHOUSE_MCP_AUTH_TOKEN" in message
+    assert "CLICKHOUSE_MCP_AUTH_MODULE" in message
+    assert "CLICKHOUSE_MCP_AUTH_DISABLED" in message
+
+
+def test_load_auth_provider_accepts_any_auth_provider_subclass(monkeypatch: pytest.MonkeyPatch):
+    """The hook validates against the AuthProvider base class, not a concrete type."""
+    provider = _static_provider()
+    _install_auth_module(monkeypatch, "auth_mod_direct", create_auth_provider=lambda: provider)
+
+    loaded = load_auth_provider("auth_mod_direct")
+
+    assert loaded is provider
+    assert isinstance(loaded, AuthProvider)

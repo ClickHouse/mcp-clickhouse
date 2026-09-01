@@ -70,13 +70,16 @@ When using HTTP or SSE transport, authentication is **required by default**. The
 
 Three authentication modes are supported. Pick one:
 
-| Mode                       | When to use                               | Env var                                                                                        |
-|----------------------------|-------------------------------------------|------------------------------------------------------------------------------------------------|
-| Static bearer token        | Simple deployments, internal services     | `CLICKHOUSE_MCP_AUTH_TOKEN`                                                                    |
-| OAuth / OIDC (via FastMCP) | Azure Entra, Google, GitHub, WorkOS, etc. | `FASTMCP_SERVER_AUTH=<provider-class-path>` (+ provider-specific `FASTMCP_SERVER_AUTH_*` vars) |
-| Disabled                   | Local development only                    | `CLICKHOUSE_MCP_AUTH_DISABLED=true`                                                            |
+| Mode                         | When to use                               | Env var                                                                 |
+|------------------------------|-------------------------------------------|-------------------------------------------------------------------------|
+| Static bearer token          | Simple deployments, internal services     | `CLICKHOUSE_MCP_AUTH_TOKEN`                                             |
+| Auth module (FastMCP provider) | Azure Entra, Google, GitHub, WorkOS, custom JWT, etc. | `CLICKHOUSE_MCP_AUTH_MODULE=<module>` defining `create_auth_provider()` |
+| Disabled                     | Local development only                    | `CLICKHOUSE_MCP_AUTH_DISABLED=true`                                     |
 
-Startup fails if none of these are configured for HTTP/SSE transports.
+Startup fails if none of these are configured for HTTP/SSE transports, and if more than one is set.
+
+> [!NOTE]
+> Migration: `FASTMCP_SERVER_AUTH` and the `FASTMCP_SERVER_AUTH_*` variables are no longer supported because FastMCP 3+ removed environment-based provider loading. If `FASTMCP_SERVER_AUTH` is set, the server refuses to start and points you to `CLICKHOUSE_MCP_AUTH_MODULE`.
 
 #### Setting Up Authentication
 
@@ -112,20 +115,33 @@ Startup fails if none of these are configured for HTTP/SSE transports.
 
    Note: the `/health` endpoint is intentionally unauthenticated (see [Health Check Endpoint](#health-check-endpoint) above). To verify that bearer-token auth is actually rejecting unauthenticated requests, hit the MCP endpoint itself e.g. with the MCP Inspector, or by POSTing a JSON-RPC request to `/mcp` with and without the `Authorization` header and confirming the unauthenticated call returns `401`.
 
-#### OAuth / OIDC via FastMCP
+#### OAuth / OIDC and custom providers via an auth module
 
-For production deployments with identity providers (Azure Entra, Google, GitHub, WorkOS, etc.), delegate authentication to [FastMCP's built-in auth providers](https://gofastmcp.com/servers/auth) instead of using a static token. Set `FASTMCP_SERVER_AUTH` to the **full class path** of a FastMCP auth provider, along with the provider-specific `FASTMCP_SERVER_AUTH_*` variables, and leave `CLICKHOUSE_MCP_AUTH_TOKEN` unset.
+For production deployments with identity providers (Azure Entra, Google, GitHub, WorkOS, etc.), delegate authentication to a [FastMCP auth provider](https://gofastmcp.com/servers/auth) instead of using a static token. Point `CLICKHOUSE_MCP_AUTH_MODULE` at an importable Python module that defines `create_auth_provider()` returning any `fastmcp.server.auth.AuthProvider` instance, and leave `CLICKHOUSE_MCP_AUTH_TOKEN` unset. The module is trusted code: it runs at startup with the server's privileges.
 
-Example (Azure Entra):
+Example (Azure Entra), in a file `my_auth.py` on `PYTHONPATH`:
 
-```bash
-export FASTMCP_SERVER_AUTH=fastmcp.server.auth.providers.azure.AzureProvider
-export FASTMCP_SERVER_AUTH_AZURE_TENANT_ID="<tenant-id>"
-export FASTMCP_SERVER_AUTH_AZURE_CLIENT_ID="<client-id>"
-export FASTMCP_SERVER_AUTH_AZURE_CLIENT_SECRET="<client-secret>"
+```python
+import os
+
+from fastmcp.server.auth.providers.azure import AzureProvider
+
+
+def create_auth_provider():
+    return AzureProvider(
+        client_id=os.environ["AZURE_CLIENT_ID"],
+        client_secret=os.environ["AZURE_CLIENT_SECRET"],
+        tenant_id=os.environ["AZURE_TENANT_ID"],
+        base_url=os.environ["MCP_PUBLIC_URL"],
+        required_scopes=["User.Read"],
+    )
 ```
 
-See the [FastMCP docs](https://gofastmcp.com/servers/auth) for the full list of providers and their required environment variables.
+```bash
+export CLICKHOUSE_MCP_AUTH_MODULE=my_auth
+```
+
+`create_auth_provider()` may be called more than once if the HTTP app is constructed more than once, so keep it cheap and side-effect free. See [`example_auth.py`](example_auth.py) for a JWT verifier example and the [FastMCP docs](https://gofastmcp.com/servers/auth) for the full list of providers and their constructor arguments.
 
 #### Development Mode (Disabling Authentication)
 
@@ -514,7 +530,7 @@ Configuration is split into **independent** groups. Mixing them up is a common c
 | Group | Variables | Controls |
 |-------|-----------|----------|
 | **ClickHouse database connection** | `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_SECURE`, `CLICKHOUSE_VERIFY`, … | How **this MCP server** connects to your ClickHouse cluster over the **HTTP interface** |
-| **MCP server / transport** | `CLICKHOUSE_MCP_*`, `FASTMCP_SERVER_AUTH`, `FASTMCP_SERVER_AUTH_*` | MCP transport, authentication, and query-tool execution limits |
+| **MCP server / transport** | `CLICKHOUSE_MCP_*` | MCP transport, authentication, and query-tool execution limits |
 | **Middleware / chDB** | `MCP_MIDDLEWARE_MODULE`, `CHDB_*` | Optional extensions |
 
 > [!IMPORTANT]
@@ -609,13 +625,14 @@ These variables control the MCP process itself, including transport, authenticat
   * Increase if your workload requires many concurrent tool calls
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None
-  * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `FASTMCP_SERVER_AUTH`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for HTTP/SSE transports
+  * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `CLICKHOUSE_MCP_AUTH_MODULE`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for HTTP/SSE transports
   * Generate using `uuidgen` or `openssl rand -hex 32`
   * Clients must send this token in the `Authorization: Bearer <token>` header
-* `FASTMCP_SERVER_AUTH`: Delegate authentication to a [FastMCP auth provider](https://gofastmcp.com/servers/auth)
+* `CLICKHOUSE_MCP_AUTH_MODULE`: Delegate authentication to a [FastMCP auth provider](https://gofastmcp.com/servers/auth) built by your code
   * Default: None
-  * Value is the **full class path** of an AuthProvider subclass, e.g. `fastmcp.server.auth.providers.azure.AzureProvider` or `fastmcp.server.auth.providers.google.GoogleProvider`
-  * When set, FastMCP auto-loads the provider from its own `FASTMCP_SERVER_AUTH_*` environment variables; leave `CLICKHOUSE_MCP_AUTH_TOKEN` unset in this mode
+  * Value is an **importable module name** (e.g. `my_auth`) that defines `create_auth_provider()` returning a `fastmcp.server.auth.AuthProvider` instance, such as `AzureProvider`, `GoogleProvider`, or `JWTVerifier` constructed with explicit keyword arguments
+  * Leave `CLICKHOUSE_MCP_AUTH_TOKEN` unset in this mode. See [`example_auth.py`](example_auth.py)
+  * `FASTMCP_SERVER_AUTH` is rejected at startup; FastMCP 3+ no longer loads providers from environment variables
 * `CLICKHOUSE_MCP_AUTH_DISABLED`: Disable authentication for HTTP/SSE transports
   * Default: `"false"` (authentication is enabled)
   * Set to `"true"` to disable authentication for local development/testing only
@@ -771,7 +788,7 @@ CLICKHOUSE_PASSWORD=clickhouse
 CLICKHOUSE_MCP_SERVER_TRANSPORT=http
 CLICKHOUSE_MCP_BIND_HOST=0.0.0.0  # Bind to all interfaces
 CLICKHOUSE_MCP_BIND_PORT=4200  # Custom port (default: 8000)
-CLICKHOUSE_MCP_AUTH_TOKEN=your-generated-token  # One auth mode required for HTTP/SSE (or FASTMCP_SERVER_AUTH, or CLICKHOUSE_MCP_AUTH_DISABLED=true)
+CLICKHOUSE_MCP_AUTH_TOKEN=your-generated-token  # One auth mode required for HTTP/SSE (or CLICKHOUSE_MCP_AUTH_MODULE, or CLICKHOUSE_MCP_AUTH_DISABLED=true)
 CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:4200,localhost:4200,mcp.example.com:4200  # Include every Host value clients and proxies send
 ```
 

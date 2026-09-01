@@ -1,4 +1,6 @@
 import asyncio
+import sys
+import types
 import warnings
 from pathlib import Path
 
@@ -42,12 +44,24 @@ def _clear_http_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "CLICKHOUSE_MCP_ALLOWED_ORIGINS",
         "CLICKHOUSE_MCP_TRUSTED_PROXIES",
         "CLICKHOUSE_MCP_AUTH_DISABLED",
+        "CLICKHOUSE_MCP_AUTH_MODULE",
         "CLICKHOUSE_MCP_AUTH_TOKEN",
         "CLICKHOUSE_MCP_BIND_HOST",
         "CLICKHOUSE_MCP_BIND_PORT",
         "FASTMCP_SERVER_AUTH",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+def _install_auth_module(monkeypatch: pytest.MonkeyPatch, name: str, token: str) -> None:
+    """Register an in-memory CLICKHOUSE_MCP_AUTH_MODULE returning a static verifier."""
+    module = types.ModuleType(name)
+    module.create_auth_provider = lambda: StaticTokenVerifier(
+        tokens={token: {"client_id": "module-client", "scopes": []}},
+        required_scopes=[],
+    )
+    monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", name)
 
 
 @pytest.mark.parametrize(
@@ -313,37 +327,38 @@ def test_static_auth_is_enforced_and_accepts_the_configured_token(
     assert authorized.status_code == 200
 
 
-def test_http_app_restores_auth_between_static_and_oauth_construction(
+def test_http_app_restores_auth_between_static_and_module_construction(
     monkeypatch: pytest.MonkeyPatch,
 ):
     _clear_http_env(monkeypatch)
-    oauth_provider = StaticTokenVerifier(
-        tokens={"oauth-token": {"client_id": "oauth-client", "scopes": []}},
+    constructor_provider = StaticTokenVerifier(
+        tokens={"constructor-token": {"client_id": "constructor-client", "scopes": []}},
         required_scopes=[],
     )
-    server = ClickHouseFastMCP("test", auth=oauth_provider)
+    server = ClickHouseFastMCP("test", auth=constructor_provider)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "static-token")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
 
     server.http_app(transport="http")
 
-    assert server.auth is oauth_provider
+    assert server.auth is constructor_provider
     monkeypatch.delenv("CLICKHOUSE_MCP_AUTH_TOKEN")
-    monkeypatch.setenv("FASTMCP_SERVER_AUTH", "example.OAuthProvider")
-    oauth_app = server.http_app(transport="http")
-    assert server.auth is oauth_provider
+    _install_auth_module(monkeypatch, "boundary_auth_module", token="module-token")
+    module_app = server.http_app(transport="http")
+    assert server.auth is constructor_provider
 
-    with TestClient(oauth_app) as client:
+    with TestClient(module_app) as client:
         response = client.post(
             "/mcp",
             json=_INITIALIZE_REQUEST,
-            headers={**_MCP_HEADERS, "authorization": "Bearer oauth-token"},
+            headers={**_MCP_HEADERS, "authorization": "Bearer module-token"},
         )
 
     assert response.status_code == 200
 
 
-def test_oauth_cannot_reuse_temporary_static_provider(monkeypatch: pytest.MonkeyPatch):
+def test_module_provider_gates_the_mcp_endpoint(monkeypatch: pytest.MonkeyPatch):
+    """A CLICKHOUSE_MCP_AUTH_MODULE provider rejects missing and foreign tokens."""
     _clear_http_env(monkeypatch)
     server = ClickHouseFastMCP("test")
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "static-token")
@@ -353,9 +368,37 @@ def test_oauth_cannot_reuse_temporary_static_provider(monkeypatch: pytest.Monkey
 
     assert server.auth is None
     monkeypatch.delenv("CLICKHOUSE_MCP_AUTH_TOKEN")
+    _install_auth_module(monkeypatch, "boundary_gate_module", token="module-token")
+    app = server.http_app(transport="http")
+    assert server.auth is None
+
+    with TestClient(app) as client:
+        missing = client.post("/mcp", json=_INITIALIZE_REQUEST, headers=_MCP_HEADERS)
+        stale_static = client.post(
+            "/mcp",
+            json=_INITIALIZE_REQUEST,
+            headers={**_MCP_HEADERS, "authorization": "Bearer static-token"},
+        )
+        accepted = client.post(
+            "/mcp",
+            json=_INITIALIZE_REQUEST,
+            headers={**_MCP_HEADERS, "authorization": "Bearer module-token"},
+        )
+
+    assert missing.status_code == 401
+    assert stale_static.status_code == 401
+    assert accepted.status_code == 200
+    assert "module-token" not in missing.text
+    assert "static-token" not in stale_static.text
+
+
+def test_http_app_rejects_legacy_fastmcp_server_auth(monkeypatch: pytest.MonkeyPatch):
+    _clear_http_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
     monkeypatch.setenv("FASTMCP_SERVER_AUTH", "example.OAuthProvider")
-    with pytest.raises(ValueError, match="did not create an authentication provider"):
-        server.http_app(transport="http")
+
+    with pytest.raises(ValueError, match="CLICKHOUSE_MCP_AUTH_MODULE"):
+        ClickHouseFastMCP("test").http_app(transport="http")
 
 
 def test_http_app_detects_positional_transport(monkeypatch: pytest.MonkeyPatch):

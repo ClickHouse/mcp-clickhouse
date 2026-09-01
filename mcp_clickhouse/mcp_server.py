@@ -36,6 +36,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 from mcp_clickhouse.http_security import transport_security_middleware
+from mcp_clickhouse.mcp_auth_hook import load_auth_provider
 from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
 from mcp_clickhouse.skills_advisor import CLICKHOUSE_SERVER_INSTRUCTIONS
 
@@ -128,18 +129,33 @@ _BUILTIN_HTTP_RAW_CLIENT = ContextVar("builtin_http_raw_client", default=False)
 def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]:
     """Resolve FastMCP auth kwargs for the requested transport.
 
-    An empty return dict omits the `auth` kwarg so FastMCP auto-detects its
-    provider from FASTMCP_SERVER_AUTH / FASTMCP_SERVER_AUTH_* env vars.
-    Returning {"auth": None} instead explicitly disables auth.
+    Non-HTTP transports return an empty dict. HTTP and SSE transports always
+    return an explicit `auth` key: a StaticTokenVerifier for
+    CLICKHOUSE_MCP_AUTH_TOKEN, the provider built by the
+    CLICKHOUSE_MCP_AUTH_MODULE hook, or None when
+    CLICKHOUSE_MCP_AUTH_DISABLED=true. Exactly one mode must be configured.
+
+    FastMCP 3 removed provider auto-loading from FASTMCP_SERVER_AUTH and the
+    FASTMCP_SERVER_AUTH_* variables, so that configuration is rejected rather
+    than silently starting without authentication.
     """
     transport = transport or mcp_config.server_transport
     if transport not in _HTTP_TRANSPORTS:
         return {}
 
+    if os.getenv("FASTMCP_SERVER_AUTH"):
+        raise ValueError(
+            "FASTMCP_SERVER_AUTH is no longer supported: FastMCP 3 and later do not load "
+            "authentication providers from FASTMCP_SERVER_AUTH / FASTMCP_SERVER_AUTH_* "
+            "environment variables. Set CLICKHOUSE_MCP_AUTH_MODULE to a module that "
+            "defines create_auth_provider() and construct the provider there "
+            "(see example_auth.py), then unset FASTMCP_SERVER_AUTH."
+        )
+
     configured = {
         "CLICKHOUSE_MCP_AUTH_DISABLED": mcp_config.auth_disabled,
         "CLICKHOUSE_MCP_AUTH_TOKEN": bool(mcp_config.auth_token),
-        "FASTMCP_SERVER_AUTH": bool(os.getenv("FASTMCP_SERVER_AUTH")),
+        "CLICKHOUSE_MCP_AUTH_MODULE": bool(mcp_config.auth_module),
     }
     active = [name for name, is_set in configured.items() if is_set]
 
@@ -152,10 +168,10 @@ def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]
     if not active:
         raise ValueError(
             "Authentication is required for HTTP/SSE transports. Configure exactly one of:\n"
-            "  - CLICKHOUSE_MCP_AUTH_TOKEN=<token>   (static bearer token)\n"
-            "  - FASTMCP_SERVER_AUTH=<class-path>    (FastMCP auth provider, full class path;\n"
-            "       e.g. fastmcp.server.auth.providers.azure.AzureProvider)\n"
-            "  - CLICKHOUSE_MCP_AUTH_DISABLED=true   (disables auth; development only)"
+            "  - CLICKHOUSE_MCP_AUTH_TOKEN=<token>     (static bearer token)\n"
+            "  - CLICKHOUSE_MCP_AUTH_MODULE=<module>   (module defining create_auth_provider()\n"
+            "       that returns a FastMCP AuthProvider, e.g. an OAuth/OIDC provider)\n"
+            "  - CLICKHOUSE_MCP_AUTH_DISABLED=true     (disables auth; development only)"
         )
 
     if mcp_config.auth_disabled:
@@ -172,11 +188,13 @@ def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]
         logger.info("Authentication enabled for HTTP/SSE transport (static bearer token)")
         return {"auth": verifier}
 
+    provider = load_auth_provider(mcp_config.auth_module)
     logger.info(
-        "Authentication delegated to FastMCP provider: %s", os.getenv("FASTMCP_SERVER_AUTH")
+        "Authentication delegated to provider %s from CLICKHOUSE_MCP_AUTH_MODULE=%s",
+        type(provider).__name__,
+        mcp_config.auth_module,
     )
-    # Return empty kwargs so FastMCP auto-loads from FASTMCP_SERVER_AUTH_* env vars.
-    return {}
+    return {"auth": provider}
 
 
 def _proxy_header_trusted_hosts(
@@ -224,14 +242,9 @@ class ClickHouseFastMCP(FastMCP):
 
         auth_kwargs = _resolve_auth(mcp_config, transport=transport)
         original_auth = self.auth
-        if "auth" in auth_kwargs:
-            app_auth = auth_kwargs["auth"]
-        elif original_auth is None:
-            raise ValueError("FASTMCP_SERVER_AUTH did not create an authentication provider")
-        else:
-            app_auth = original_auth
-
-        self.auth = app_auth
+        # HTTP transports always resolve an explicit provider (or None when
+        # auth is disabled). Swap it in only for this app construction.
+        self.auth = auth_kwargs.get("auth", original_auth)
         try:
             app = upstream_http_app(*args, **kwargs)
         finally:

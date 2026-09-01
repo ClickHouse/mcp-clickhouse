@@ -329,8 +329,10 @@ class MCPServerConfig:
             HTTP/SSE (default: no browser origins are allowed)
         CLICKHOUSE_MCP_AUTH_TOKEN: Static bearer token for HTTP/SSE transports.
             One authentication mode must be configured for HTTP/SSE; the other two
-            options are FASTMCP_SERVER_AUTH (FastMCP OAuth/OIDC providers) and
-            CLICKHOUSE_MCP_AUTH_DISABLED=true.
+            options are CLICKHOUSE_MCP_AUTH_MODULE (a module that builds a FastMCP
+            AuthProvider) and CLICKHOUSE_MCP_AUTH_DISABLED=true.
+        CLICKHOUSE_MCP_AUTH_MODULE: Importable module exposing create_auth_provider()
+            for OAuth/OIDC or custom FastMCP auth providers (default: none)
         CLICKHOUSE_MCP_AUTH_DISABLED: Disable authentication entirely (default: false,
             development only)
     """
@@ -447,6 +449,18 @@ class MCPServerConfig:
     def auth_disabled(self) -> bool:
         """Get whether authentication is disabled."""
         return os.getenv("CLICKHOUSE_MCP_AUTH_DISABLED", "false").lower() == "true"
+
+    @property
+    def auth_module(self) -> Optional[str]:
+        """Get the module that builds a FastMCP AuthProvider for HTTP/SSE transports.
+
+        Whitespace-only values are treated as unset.
+        """
+        value = os.getenv("CLICKHOUSE_MCP_AUTH_MODULE")
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
 
 
 _MCP_CONFIG_INSTANCE = None
