@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.5.0 - 2026-09-01
 
 ### Added
 - Client connection reuse across tool calls via a config-keyed cache, eliminating per-call connection overhead. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
