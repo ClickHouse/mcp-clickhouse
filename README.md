@@ -12,6 +12,11 @@ An MCP server for ClickHouse.
 
 ### ClickHouse Tools
 
+ClickHouse tool responses are JSON-encoded strings. Integers outside
+`[-9007199254740991, 9007199254740991]` are returned as decimal strings to preserve exact
+values in JavaScript clients. This applies to query rows and integer table metadata. Safe-range
+integers and booleans keep their JSON types.
+
 * `run_query`
   * Execute SQL queries on your ClickHouse cluster.
   * Input: `query` (string): The SQL query to execute.
@@ -38,6 +43,7 @@ An MCP server for ClickHouse.
 * `run_chdb_select_query`
   * Execute SQL queries using [chDB](https://github.com/chdb-io/chdb)'s embedded ClickHouse engine.
   * Input: `query` (string): The SQL query to execute.
+  * Integers outside `[-9007199254740991, 9007199254740991]` are returned as decimal strings.
   * Query data directly from various sources (files, URLs, databases) without ETL processes.
   * Requires the optional `chdb` extra: `pip install 'mcp-clickhouse[chdb]'`
 
