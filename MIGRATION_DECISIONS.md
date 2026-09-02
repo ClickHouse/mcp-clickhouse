@@ -412,6 +412,11 @@ the test saturates the executor to prove it.
 - Consequence: `fastmcp run fastmcp.json` from a checkout loads the
   repository's `.env` because the process working directory is the repository
   root. That matches `python -m mcp_clickhouse.main` run from the root.
+- Limitation (D29): the CLI applies `deployment.cwd` before it re-executes
+  itself and passes the original manifest path to the child, so a relative
+  path such as `fastmcp inspect ../mcp-clickhouse/fastmcp.json` fails with
+  "File not found" while an absolute path works. The CHANGELOG says to pass an
+  absolute path.
 
 ## D26. Deprecated internals warn through a module `__getattr__` (implements D21)
 
@@ -429,6 +434,12 @@ the test saturates the executor to prove it.
 - Nothing inside the package imports these names from the package namespace;
   `tests/test_pagination.py` now imports them from `mcp_clickhouse.mcp_server`
   so the suite stays clean under `-W error::DeprecationWarning`.
+- A module `__dir__` keeps the four names visible to `dir()`, `help()`, and
+  `inspect.getmembers()` while they are exported (D29). Because they remain in
+  `__all__`, `from mcp_clickhouse import *` warns once per name and therefore
+  fails for downstream projects that run with `-W error::DeprecationWarning`;
+  the CHANGELOG says so. Removing them from `__all__` now would avoid that but
+  contradict D21's timeline, so the timeline stands.
 
 ## D27. Queue B and CI calls
 
@@ -445,17 +456,26 @@ the test saturates the executor to prove it.
   and a whole-document snapshot would churn on every FastMCP change without
   saying which contract moved.
 - `example_middleware.py` gains `ClientConfigOverrideMiddleware`, the README
-  pattern as runnable code, registered fourth by its `setup_middleware`. Tests
-  load the module through the `MCP_MIDDLEWARE_MODULE` hook on a fresh
-  `FastMCP("t")`, never the singleton, and spy on `Context.set_state` to pin
+  pattern as runnable code. It is deliberately not registered by the example's
+  `setup_middleware` (D29): doing so would replace the configured ClickHouse
+  timeouts on every tool call for anyone who enables the documented example
+  module. Tests load the module through the `MCP_MIDDLEWARE_MODULE` hook on a
+  fresh `FastMCP("t")`, never the singleton, assert the template is not
+  registered, exercise it directly, and spy on `Context.set_state` to pin
   `serializable=False`.
 - Protocol negotiation is pinned against the real app: 2025-03-26, 2025-06-18,
-  and 2025-11-25 are echoed; 2026-07-28 is downgraded to 2025-11-25 over a
-  plain `initialize` POST and still gets an `mcp-session-id`, so every session
-  this server issues is handshake-era and D9 stays load bearing.
-  `stateless_http=True` removes the session id and leaves the 421 and 401
-  gates intact. `fastmcp.settings.http_host_origin_protection` is pinned at
-  `False` and `HostOriginGuardMiddleware` is asserted absent from the app.
+  and 2025-11-25 are echoed. The MCP SDK selects the sessionless 2026-07-28
+  wire from the `MCP-Protocol-Version` request header, not from the
+  `initialize` body, so an `initialize` asking for 2026-07-28 without that
+  header is served by the handshake-era transport, downgraded to 2025-11-25,
+  and given an `mcp-session-id`. Every handshake therefore ends in a
+  session-scoped store and D9 stays load bearing for handshake clients. The
+  sessionless wire is covered separately (D29): a header-routed `tools/list`
+  gets 200 with no session id and the 2026-07-28 result envelope, and the
+  401, 421, and 403 gates hold in front of it. `stateless_http=True` removes
+  the session id and leaves the gates intact.
+  `fastmcp.settings.http_host_origin_protection` is pinned at `False` and
+  `HostOriginGuardMiddleware` is asserted absent from the app.
 - The metadata-tool responsiveness tests are event-gated: the sync helper is
   parked on a `threading.Event` inside `QUERY_EXECUTOR` while a concurrent
   `list_tools` must complete. `Client.ping()` is not implemented by this
@@ -531,9 +551,70 @@ the test saturates the executor to prove it.
 - pytest-randomly is not added: the suite is verified identical in forward,
   reverse-file, and per-file-isolated order, and that is not worth a lockfile
   change.
-- Counts: 562 tests at the start of this tranche's second session, 602 at the
-  end (600 passed, 2 strict xfails). No test was removed in queue C; the SSE
-  removal dropped 11 cases and added 10.
+- Counts: 562 tests at the start of this tranche's second session, 609 at the
+  end (607 passed, 2 strict xfails) after the D29 review additions. No test
+  was removed in queue C; the SSE removal dropped 11 cases and added 10.
+
+## D29. Third review round (everything since 61837a7)
+
+An adversarial read-only review of the SSE removal, deprecation shim,
+fastmcp.json change, queue B tests, CI, and queue C hygiene found one high,
+three medium, and ten low items. All confirmed items are fixed except where
+noted.
+
+- High, fixed: the new Python 3.13 CI leg could never run. `uv run` treats the
+  committed `.python-version` (3.10) as an interpreter request, so after
+  `uv sync --python 3.13` it recreated `.venv` at 3.10 without the dev extras
+  and could not find pytest; ruff, gated on that leg, never ran either. Both
+  jobs now set `UV_PYTHON` at job level, which outranks the file for every uv
+  command (verified in a scratch project: sync and run both stay on 3.13).
+  Every job has `timeout-minutes: 30`.
+- Medium, fixed: the two event-gated responsiveness tests hung forever under
+  the regression they guard, because nothing on a blocked event loop can set
+  the release event. The parked fake helper now gives up after five seconds
+  and records that it did; the test asserts it never had to. Under an inline
+  executor the tests fail in about ten seconds. The health-probe and
+  cancellation off-loop tests already bounded their wait.
+- Medium, fixed: `tests/test_http_transport_contract.py` claimed FastMCP 4
+  "does not recognize" 2026-07-28. It does; the SDK routes to the sessionless
+  wire from the `MCP-Protocol-Version` header, and the branch had no test on
+  that wire at all. Added `TestSessionlessWire` (see D27). The security gates
+  on that wire were verified clean by the reviewer and are now pinned.
+- Medium, fixed: registering `ClientConfigOverrideMiddleware` from the
+  example's `setup_middleware` silently forced `connect_timeout=60` and
+  `send_receive_timeout=120` on every call for anyone following the README's
+  `MCP_MIDDLEWARE_MODULE=example_middleware` instructions. It is a template
+  now, not registered; README and tests updated. No CHANGELOG entry because
+  the documented behavior of the example did not change.
+- Low, fixed: the weekly job ran on 3.10 for the same `.python-version`
+  reason (UV_PYTHON); `__dir__` added to the package; the CHANGELOG
+  deprecation entry warns about star imports and the Fixed entry says to pass
+  `fastmcp.json` as an absolute path; `### Deprecated` now precedes
+  `### Removed`; `_resolve_auth` and `http_app` reject `sse` in any letter
+  case, matching `mcp_env`; `tests/test_server_json.py` reads the version from
+  `pyproject.toml` rather than the installed distribution; two vacuous
+  host/password assertions left the wire test; the three README pitfalls
+  bullets are consistent.
+- Low, not changed, needs a repository setting: the CI check is now named
+  `test (python 3.10)` / `test (python 3.13)` instead of `test`. A branch
+  protection rule requiring the `test` context will block merges until it is
+  updated to the new names. Whoever opens the PR should check.
+- Noted, unverifiable locally: `filterwarnings = error::DeprecationWarning`
+  will now run on 3.13 in CI for the first time. The reviewer grepped the
+  installed dependencies for the usual 3.12/3.13 offenders
+  (`datetime.utcnow`, `pkg_resources`, bare `asyncio.get_event_loop`) and
+  found none, so the risk is low. The Dockerfile builds from a 3.13 uv image
+  but copies `.python-version` (3.10) before its second sync, so the shipped
+  image is probably 3.10; pre-existing and untouched.
+- Verified clean by the reviewer: every launch path for `sse` fails with the
+  migration message before any side effect (`run_async` -> `run_http_async`
+  -> the subclass `http_app` is the only route); no HTTP-family transport
+  resolves to no auth or skips the Host/Origin middleware; the context-state
+  leak tests still fail on pre-D9 code after moving to protocol 2025-11-25;
+  the conftest autouse reset masks nothing; the `Context.set_state` spy runs
+  the real implementation; `--with` and `--project` coexist in the generated
+  uv command; no async fixtures exist so the fixture loop scope is inert; the
+  README anchors resolve; no em dash, en dash, or smart quote was introduced.
 
 ## Review findings and resolutions
 
@@ -641,6 +722,9 @@ state; `http_app` does not mutate the shared `mcp` instance; explicit
   FastMCP 4, SSE removal), sync `server.json` to it and decide whether it
   should list the HTTP-only variables; the two strict xfails in
   `tests/test_server_json.py` flag both.
+- Before merging: update any branch protection rule that requires the `test`
+  check to the matrix names `test (python 3.10)` and `test (python 3.13)`
+  (D29).
 - Next minor: remove the four deprecated pagination internals from
   `mcp_clickhouse.__all__` and `__getattr__` (D21, D26);
   `tests/test_public_api.py` pins the current state so the removal is a
