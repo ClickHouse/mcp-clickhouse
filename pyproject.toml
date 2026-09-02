@@ -47,7 +47,13 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 # Every DeprecationWarning is a failure so a FastMCP or MCP SDK deprecation is caught
 # at the pin bump, not at removal time. See MIGRATION_DECISIONS.md D6 and D19.
-filterwarnings = ["error::DeprecationWarning"]
+# Later entries win. The one ignore is clickhouse-connect's compiled buffer module
+# (0.15.x) importing array type code 'u', which Python 3.13 deprecates for 3.16;
+# it is not this project's code. Drop the ignore once clickhouse-connect fixes it.
+filterwarnings = [
+    "error::DeprecationWarning",
+    "ignore:The 'u' type code is deprecated:DeprecationWarning",
+]
 
 [build-system]
 requires = ["hatchling"]

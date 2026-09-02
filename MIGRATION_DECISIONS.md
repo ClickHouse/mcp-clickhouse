@@ -599,11 +599,15 @@ noted.
   `test (python 3.10)` / `test (python 3.13)` instead of `test`. A branch
   protection rule requiring the `test` context will block merges until it is
   updated to the new names. Whoever opens the PR should check.
-- Noted, unverifiable locally: `filterwarnings = error::DeprecationWarning`
-  will now run on 3.13 in CI for the first time. The reviewer grepped the
-  installed dependencies for the usual 3.12/3.13 offenders
-  (`datetime.utcnow`, `pkg_resources`, bare `asyncio.get_event_loop`) and
-  found none, so the risk is low. The Dockerfile builds from a 3.13 uv image
+- Verified afterwards on Python 3.13 in a separate environment
+  (`UV_PROJECT_ENVIRONMENT=/tmp/mcp-clickhouse-venv313 uv sync --python 3.13`):
+  the reviewer's grep missed one. clickhouse-connect 0.15.1's compiled
+  `driverc.buffer` module uses array type code `u`, which Python 3.13
+  deprecates for removal in 3.16, and under `error::DeprecationWarning` that
+  failed collection of every test. `pyproject.toml` now carries one targeted
+  ignore for that message, listed after the error filter so it wins, with a
+  comment to drop it once clickhouse-connect fixes it. With that, the full
+  suite passes on 3.13 (613 passed, 2 xfailed) as on 3.10. The Dockerfile builds from a 3.13 uv image
   but copies `.python-version` (3.10) before its second sync, so the shipped
   image is probably 3.10; pre-existing and untouched.
 - Verified clean by the reviewer: every launch path for `sse` fails with the
