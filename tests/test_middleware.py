@@ -81,11 +81,19 @@ class TestMiddlewareIntegration:
 
         # Add middleware to the mcp instance
         initial_count = len(mcp.middleware)
-        mcp.add_middleware(TestMiddleware())
+        test_middleware = TestMiddleware()
+        mcp.add_middleware(test_middleware)
 
-        # Verify middleware was added
-        assert len(mcp.middleware) == initial_count + 1
-        assert isinstance(mcp.middleware[-1], TestMiddleware)
+        try:
+            # Verify middleware was added
+            assert len(mcp.middleware) == initial_count + 1
+            assert isinstance(mcp.middleware[-1], TestMiddleware)
+        finally:
+            mcp.middleware.remove(test_middleware)
+
+        # Cleanup itself is tested: the middleware list is restored.
+        assert len(mcp.middleware) == initial_count
+        assert test_middleware not in mcp.middleware
 
     def test_custom_middleware_example(self):
         """Test a realistic example of custom middleware setup."""
@@ -106,12 +114,20 @@ class TestMiddlewareIntegration:
         def setup_user_middleware(mcp_instance):
             mcp_instance.add_middleware(LoggingMiddleware())
 
-        with patch.dict(os.environ, {"MCP_MIDDLEWARE_MODULE": "user_middleware"}):
-            mock_module = Mock()
-            mock_module.setup_middleware = setup_user_middleware
-            with patch("importlib.import_module", return_value=mock_module):
-                setup_middleware(mcp)
+        try:
+            with patch.dict(os.environ, {"MCP_MIDDLEWARE_MODULE": "user_middleware"}):
+                mock_module = Mock()
+                mock_module.setup_middleware = setup_user_middleware
+                with patch("importlib.import_module", return_value=mock_module):
+                    setup_middleware(mcp)
 
-        # Verify middleware was registered
-        assert len(mcp.middleware) == initial_count + 1
-        assert isinstance(mcp.middleware[-1], LoggingMiddleware)
+            # Verify middleware was registered
+            assert len(mcp.middleware) == initial_count + 1
+            assert isinstance(mcp.middleware[-1], LoggingMiddleware)
+        finally:
+            added_middleware = mcp.middleware[initial_count:]
+            for mw in added_middleware:
+                mcp.middleware.remove(mw)
+
+        # Cleanup itself is tested: the middleware list is restored.
+        assert len(mcp.middleware) == initial_count
