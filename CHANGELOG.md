@@ -22,6 +22,9 @@ All notable changes to this project will be documented in this file.
 ### Removed
 - **Breaking:** The SSE transport is removed. `CLICKHOUSE_MCP_SERVER_TRANSPORT=sse`, `http_app(transport="sse")`, and the `/sse` and `/messages/` endpoints are gone; the server now fails startup with a migration message if `sse` is configured. FastMCP 4 marks SSE as legacy-only, SSE sessions are permanently handshake-era so the session-scoped context-state fix above could never fully close the leak there, and this is already a breaking release. Migration: set `CLICKHOUSE_MCP_SERVER_TRANSPORT=http` and connect with a streamable HTTP client; the MCP endpoint stays at `/mcp`.
 
+### Deprecated
+- `mcp_clickhouse.table_pagination_cache`, `mcp_clickhouse.fetch_table_names_from_system`, `mcp_clickhouse.get_paginated_table_data`, and `mcp_clickhouse.create_page_token` are internal pagination helpers that were re-exported from the package namespace. Accessing them through `mcp_clickhouse` now emits a `DeprecationWarning`, and they leave `__all__` and the package namespace in the next minor release. The supported Python API is `list_databases`, `list_tables`, `run_query`, `run_chdb_select_query`, and `create_clickhouse_client`.
+
 ### Fixed
 - `fastmcp.json` now declares every runtime dependency (`cachetools`, `simplejson`, `uvicorn`, `starlette`, `mcp`, `pydantic`) instead of three of them. `starlette`, `mcp`, and `pydantic` are also declared as direct dependencies in `pyproject.toml` because the server imports them directly. `fastmcp run fastmcp.json` still needs the project installed, because the server uses absolute `mcp_clickhouse.` imports.
 

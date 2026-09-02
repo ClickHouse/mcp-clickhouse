@@ -3,15 +3,14 @@ import unittest
 
 from dotenv import load_dotenv
 
-from mcp_clickhouse import (
-    create_clickhouse_client,
+from mcp_clickhouse import create_clickhouse_client, list_tables
+from mcp_clickhouse.mcp_server import (
+    Table,
     create_page_token,
     fetch_table_names_from_system,
     get_paginated_table_data,
-    list_tables,
     table_pagination_cache,
 )
-from mcp_clickhouse.mcp_server import Table
 
 load_dotenv()
 
