@@ -189,6 +189,95 @@ the test saturates the executor to prove it.
 - The lock test proves mutual exclusion: the first construction blocks inside a
   fake upstream `http_app` while a second construction is shown to wait.
 
+## D13. chDB tool errors stay a successful result
+
+- `run_chdb_select_query` reports query failures, timeouts, and unexpected
+  exceptions as a successful tool result whose JSON payload is
+  `{"status": "error", "message": "..."}` (`isError` false), unlike `run_query`,
+  which raises `ToolError`. The shape predates the migration (chDB support in
+  #51) and the existing sync helper tests assert it, so under AGENTS.md it is
+  part of the public tool contract. It stays unchanged and is now pinned at the
+  MCP boundary in `tests/test_chdb_tool.py`. Aligning it with `run_query` would
+  be a breaking change for a separate release.
+- Follow-up: the README chDB section documents neither error contract. Add a
+  line describing the payload shape.
+
+## D14. Tool annotations track the write and drop gates
+
+- Every tool carries MCP `ToolAnnotations` (imported from `mcp.types`,
+  snake_case fields). `list_databases`, `list_tables`, and
+  `run_chdb_select_query` are `read_only_hint=True`, `destructive_hint=False`,
+  `idempotent_hint=True`, `open_world_hint=True`.
+- `run_query` annotations are computed once at registration by
+  `_run_query_annotations(get_config())`: read-only mode -> `read_only_hint=True`,
+  `destructive_hint=False`; `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` ->
+  `read_only_hint=False`; `destructive_hint=True` only when
+  `CLICKHOUSE_ALLOW_DROP=true` is also set, matching the two-step gate.
+  `idempotent_hint` is always False and `open_world_hint` always True.
+- Registration moved into `_register_clickhouse_tools(server)` so tests can
+  register on a fresh `FastMCP` with a patched config and assert through
+  `Client.list_tools()`.
+- `get_config()` was not previously called at import and importing with
+  `CLICKHOUSE_ENABLED=true` but no `CLICKHOUSE_HOST` succeeds today (the first
+  tool call reports it). Registration therefore catches `ValueError` from
+  `get_config()`, logs a warning, and advertises the default read-only
+  annotations rather than turning a lazy runtime error into an import failure.
+  Calling `get_config()` at import is otherwise harmless: `ClickHouseConfig`
+  holds no state and every property reads `os.environ` on access.
+- AGENTS.md records annotations as part of the observable contract.
+
+## D15. `output_schema=None` on every tool
+
+- FastMCP 4 derives `{"properties": {"result": {"type": "string"}},
+  "x-fastmcp-wrap-result": true}` from the `-> str` annotation and returns the
+  JSON string a second time as `structured_content` on every result. All four
+  `Tool.from_function` calls pass `output_schema=None`, which suppresses both
+  (verified: `list_tools()` output_schema is None, `call_tool()`
+  structured_content is None). The JSON-string text contract is unchanged.
+  Recorded in AGENTS.md next to the JSON-string bullet.
+- FastMCP 4 also derives tool titles ("List Databases", "List Tables",
+  "Run Query", "Run Chdb Select Query"). Accepted and noted in the CHANGELOG.
+
+## D16. `serverInfo` reports the package version
+
+- `ClickHouseFastMCP` is constructed with
+  `version=importlib.metadata.version("mcp-clickhouse")` and
+  `website_url="https://github.com/ClickHouse/mcp-clickhouse"` (pyproject
+  `[project.urls] Home`), so `initialize` returns the project version instead
+  of FastMCP's 4.0.0. `_package_version()` returns None when the distribution is
+  not installed so a source checkout without `uv sync` still imports.
+
+## D17. `page_size` guard kept in `_list_tables_with_config`
+
+- The `page_size <= 0` guard is unreachable through the MCP boundary (pydantic
+  `Field(gt=0)` rejects first) but reachable through the exported synchronous
+  `list_tables` helper, which bypasses pydantic. It stays, with a direct test
+  that it raises `ToolError` before any ClickHouse client is acquired.
+
+## D18. Packaging declares what the server imports
+
+- `starlette>=1.0.1` is a direct dependency in `pyproject.toml` because
+  `mcp_server.py` and `http_security.py` import it directly; it was previously
+  only transitive through FastMCP. `uv add` regenerated the lockfile (two
+  metadata lines, no resolution change).
+- `fastmcp.json` `environment.dependencies` now lists `cachetools`,
+  `simplejson`, `uvicorn`, and `starlette` alongside the original three.
+  `tests/test_packaging_metadata.py` asserts the two lists match, using
+  `importlib.metadata.requires` rather than `tomllib` (3.11+).
+- `"project": "."` was evaluated and not adopted. FastMCP's `UVEnvironment`
+  composes `project` and `dependencies` (`uv run --project <path> --with ...`),
+  so it would not conflict, but it changes the execution strategy from an
+  ephemeral `--with` environment to a full project sync, and `fastmcp run
+  fastmcp.json` could not be exercised end to end here. Candidate for a
+  follow-up.
+- The D7 comment in `http_app` now gives the real reasons for keeping this
+  project's DNS-rebinding middleware (built-in guard off by default, no SSE
+  coverage, no `/health` exemption, no `X-Forwarded-Host` or trusted-proxy
+  support) instead of the status-code argument. A comment at `run_query`
+  registration records that FastMCP's per-tool `timeout=` is deliberately not
+  used because it abandons the running query, whereas
+  `CLICKHOUSE_MCP_QUERY_TIMEOUT` issues `KILL QUERY`.
+
 ## Review findings and resolutions
 
 An adversarial review of the code diff ran after the first three commits.
@@ -292,6 +381,10 @@ state; `http_app` does not mutate the shared `mcp` instance; explicit
 ## Remaining open items
 
 - No SSE-transport regression test for the session-state leak (F5).
+- README chDB section does not document the `{"status": "error"}` payload
+  shape (D13 follow-up).
+- `fastmcp.json` could use `"project": "."` instead of a hand-maintained
+  dependency list (D18); needs an end-to-end `fastmcp run` check first.
 - Resolved: `tests/test_mcp_server.py::test_system_database_access` failed on
   ClickHouse 26.8 because it requested `page_size=100` and the `system` database
   now holds 139 tables, so `tables` (alphabetical position 124) fell on the

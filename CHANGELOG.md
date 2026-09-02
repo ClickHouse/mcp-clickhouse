@@ -12,6 +12,15 @@ All notable changes to this project will be documented in this file.
 - The deprecated `sse_app()` and `streamable_http_app()` methods on the exported `mcp` server are removed, following their removal upstream. Use `http_app(transport="sse")` or `http_app()`.
 - Tool metadata changed with the FastMCP 4 docstring parser: `Args:` entries are now exposed as per-parameter `description` fields in `input_schema` instead of the tool description, every input schema declares `additionalProperties: false` so unknown arguments are rejected, and the `list_tables` description now states the response shape (`tables`, `next_page_token`, `total_tables`) explicitly because the parser drops docstring `Returns:` blocks.
 - `CLICKHOUSE_MCP_AUTH_MODULE` factory failures now fail startup with a `ValueError` naming the module and `create_auth_provider()`, with the original exception chained.
+- OAuth proxy deployments whose `issuer_url` differs from `base_url` should expect a one-time client re-authorization after moving to `CLICKHOUSE_MCP_AUTH_MODULE`: FastMCP 4 changed how the proxy derives its OAuth metadata URLs, so previously issued tokens and cached metadata are not reused (see the FastMCP 3 to 4 upgrade guide).
+- The session-scoped context-state fix above matters for handshake-era sessions only: streamable HTTP clients that negotiate a session (`mcp-session-id`) and SSE clients. Clients speaking protocol `2026-07-28` are sessionless and could never observe the leak.
+- Every tool now declares `output_schema=None`. FastMCP 4 would otherwise derive a `{"result": string}` output schema from the `-> str` return annotation and return the same JSON string a second time as `structured_content` on every result. Tool results remain JSON-encoded text content only, as before.
+- Tools now expose MCP tool annotations. `list_databases`, `list_tables`, and `run_chdb_select_query` are advertised as read-only, non-destructive, idempotent, and open-world. `run_query` annotations follow the configured gates: read-only by default; `read_only_hint=false` with `CLICKHOUSE_ALLOW_WRITE_ACCESS=true`; `destructive_hint=true` only when `CLICKHOUSE_ALLOW_DROP=true` is also set. It is never advertised as idempotent.
+- `serverInfo.version` in the MCP `initialize` response now reports the installed `mcp-clickhouse` package version instead of the FastMCP library version, and `serverInfo.website_url` points at the project repository.
+- FastMCP 4 derives a human-readable `title` for each tool from its name: `List Databases`, `List Tables`, `Run Query`, and `Run Chdb Select Query`. Tool names are unchanged.
+
+### Fixed
+- `fastmcp.json` now lists every runtime dependency (`cachetools`, `simplejson`, `uvicorn`, `starlette`), so `fastmcp run fastmcp.json` no longer fails with a missing module at startup. `starlette` is also declared as a direct dependency in `pyproject.toml` because the server imports it directly.
 
 ## 0.5.0 - 2026-09-01
 
