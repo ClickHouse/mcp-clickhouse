@@ -20,15 +20,12 @@ behavior. These tests add the wire-shape assertions those do not cover.
 """
 
 import concurrent.futures
-import json
-import re
 import warnings
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from fastmcp import Client
-
 from starlette.exceptions import StarletteDeprecationWarning
 
 with warnings.catch_warnings():
@@ -36,56 +33,11 @@ with warnings.catch_warnings():
     from starlette.testclient import TestClient
 
 import mcp_clickhouse.mcp_server as mcp_server
-from mcp_clickhouse.mcp_server import _active_queries, _active_queries_lock, _clear_client_cache
-
-_MCP_HEADERS = {
-    "accept": "application/json, text/event-stream",
-    "content-type": "application/json",
-}
-_INITIALIZE_REQUEST = {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "test-client", "version": "1"},
-    },
-}
-
-
-def _jsonrpc_body(response):
-    """Decode a JSON or single-event event-stream response body from the MCP endpoint."""
-    if response.headers.get("content-type", "").startswith("application/json"):
-        return response.json()
-    match = re.search(r"^data: (.*)$", response.text, re.M)
-    assert match is not None, response.text
-    return json.loads(match.group(1))
-
-
-def _clear_http_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in (
-        "CLICKHOUSE_MCP_ALLOWED_ORIGINS",
-        "CLICKHOUSE_MCP_TRUSTED_PROXIES",
-        "CLICKHOUSE_MCP_AUTH_MODULE",
-        "CLICKHOUSE_MCP_AUTH_DISABLED",
-        "FASTMCP_SERVER_AUTH",
-    ):
-        monkeypatch.delenv(name, raising=False)
+from tests.helpers import INITIALIZE_REQUEST, MCP_HEADERS, clear_http_env, jsonrpc_body
 
 
 class TestRunQueryTimeoutInMemory:
     """The registered run_query tool, called through fastmcp.Client in-memory."""
-
-    def setup_method(self):
-        _clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
-
-    def teardown_method(self):
-        _clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
 
     @pytest.mark.asyncio
     async def test_run_query_timeout_is_error_with_message(self):
@@ -120,18 +72,8 @@ class TestRunQueryTimeoutInMemory:
 class TestToolErrorHttpWire:
     """Drive the real streamable HTTP app to observe the raw JSON-RPC shape."""
 
-    def setup_method(self):
-        _clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
-
-    def teardown_method(self):
-        _clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
-
     def _init_session(self, client):
-        init = client.post("/mcp", json=_INITIALIZE_REQUEST, headers=self._headers())
+        init = client.post("/mcp", json=INITIALIZE_REQUEST, headers=self._headers())
         assert init.status_code == 200
         session_headers = {
             **self._headers(),
@@ -146,7 +88,7 @@ class TestToolErrorHttpWire:
 
     @staticmethod
     def _headers():
-        return {**_MCP_HEADERS, "authorization": "Bearer wire-test-token"}
+        return {**MCP_HEADERS, "authorization": "Bearer wire-test-token"}
 
     def test_run_query_timeout_is_isError_result_not_json_rpc_error(
         self, monkeypatch: pytest.MonkeyPatch
@@ -157,7 +99,7 @@ class TestToolErrorHttpWire:
         test environment (see AGENTS.md); this also pins that the timeout message
         never leaks the host or the word "password".
         """
-        _clear_http_env(monkeypatch)
+        clear_http_env(monkeypatch)
         monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "wire-test-token")
         monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
 
@@ -189,7 +131,7 @@ class TestToolErrorHttpWire:
                 )
 
         assert response.status_code == 200
-        body = _jsonrpc_body(response)
+        body = jsonrpc_body(response)
         assert "error" not in body, body
         assert body["result"]["isError"] is True
         text = body["result"]["content"][0]["text"]
@@ -206,7 +148,7 @@ class TestToolErrorHttpWire:
         Client (raise_on_error=True raises ToolError naming list_tables). This adds
         the missing wire-level HTTP variant: a raw JSON-RPC result, not an error.
         """
-        _clear_http_env(monkeypatch)
+        clear_http_env(monkeypatch)
         monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "wire-test-token")
         monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
 
@@ -229,7 +171,7 @@ class TestToolErrorHttpWire:
                 )
 
         assert response.status_code == 200
-        body = _jsonrpc_body(response)
+        body = jsonrpc_body(response)
         assert "error" not in body, body
         assert body["result"]["isError"] is True
         text = body["result"]["content"][0]["text"]
