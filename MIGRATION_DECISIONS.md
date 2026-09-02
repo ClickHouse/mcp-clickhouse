@@ -105,22 +105,36 @@ contract in AGENTS.md only holds when middleware passes `serializable=False`,
 which stores the value in FastMCP's per-request dict. This is now the documented
 and required pattern (README, CHANGELOG, test middleware).
 
-Defense in depth: `_get_client_config_overrides` deletes the key after a
-successful snapshot, so a value written with the default `set_state` is consumed
-by exactly one request instead of every later call in the session. Details:
+Defense in depth: `_get_client_config_overrides` consumes the key in a fixed
+order after `get_state` returns a value:
 
-- The delete runs after `_snapshot_client_config_overrides` succeeds, so an
-  invalid value still fails the tool call with a `ToolError` and is not silently
-  discarded.
+1. `delete_state` removes any session-scoped copy, so a value written with the
+   default `set_state` applies to one request only, and an invalid value cannot
+   poison every later request in the session for its 24 hour TTL.
+2. `set_state(..., serializable=False)` restores a request-scoped copy, so a
+   second read within the same MCP request (for example under FastMCP's own
+   `RetryMiddleware`) sees the same overrides instead of silently running on the
+   base configuration. Deleting without restoring was the first version of this
+   fix and the second review caught the retry regression.
+3. The snapshot validates last; an invalid value still fails this request's
+   tool call with a `ToolError`.
+
+Further details:
+
 - Concurrent requests within one session can still observe each other's
   session-scoped value before the delete runs. That race is inherent to the
   session store and is why `serializable=False` is required rather than advised.
+- The leak applies to any transport with a stable session id: streamable HTTP
+  with a negotiated session and SSE. Stdio issues a fresh session id per tool
+  call, so the session store is write-only there and nothing leaks.
 - Opaque values such as `pool_mgr` fail inside `set_state` itself when the
   default is used; only `serializable=False` fixes that, and the boundary test
   covers it.
-- The regression test drives two sequential tool calls over real streamable HTTP
+- The regression tests drive sequential tool calls over real streamable HTTP
   through Starlette's `TestClient`, echoing `mcp-session-id`, because
-  `fastmcp.Client` never resends the header and so cannot observe the leak.
+  `fastmcp.Client` does not resend the header on streamable HTTP and so cannot
+  observe the leak there. `fastmcp.Client` over SSE would observe it, but that
+  needs a live uvicorn server; no SSE-specific test was added.
 
 ## D10. `list_tables` is registered with an explicit `description=`
 
@@ -141,11 +155,20 @@ fail with a `ToolError` after `CLICKHOUSE_MCP_QUERY_TIMEOUT`, which is documente
 in the CHANGELOG with the mitigation (raise the timeout or pass
 `include_detailed_columns=false`). Registering metadata queries for server-side
 `KILL QUERY` would mean threading a `query_id` through several `system.tables`
-and `system.columns` queries; not worth it for metadata reads. The docstring now
-states the real worker-release behavior: the `send_receive_timeout` cap applies
-only when `CLICKHOUSE_SEND_RECEIVE_TIMEOUT` is unset and not overridden by
-middleware, otherwise a timed-out call can hold a worker until the HTTP read
-finishes.
+and `system.columns` queries; not worth it for metadata reads.
+
+`list_tables` issues up to `page_size + 2` sequential queries, so the
+per-request `send_receive_timeout` cap alone did not bound how long a timed-out
+call held a `QUERY_EXECUTOR` worker. `list_tables_async` now passes a
+`time.monotonic()` deadline through `_list_tables_with_config`,
+`_list_tables_impl`, and `get_paginated_table_data` (a new optional trailing
+keyword on the public helper), and the worker raises between queries once the
+MCP timeout has passed. A single stalled query still holds the worker until the
+client's `send_receive_timeout`, which is capped near the MCP timeout only when
+`CLICKHOUSE_SEND_RECEIVE_TIMEOUT` is unset and not overridden by middleware.
+The redundant `CancelledError` branch in `_run_metadata_tool` was removed;
+`asyncio.wrap_future` already propagates cancellation to a queued future, and
+the test saturates the executor to prove it.
 
 ## D12. `http_app` auth swap is serialized; auth factory errors are wrapped
 
@@ -156,10 +179,15 @@ finishes.
   test would be flaky.
 - `load_auth_provider` wraps any exception from `create_auth_provider()` in a
   `ValueError` naming `CLICKHOUSE_MCP_AUTH_MODULE`, the module, and the factory,
-  with the original chained. `ValueError` rather than a new type so all
-  module-shape problems surface as one exception type to `_resolve_auth`. The
-  factory's own message is included verbatim, and the docstring tells operators
-  not to embed secrets in exceptions.
+  with the original chained. A missing or non-callable factory and a wrong
+  return type are also `ValueError`s naming the variable; an unimportable module
+  stays `ImportError`, as before. The factory's own message is included
+  verbatim, and the docstring tells operators not to embed secrets in
+  exceptions. An `ImportError` raised inside the factory (a provider with a
+  missing optional dependency) now surfaces as `ValueError`; nothing in the repo
+  depended on the old type.
+- The lock test proves mutual exclusion: the first construction blocks inside a
+  fake upstream `http_app` while a second construction is shown to wait.
 
 ## Review findings and resolutions
 
@@ -195,7 +223,9 @@ Resolved by D10 and the CHANGELOG entry.
 
 Resolved by D11. `_run_metadata_tool` now has unit tests for success, timeout
 (`ToolError` text and `logger.warning`), `ToolError` and generic exception
-propagation, and caller cancellation. `mcp_env.py` describes the variable as the
+propagation, and caller cancellation of a queued future. `list_tables` stops
+its worker at the deadline, with tests for the page query and the per-table
+column loop. `mcp_env.py` describes the variable as the
 timeout for `run_query`, `list_databases`, and `list_tables`, matching the README.
 
 ### R6 (low). Session store growth under the documented middleware pattern
@@ -223,3 +253,48 @@ Resolved by D12.
 - Categories with nothing found: `get_context()` from worker threads, `ToolError`
   typing through the executor, unauthenticated HTTP/SSE paths, `/health`,
   exported symbols, JSON response bodies.
+
+## Second review round (after the R1-R8 fixes)
+
+An adversarial review of commits 1792053, 96371f0, and aad10de found eight
+items. All are addressed in commit 86b2d92 except where noted.
+
+- F1 (medium, confirmed). Deleting the key after capture also removed the
+  request-scoped copy, so a retry within one request (FastMCP `RetryMiddleware`)
+  ran on the base configuration and returned success. Fixed by restoring a
+  request-scoped copy after the delete (D9 step 2); regression test through
+  `fastmcp.Client` with `RetryMiddleware`.
+- F2 (medium, confirmed). Validating before deleting left an invalid
+  session-scoped value in place, failing every later call in the session. Fixed
+  by deleting first (D9 step 1); regression test over real streamable HTTP.
+- F3 (medium, confirmed). The metadata timeout docstring understated the worker
+  hold because `list_tables` runs `page_size + 2` sequential queries. Fixed with
+  the cooperative deadline (D11).
+- F4 (medium, confirmed). The cancellation test did not exercise the
+  `CancelledError` branch, which was redundant. Branch removed, test rewritten
+  to saturate the executor and assert the queued future is cancelled (D11).
+- F5 (low, confirmed). The leak also affects SSE. Docs now say "HTTP session
+  (streamable HTTP or SSE)". Open: no SSE-specific regression test; it would
+  need a live uvicorn server.
+- F6 (low, confirmed). The wrong-return-type message did not name the env var,
+  and D12 misstated the import path. Both corrected.
+- F7 (low). The lock test only proved acquisition. Rewritten as an exclusion
+  test with the real upstream signature via `functools.wraps`.
+- F8 (low). AGENTS.md now states the `serializable=False` requirement.
+
+Verified clean by the reviewer: `delete_state` safety on stdio, in-memory
+client, streamable HTTP with and without a session, and SSE; no key mismatch
+between middleware and tool contexts; no interference with FastMCP visibility
+state; `http_app` does not mutate the shared `mcp` instance; explicit
+`description=` changes only the description in `list_tools()`; the
+`run_http_async` signature test is meaningful.
+
+## Remaining open items
+
+- No SSE-transport regression test for the session-state leak (F5).
+- `tests/test_mcp_server.py::test_system_database_access` fails on ClickHouse
+  26.8 because system table ordering changed; it passes on the CI image 24.10.
+  Pre-existing and out of scope for this branch.
+- A stale worktree from an earlier session sits at
+  `.claude/worktrees/agent-a688a0c4ef7bbe86d` with uncommitted `pyproject.toml`
+  and `uv.lock` edits. It is untracked and was left alone.
