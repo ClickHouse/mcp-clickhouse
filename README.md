@@ -46,6 +46,7 @@ integers and booleans keep their JSON types.
   * Integers outside `[-9007199254740991, 9007199254740991]` are returned as decimal strings.
   * Query data directly from various sources (files, URLs, databases) without ETL processes.
   * Requires the optional `chdb` extra: `pip install 'mcp-clickhouse[chdb]'`
+  * Query failures, timeouts, and unexpected exceptions are returned as a normal tool result whose text is `{"status": "error", "message": "..."}`. Unlike `run_query`, this tool does not raise an MCP tool error (`isError`); check the `status` field.
 
 ### Health Check Endpoint
 
