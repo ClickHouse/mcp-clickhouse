@@ -21,6 +21,7 @@ from mcp_clickhouse.mcp_server import (
     _cancel_query_async,
     _clear_client_cache,
     _resolve_client_config,
+    _run_metadata_tool,
     execute_query,
     run_query,
     run_query_async,
@@ -534,3 +535,96 @@ class TestRunQueryTimeout:
                 future.result(timeout=1)
 
         assert cancellation_ran.is_set()
+
+
+class TestRunMetadataTool:
+    """Tests for the async wrapper that runs list_databases/list_tables helpers."""
+
+    @pytest.mark.asyncio
+    async def test_returns_helper_result(self):
+        def helper(prefix, suffix):
+            return prefix + suffix
+
+        assert await _run_metadata_tool("list_databases", helper, "a", "b") == "ab"
+
+    @pytest.mark.asyncio
+    async def test_timeout_raises_tool_error_and_logs_warning(self):
+        release = threading.Event()
+
+        def slow_helper():
+            release.wait(timeout=2)
+            return "internal-result-detail"
+
+        try:
+            with (
+                patch(
+                    "mcp_clickhouse.mcp_server.get_mcp_config",
+                    return_value=SimpleNamespace(query_timeout=0.02),
+                ),
+                patch("mcp_clickhouse.mcp_server.logger") as mock_logger,
+            ):
+                with pytest.raises(ToolError) as exc_info:
+                    await _run_metadata_tool("list_tables", slow_helper)
+        finally:
+            release.set()
+
+        message = str(exc_info.value)
+        assert message == "list_tables timed out after 0.02 seconds"
+        assert "internal-result-detail" not in message
+        mock_logger.warning.assert_called_once()
+        assert mock_logger.warning.call_args.args[1:] == ("list_tables", 0.02)
+
+    @pytest.mark.asyncio
+    async def test_tool_error_from_helper_propagates_unchanged(self):
+        original = ToolError("page_size must be greater than 0")
+
+        def failing_helper():
+            raise original
+
+        with pytest.raises(ToolError) as exc_info:
+            await _run_metadata_tool("list_tables", failing_helper)
+
+        assert exc_info.value is original
+
+    @pytest.mark.asyncio
+    async def test_generic_exception_from_helper_propagates(self):
+        def failing_helper():
+            raise ConnectionError("clickhouse unreachable")
+
+        with pytest.raises(ConnectionError, match="clickhouse unreachable"):
+            await _run_metadata_tool("list_databases", failing_helper)
+
+    @pytest.mark.asyncio
+    async def test_cancelling_the_caller_cancels_the_future(self):
+        started = threading.Event()
+        release = threading.Event()
+        submitted = {}
+        real_submit = mcp_server.QUERY_EXECUTOR.submit
+
+        def blocking_helper():
+            started.set()
+            release.wait(timeout=2)
+            return "late"
+
+        def recording_submit(fn, *args):
+            future = real_submit(fn, *args)
+            submitted["future"] = future
+            return future
+
+        try:
+            with patch.object(mcp_server.QUERY_EXECUTOR, "submit", side_effect=recording_submit):
+                task = asyncio.create_task(_run_metadata_tool("list_databases", blocking_helper))
+                assert await asyncio.get_running_loop().run_in_executor(
+                    None, started.wait, 1
+                )
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        finally:
+            release.set()
+
+        future = submitted["future"]
+        # The helper was already running, so cancel() could not stop it, but the
+        # wrapper must have tried and must not leave the caller waiting on it.
+        assert future.running() or future.done()
+        assert future.result(timeout=2) == "late"

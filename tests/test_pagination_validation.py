@@ -34,3 +34,19 @@ async def test_list_tables_page_size_schema_requires_positive_value():
     page_size_schema = list_tables_tool.input_schema["properties"]["page_size"]
 
     assert page_size_schema["exclusiveMinimum"] == 0
+
+
+@pytest.mark.asyncio
+async def test_list_tables_description_states_response_shape():
+    """The explicit description keeps the response shape that the docstring Returns block carried."""
+    async with Client(mcp) as client:
+        tools = await client.list_tools()
+
+    list_tables_tool = next(tool for tool in tools if tool.name == "list_tables")
+
+    assert "next_page_token" in list_tables_tool.description
+    assert "total_tables" in list_tables_tool.description
+    assert "tables" in list_tables_tool.description
+    properties = list_tables_tool.input_schema["properties"]
+    assert properties["database"]["description"] == "The database to list tables from"
+    assert list_tables_tool.input_schema["additionalProperties"] is False

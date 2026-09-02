@@ -319,7 +319,8 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_SERVER_TRANSPORT: "stdio", "http", or "sse" (default: stdio)
         CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
         CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
-        CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
+        CLICKHOUSE_MCP_QUERY_TIMEOUT: Timeout in seconds for run_query, list_databases,
+            and list_tables tool calls (default: 30)
         CLICKHOUSE_MCP_MAX_WORKERS: Maximum thread pool workers for query execution (default: 10)
         CLICKHOUSE_MCP_ALLOWED_HOSTS: Comma separated Host header values accepted on
             HTTP/SSE (default: derived from a concrete bind host and port)

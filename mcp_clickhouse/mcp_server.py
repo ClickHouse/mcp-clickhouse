@@ -120,6 +120,10 @@ _active_queries_lock = threading.Lock()
 
 _health_probe_future: Optional[concurrent.futures.Future] = None
 _health_probe_lock = threading.Lock()
+
+# Serializes the temporary self.auth swap in ClickHouseFastMCP.http_app so two
+# concurrent constructions cannot interleave and build an unauthenticated app.
+_http_app_auth_lock = threading.Lock()
 _logged_health_probe_futures: weakref.WeakSet[concurrent.futures.Future] = weakref.WeakSet()
 
 _HTTP_TRANSPORTS = (TransportType.HTTP.value, "streamable-http", TransportType.SSE.value)
@@ -241,14 +245,17 @@ class ClickHouseFastMCP(FastMCP):
             )
 
         auth_kwargs = _resolve_auth(mcp_config, transport=transport)
-        original_auth = self.auth
         # HTTP transports always resolve an explicit provider (or None when
-        # auth is disabled). Swap it in only for this app construction.
-        self.auth = auth_kwargs.get("auth", original_auth)
-        try:
-            app = upstream_http_app(*args, **kwargs)
-        finally:
-            self.auth = original_auth
+        # auth is disabled). Swap it in only for this app construction, under
+        # a lock so a concurrent construction cannot observe the swapped value
+        # or restore it early.
+        with _http_app_auth_lock:
+            original_auth = self.auth
+            self.auth = auth_kwargs.get("auth", original_auth)
+            try:
+                app = upstream_http_app(*args, **kwargs)
+            finally:
+                self.auth = original_auth
         if getattr(app.state, "path", None) == "/health":
             raise ValueError(
                 "MCP transport path cannot be /health because that path is reserved "
@@ -516,9 +523,14 @@ else:
 async def _run_metadata_tool(tool_name: str, fn, *args: Any) -> str:
     """Run a blocking metadata helper on QUERY_EXECUTOR without blocking the loop.
 
-    Metadata queries are not registered for server-side KILL QUERY; the client
-    config's send_receive_timeout, capped near the MCP query timeout, releases
-    the worker after a stalled request.
+    The call is bounded by CLICKHOUSE_MCP_QUERY_TIMEOUT and raises ToolError on
+    expiry. Metadata queries are not registered for server-side KILL QUERY, so
+    the helper keeps running on its worker thread after a timeout. When
+    CLICKHOUSE_SEND_RECEIVE_TIMEOUT is unset and not overridden by middleware,
+    _resolve_client_config caps send_receive_timeout near the MCP query timeout
+    and the worker is released shortly after. When that timeout is set or
+    overridden, a timed-out metadata call can hold a QUERY_EXECUTOR worker until
+    the ClickHouse HTTP read finishes.
     """
     future = QUERY_EXECUTOR.submit(fn, *args)
     timeout_secs = get_mcp_config().query_timeout
@@ -2068,7 +2080,21 @@ def _register_chdb_tools():
 
 if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
     mcp.add_tool(Tool.from_function(list_databases_async, name="list_databases"))
-    mcp.add_tool(Tool.from_function(list_tables_async, name="list_tables"))
+    mcp.add_tool(
+        Tool.from_function(
+            list_tables_async,
+            name="list_tables",
+            description=(
+                "List available ClickHouse tables in a database, including schema, "
+                "comment, row count, and column count. Returns a JSON-encoded object "
+                "with: tables (list of table information objects), next_page_token "
+                "(token for the next page, or null when there are no more pages), and "
+                "total_tables (total number of tables matching the filters). Integers "
+                "outside [-9007199254740991, 9007199254740991] in table metadata are "
+                "returned as decimal strings."
+            ),
+        )
+    )
     mcp.add_tool(
         Tool.from_function(
             run_query_async,

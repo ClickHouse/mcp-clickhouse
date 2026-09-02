@@ -1,5 +1,7 @@
 import asyncio
+import inspect
 import sys
+import threading
 import types
 import warnings
 from pathlib import Path
@@ -10,6 +12,7 @@ from fastmcp import FastMCP
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from fastmcp.utilities.mcp_server_config import MCPServerConfig as FastMCPFileConfig
 from starlette.exceptions import StarletteDeprecationWarning
+from starlette.applications import Starlette
 from starlette.responses import JSONResponse, PlainTextResponse
 
 with warnings.catch_warnings():
@@ -20,7 +23,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 import mcp_clickhouse.mcp_server as mcp_server_module
 import mcp_clickhouse.main as main_module
-from mcp_clickhouse.mcp_server import ClickHouseFastMCP
+from mcp_clickhouse.mcp_server import ClickHouseFastMCP, _http_app_auth_lock
 
 _INITIALIZE_REQUEST = {
     "jsonrpc": "2.0",
@@ -355,6 +358,60 @@ def test_http_app_restores_auth_between_static_and_module_construction(
         )
 
     assert response.status_code == 200
+
+
+def test_http_app_auth_swap_is_serialized_across_threads(monkeypatch: pytest.MonkeyPatch):
+    """Concurrent http_app() calls hold the auth lock and never see a stale provider."""
+    _clear_http_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret-token")
+    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
+    server = ClickHouseFastMCP("test")
+    original_auth = server.auth
+    observed = []
+    observed_lock = threading.Lock()
+
+    def fake_upstream_http_app(self, *args, **kwargs):
+        with observed_lock:
+            observed.append((self.auth, _http_app_auth_lock.locked()))
+        app = Starlette()
+        app.state.path = "/mcp"
+        return app
+
+    monkeypatch.setattr(FastMCP, "http_app", fake_upstream_http_app)
+
+    threads = [
+        threading.Thread(target=server.http_app, kwargs={"transport": "http"}) for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert len(observed) == 2
+    for auth, lock_was_held in observed:
+        assert lock_was_held is True
+        assert isinstance(auth, StaticTokenVerifier)
+        assert auth is not original_auth
+    assert server.auth is original_auth
+    assert not _http_app_auth_lock.locked()
+
+
+def test_run_http_async_forwarded_kwargs_bind_to_upstream_signature(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The kwargs this project forwards must exist on the real FastMCP 4 signature."""
+    upstream_signature = inspect.signature(FastMCP.run_http_async)
+    forwarded_by_cli = {"transport": "http", "host": "127.0.0.1", "port": 4200}
+    forwarded_by_runner = {
+        "show_banner": False,
+        "transport": "http",
+        "uvicorn_config": {"proxy_headers": False},
+    }
+
+    for kwargs in (forwarded_by_cli, forwarded_by_runner):
+        # bind_partial raises TypeError if a forwarded name is not a parameter.
+        bound = upstream_signature.bind_partial(None, **kwargs)
+        assert set(kwargs) <= set(bound.arguments)
 
 
 def test_module_provider_gates_the_mcp_endpoint(monkeypatch: pytest.MonkeyPatch):

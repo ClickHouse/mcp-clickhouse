@@ -173,6 +173,29 @@ def test_resolve_auth_module_import_failure_raises(monkeypatch: pytest.MonkeyPat
         _resolve_auth(MCPServerConfig())
 
 
+def test_resolve_auth_module_factory_exception_is_wrapped(monkeypatch: pytest.MonkeyPatch):
+    """An exception raised inside create_auth_provider() fails startup with context."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    original = RuntimeError("boom")
+
+    def failing_factory():
+        raise original
+
+    _install_auth_module(monkeypatch, "auth_mod_raises", create_auth_provider=failing_factory)
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", "auth_mod_raises")
+
+    with pytest.raises(ValueError) as exc_info:
+        _resolve_auth(MCPServerConfig())
+
+    message = str(exc_info.value)
+    assert "CLICKHOUSE_MCP_AUTH_MODULE" in message
+    assert "auth_mod_raises" in message
+    assert "create_auth_provider" in message
+    assert "RuntimeError: boom" in message
+    assert exc_info.value.__cause__ is original
+
+
 def test_resolve_auth_rejects_legacy_fastmcp_server_auth(monkeypatch: pytest.MonkeyPatch):
     """FASTMCP_SERVER_AUTH is rejected with a migration message, never ignored."""
     _clear_auth_env(monkeypatch)
