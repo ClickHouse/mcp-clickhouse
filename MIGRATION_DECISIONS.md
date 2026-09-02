@@ -4,13 +4,13 @@ Working notes for the `fastmcp-4` branch. Each entry records a call that was mad
 without waiting for review so the work could keep moving. Any of them can be
 revisited.
 
-## D1. Target `fastmcp>=4.0.0,<5.0.0`, drop FastMCP 2 and 3 support
+## D1. Target FastMCP 4, drop FastMCP 2 and 3 support
 
 FastMCP 4.0.0 shipped 2026-08-31. Every break found in this repo was introduced
 in FastMCP 3.0, so supporting 2.x alongside 4 would require shims (for example
 `inspect.isawaitable` around `ctx.get_state`). Two majors of compatibility code
-is not worth carrying. The constraint is a range, not an exact pin, because this
-is a distributed package rather than an application.
+is not worth carrying. The branch initially used the range `>=4.0.0,<5.0.0`;
+superseded by D19, which pins an exact release.
 
 ## D2. Context state access becomes async only, no compatibility shim
 
@@ -311,6 +311,70 @@ the test saturates the executor to prove it.
   used because it abandons the running query, whereas
   `CLICKHOUSE_MCP_QUERY_TIMEOUT` issues `KILL QUERY`.
 
+## D19. Exact pin `fastmcp==4.0.1` (user decision, 2026-09-02)
+
+- FastMCP's policy permits breaking changes in minor versions and calls open
+  ranges bad practice. The user chose an exact pin over a `<4.1.0` range. The
+  pin is the latest 4.x release at the time of the decision (4.0.1, released
+  2026-09-02). `uv add "fastmcp==4.0.1"` updated `fastmcp` and `fastmcp-slim`
+  in the lockfile; the full suite passes on 4.0.1 (562 tests, deprecation
+  warnings as errors).
+- Consequence: picking up any FastMCP fix requires a release of this package.
+  Bumping the pin is a one-line change plus a full suite run. A scheduled CI
+  job that installs the latest 4.x and runs the suite is still worth adding so
+  the maintainers learn about upstream changes early.
+
+## D20. SSE transport is removed (user decision, 2026-09-02)
+
+- The SSE transport goes away in this release rather than being deprecated
+  first. FastMCP 4 marks SSE `legacy_only`; SSE is permanently handshake-era,
+  so the session-scoped context-state leak (D9) can never be fully closed
+  there; and the FastMCP 4 jump is already a breaking release. If a user needs
+  it back, the fallback is to reinstate it as deprecated, not to keep it as a
+  supported transport.
+- Scope of the removal: `TransportType.SSE` and the `sse` value of
+  `CLICKHOUSE_MCP_SERVER_TRANSPORT` in `mcp_env.py` (reject the value with a
+  clear migration error naming `http`); the SSE branch in `main.py`; the
+  `transport="sse"` handling in `ClickHouseFastMCP.http_app`; every
+  `transport="sse"` parametrization in tests (mainly
+  `tests/test_http_security_boundary.py`, also `test_health_endpoint.py`,
+  `test_http_security.py`, `test_context_config_override.py`); the README
+  transport, auth, and middleware sections; the D7 comment that names SSE
+  coverage as a reason for the custom DNS-rebinding middleware (still true for
+  the other three reasons); the CHANGELOG breaking entry; and `server.json` if
+  it lists the transport. Open item F5 (SSE session-leak regression test)
+  closes as moot.
+
+## D21. Public Python API: sync helpers supported, internals deprecated
+
+- `mcp_clickhouse.__all__` keeps `list_databases`, `list_tables`, `run_query`,
+  `run_chdb_select_query` (when chDB is enabled), and
+  `create_clickhouse_client` as the supported synchronous API.
+- `table_pagination_cache`, `fetch_table_names_from_system`,
+  `get_paginated_table_data`, and `create_page_token` are internals. They stay
+  exported in this release with a CHANGELOG deprecation notice and are removed
+  from `__all__` in the next minor. The user accepted this recommendation
+  without a strong preference, so a reviewer who prefers removing them now,
+  given the release is already breaking, may do so.
+
+## D22. `output_schema=None` and write-as-destructive confirmed
+
+- The user confirmed D15 (`output_schema=None` on every tool, JSON-string text
+  results only) and D14 as amended after review (`destructive_hint=True`
+  whenever `CLICKHOUSE_ALLOW_WRITE_ACCESS=true`, independent of
+  `CLICKHOUSE_ALLOW_DROP`). Both are final for this release.
+
+## D23. Single PR: queues A, B, and C; version numbers deferred
+
+- Queue A (contract, tests, packaging) is complete. Queue B (migration-specific
+  tests) and Queue C (test hygiene: conftest, fixtures, asyncio mode,
+  wall-clock assertions, CI matrix) are in scope for the same PR rather than a
+  follow-up. The SSE removal (D20) and the API deprecation notice (D21) are
+  also in scope.
+- Version numbers in `pyproject.toml` and `server.json` are left alone (D8
+  stands). Whoever cuts the release decides the number; the FastMCP jump and
+  SSE removal make it a breaking release.
+
 ## Review findings and resolutions
 
 An adversarial review of the code diff ran after the first three commits.
@@ -413,13 +477,16 @@ state; `http_app` does not mutate the shared `mcp` instance; explicit
 
 ## Remaining open items
 
-- No SSE-transport regression test for the session-state leak (F5).
+- SSE removal (D20), not started. Closes F5 as moot.
+- CHANGELOG deprecation notice for the internal exports (D21), not written.
+- Queue B and Queue C from the handover document (D23), not started.
 - README chDB section does not document the `{"status": "error"}` payload
   shape (D13 follow-up).
 - `fastmcp.json` could use `"project": "."` (or `"editable": ["."]`) so
   `fastmcp run fastmcp.json` works outside the repository root; the
   hand-maintained dependency list does not fix the `mcp_clickhouse` import
   (D18). Needs an end-to-end `fastmcp run` check first.
+- Scheduled CI job installing the latest FastMCP 4.x (D19), not added.
 - Resolved: `tests/test_mcp_server.py::test_system_database_access` failed on
   ClickHouse 26.8 because it requested `page_size=100` and the `system` database
   now holds 139 tables, so `tables` (alphabetical position 124) fell on the
