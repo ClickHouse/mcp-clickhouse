@@ -1324,8 +1324,7 @@ async def run_query_async(query: str) -> str:
     served while a slow query is in flight.
 
     Args:
-        query: The SQL statement to execute. One statement per call. The result is
-            a JSON object with "columns" (names) and "rows" (arrays of values).
+        query: The SQL statement to execute, one statement per call.
     """
     logger.info(f"Executing query: {query}")
 
@@ -2059,8 +2058,7 @@ async def run_chdb_select_query_async(query: str) -> str:
     """Async MCP-facing wrapper for chDB queries.
 
     Args:
-        query: The SQL statement to run in chDB. The result is a JSON array with
-            one object per row, keyed by column name.
+        query: The SQL statement to run in chDB.
     """
     logger.info(f"Executing chDB SELECT query: {query}")
     try:
