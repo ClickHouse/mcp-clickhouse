@@ -2276,13 +2276,15 @@ def _run_query_description(config: Any) -> str:
             "This server allows DDL and DML (CREATE, INSERT, ALTER ADD COLUMN, and "
             f"similar). Destructive statements ({_DESTRUCTIVE_STATEMENTS_TEXT}) are "
             "refused by a best-effort accident guard, not a security boundary; "
-            "operators enable them with CLICKHOUSE_ALLOW_DROP=true."
+            "operators enable them with CLICKHOUSE_ALLOW_DROP=true. Every statement is "
+            "also subject to the ClickHouse user's grants."
         )
     else:
         mode = (
             "This server allows DDL, DML, and destructive statements "
             f"({_DESTRUCTIVE_STATEMENTS_TEXT}). Nothing in the MCP server blocks them; "
-            "the ClickHouse user's grants are the only protection."
+            "the ClickHouse user's grants are the only protection, and every statement "
+            "is subject to them."
         )
     return (
         "Execute SQL queries in ClickHouse. Returns a JSON object with \"columns\" and "
@@ -2333,7 +2335,7 @@ def _register_clickhouse_tools(server: FastMCP) -> None:
             name="list_tables",
             description=(
                 "List available ClickHouse tables in a database, including schema, "
-                "comment, row count, and column count. Returns a JSON-encoded object "
+                "comment, row count, and columns. Returns a JSON-encoded object "
                 "with: tables (list of table information objects), next_page_token "
                 "(token for the next page, or null when there are no more pages), and "
                 "total_tables (total number of tables matching the filters). Integers "
