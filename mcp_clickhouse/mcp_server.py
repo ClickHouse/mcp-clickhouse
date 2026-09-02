@@ -520,25 +520,27 @@ else:
     _serialize_tool_result = _serialize_tool_result_with_stdlib
 
 
-async def _run_metadata_tool(tool_name: str, fn, *args: Any) -> str:
+async def _run_metadata_tool(tool_name: str, fn, *args: Any, **kwargs: Any) -> str:
     """Run a blocking metadata helper on QUERY_EXECUTOR without blocking the loop.
 
     The call is bounded by CLICKHOUSE_MCP_QUERY_TIMEOUT and raises ToolError on
     expiry. Metadata queries are not registered for server-side KILL QUERY, so
-    the helper keeps running on its worker thread after a timeout. When
-    CLICKHOUSE_SEND_RECEIVE_TIMEOUT is unset and not overridden by middleware,
-    _resolve_client_config caps send_receive_timeout near the MCP query timeout
-    and the worker is released shortly after. When that timeout is set or
-    overridden, a timed-out metadata call can hold a QUERY_EXECUTOR worker until
+    the helper keeps running on its worker thread after a timeout. list_tables
+    issues up to page_size + 2 sequential queries; it checks its deadline
+    between queries and stops the worker once the MCP timeout has passed, so a
+    single stalled query is what holds the worker, bounded by the client's
+    send_receive_timeout. When CLICKHOUSE_SEND_RECEIVE_TIMEOUT is unset and not
+    overridden by middleware, _resolve_client_config caps that near the MCP
+    query timeout; when it is set or overridden, the worker can be held until
     the ClickHouse HTTP read finishes.
+
+    Cancellation of the awaiting task propagates to the concurrent future
+    through asyncio.wrap_future, so a queued helper is dropped before it runs.
     """
-    future = QUERY_EXECUTOR.submit(fn, *args)
+    future = QUERY_EXECUTOR.submit(fn, *args, **kwargs)
     timeout_secs = get_mcp_config().query_timeout
     try:
         return await asyncio.wait_for(asyncio.wrap_future(future), timeout=timeout_secs)
-    except asyncio.CancelledError:
-        future.cancel()
-        raise
     except asyncio.TimeoutError:
         future.cancel()
         logger.warning("%s timed out after %s seconds", tool_name, timeout_secs)
@@ -630,6 +632,12 @@ def fetch_table_names_from_system(
     return table_names
 
 
+def _check_metadata_deadline(deadline: Optional[float]) -> None:
+    """Stop a list_tables worker between queries once the MCP timeout has passed."""
+    if deadline is not None and time.monotonic() >= deadline:
+        raise ToolError("list_tables timed out")
+
+
 def get_paginated_table_data(
     client,
     database: str,
@@ -637,6 +645,7 @@ def get_paginated_table_data(
     start_idx: int,
     page_size: int,
     include_detailed_columns: bool = True,
+    deadline: Optional[float] = None,
 ) -> tuple[List[Table], int, bool]:
     """Get detailed information for a page of tables.
 
@@ -647,6 +656,8 @@ def get_paginated_table_data(
         start_idx: Starting index for pagination
         page_size: Number of tables per page
         include_detailed_columns: Whether to include detailed column metadata (default: True)
+        deadline: Optional time.monotonic() value; raise ToolError instead of
+            issuing another query once it has passed
 
     Returns:
         Tuple of (list of Table objects, end index, has more pages)
@@ -666,11 +677,13 @@ def get_paginated_table_data(
         AND name IN ({", ".join(format_query_value(name) for name in current_page_table_names)})
     """
 
+    _check_metadata_deadline(deadline)
     result = client.query(query)
     tables = result_to_table(result.column_names, result.result_rows)
 
     if include_detailed_columns:
         for table in tables:
+            _check_metadata_deadline(deadline)
             column_data_query = f"""
                 SELECT database, table, name, type AS column_type, default_kind, default_expression, comment
                 FROM system.columns
@@ -772,6 +785,9 @@ async def list_tables_async(
     include_detailed_columns: bool = True,
 ) -> str:
     overrides = await _get_client_config_overrides()
+    # Cooperative deadline so the worker stops between queries once the MCP
+    # timeout in _run_metadata_tool has already failed the call.
+    deadline = time.monotonic() + get_mcp_config().query_timeout
     return await _run_metadata_tool(
         "list_tables",
         _list_tables_with_config,
@@ -782,6 +798,7 @@ async def list_tables_async(
         page_token,
         page_size,
         include_detailed_columns,
+        deadline=deadline,
     )
 
 
@@ -801,6 +818,7 @@ def _list_tables_with_config(
     page_token: Optional[str],
     page_size: int,
     include_detailed_columns: bool,
+    deadline: Optional[float] = None,
 ) -> str:
     """List tables with an already resolved client config."""
     if page_size <= 0:
@@ -824,7 +842,7 @@ def _list_tables_with_config(
             client = entry.client
             return _list_tables_impl(
                 client, database, like, not_like, page_token,
-                page_size, include_detailed_columns,
+                page_size, include_detailed_columns, deadline=deadline,
             )
         except Exception as err:
             if attempt == 0 and _is_connection_error(err):
@@ -846,6 +864,7 @@ def _list_tables_impl(
     page_token: Optional[str],
     page_size: int,
     include_detailed_columns: bool,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Inner implementation of list_tables, separated for retry logic."""
     if page_token and page_token in table_pagination_cache:
@@ -875,6 +894,7 @@ def _list_tables_impl(
                 start_idx,
                 page_size,
                 include_detailed_columns,
+                deadline=deadline,
             )
 
             next_page_token = None
@@ -907,6 +927,7 @@ def _list_tables_impl(
         start_idx,
         page_size,
         include_detailed_columns,
+        deadline=deadline,
     )
 
     next_page_token = None
@@ -1491,8 +1512,16 @@ async def _get_client_config_overrides() -> Optional[dict[str, Any]]:
     Middleware is documented to set the key with serializable=False, which is
     request-scoped. FastMCP 4's default set_state writes to a session-scoped
     store instead, where the value would apply to every later call in the same
-    MCP session. As defense in depth, a captured value is deleted after the
-    snapshot so each override is consumed by exactly one request.
+    MCP session. As defense in depth the value is consumed in this order:
+
+    1. delete_state removes any session-scoped copy, so a value written with
+       the default set_state applies to one request only and an invalid value
+       cannot poison every later request in the session.
+    2. set_state(serializable=False) restores a request-scoped copy, so a
+       second read within the same MCP request (for example under FastMCP's
+       RetryMiddleware) sees the same overrides instead of the base config.
+    3. The snapshot validates the value last; an invalid value still fails
+       this request's tool call with a ToolError.
     """
     try:
         ctx = get_context()
@@ -1501,9 +1530,9 @@ async def _get_client_config_overrides() -> Optional[dict[str, Any]]:
     overrides = await ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY)
     if overrides is None:
         return None
-    snapshot = _snapshot_client_config_overrides(overrides)
     await ctx.delete_state(CLIENT_CONFIG_OVERRIDES_KEY)
-    return snapshot
+    await ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, overrides, serializable=False)
+    return _snapshot_client_config_overrides(overrides)
 
 
 def _apply_client_config_overrides(

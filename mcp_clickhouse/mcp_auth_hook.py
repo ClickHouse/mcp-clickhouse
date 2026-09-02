@@ -48,7 +48,7 @@ def load_auth_provider(module_path: str) -> AuthProvider:
         ) from e
     if not isinstance(provider, AuthProvider):
         raise ValueError(
-            f"{module_path}.{AUTH_PROVIDER_FACTORY}() returned "
+            f"CLICKHOUSE_MCP_AUTH_MODULE '{module_path}': {AUTH_PROVIDER_FACTORY}() returned "
             f"{type(provider).__name__}, expected a fastmcp.server.auth.AuthProvider instance"
         )
     return provider

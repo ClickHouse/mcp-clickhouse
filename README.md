@@ -485,7 +485,7 @@ class TimeoutOverrideMiddleware(Middleware):
         return await call_next(context)
 ```
 
-`serializable=False` is required. It stores the value in FastMCP's request-scoped state, which lives only for the current tool call. FastMCP 4's default `set_state` writes to a session-scoped store keyed by `mcp-session-id` with a 24 hour TTL, so without it overrides set on one call would apply to every later call in the same streamable HTTP session, and opaque values such as `pool_mgr` would raise `TypeError`. As defense in depth the server deletes the key after reading it, so a session-scoped value is consumed by exactly one request, but middleware should not rely on that. Set overrides on every call that needs them.
+`serializable=False` is required. It stores the value in FastMCP's request-scoped state, which lives only for the current tool call. FastMCP 4's default `set_state` writes to a session-scoped store keyed by `mcp-session-id` with a 24 hour TTL, so without it overrides set on one call would apply to every later call in the same HTTP session (streamable HTTP or SSE), and opaque values such as `pool_mgr` would raise `TypeError`. As defense in depth the server removes any session-scoped copy of the key when it reads it and keeps a request-scoped copy for the rest of the request, so a value written with the default `set_state` applies to one request only. Concurrent requests in one session can still observe each other's session-scoped value before it is removed, which is why `serializable=False` is required rather than optional. Set overrides on every call that needs them.
 
 This enables advanced use cases like dynamic timeout adjustments, tenant-specific routing, or per-user connection settings.
 

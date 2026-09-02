@@ -595,36 +595,120 @@ class TestRunMetadataTool:
             await _run_metadata_tool("list_databases", failing_helper)
 
     @pytest.mark.asyncio
-    async def test_cancelling_the_caller_cancels_the_future(self):
-        started = threading.Event()
+    async def test_cancelling_the_caller_cancels_a_queued_future(self):
+        """Task cancellation reaches the concurrent future through wrap_future.
+
+        Every worker is occupied first so the helper stays queued; a queued
+        future can be cancelled, which proves the propagation rather than
+        relying on a running helper that cancel() cannot stop.
+        """
         release = threading.Event()
+        blockers_started = threading.Barrier(mcp_server.QUERY_EXECUTOR._max_workers + 1)
         submitted = {}
         real_submit = mcp_server.QUERY_EXECUTOR.submit
 
-        def blocking_helper():
-            started.set()
-            release.wait(timeout=2)
-            return "late"
+        def blocker():
+            blockers_started.wait(timeout=5)
+            release.wait(timeout=5)
 
-        def recording_submit(fn, *args):
-            future = real_submit(fn, *args)
+        def never_runs():
+            raise AssertionError("queued helper must not run after cancellation")
+
+        def recording_submit(fn, *args, **kwargs):
+            future = real_submit(fn, *args, **kwargs)
             submitted["future"] = future
             return future
 
+        blocker_futures = [
+            real_submit(blocker) for _ in range(mcp_server.QUERY_EXECUTOR._max_workers)
+        ]
         try:
+            # Wait until every worker thread is inside blocker().
+            await asyncio.get_running_loop().run_in_executor(None, blockers_started.wait, 5)
             with patch.object(mcp_server.QUERY_EXECUTOR, "submit", side_effect=recording_submit):
-                task = asyncio.create_task(_run_metadata_tool("list_databases", blocking_helper))
-                assert await asyncio.get_running_loop().run_in_executor(
-                    None, started.wait, 1
-                )
+                task = asyncio.create_task(_run_metadata_tool("list_databases", never_runs))
+                await asyncio.sleep(0)
+                assert "future" in submitted
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
-                    await task
+                    await asyncio.wait_for(task, timeout=2)
         finally:
             release.set()
+            concurrent.futures.wait(blocker_futures, timeout=5)
 
-        future = submitted["future"]
-        # The helper was already running, so cancel() could not stop it, but the
-        # wrapper must have tried and must not leave the caller waiting on it.
-        assert future.running() or future.done()
-        assert future.result(timeout=2) == "late"
+        assert submitted["future"].cancelled() is True
+
+
+class TestListTablesDeadline:
+    """list_tables stops issuing queries once the MCP timeout has passed."""
+
+    @staticmethod
+    def _fake_client(table_names):
+        client = MagicMock()
+
+        def query(sql):
+            if "system.tables" in sql and "name IN" not in sql:
+                return SimpleNamespace(column_names=["name"], result_rows=[(n,) for n in table_names])
+            raise AssertionError(f"unexpected query after deadline: {sql}")
+
+        client.query.side_effect = query
+        return client
+
+    def test_get_paginated_table_data_without_deadline_is_unchanged(self):
+        client = MagicMock()
+        client.query.return_value = SimpleNamespace(column_names=["database", "name"], result_rows=[])
+
+        tables, end_idx, has_more = mcp_server.get_paginated_table_data(
+            client, "db", ["t1"], 0, 50, include_detailed_columns=False
+        )
+
+        assert (tables, end_idx, has_more) == ([], 1, False)
+        assert client.query.call_count == 1
+
+    def test_get_paginated_table_data_stops_before_the_page_query(self):
+        client = MagicMock()
+
+        with pytest.raises(ToolError, match="list_tables timed out"):
+            mcp_server.get_paginated_table_data(
+                client, "db", ["t1"], 0, 50, deadline=time.monotonic() - 1
+            )
+
+        client.query.assert_not_called()
+
+    def test_list_tables_impl_stops_after_the_table_name_query(self):
+        client = self._fake_client(["t1", "t2"])
+
+        with pytest.raises(ToolError, match="list_tables timed out"):
+            mcp_server._list_tables_impl(
+                client, "db", None, None, None, 50, True, deadline=time.monotonic() - 1
+            )
+
+        # Only the table-name query ran; the deadline stopped the page query.
+        assert client.query.call_count == 1
+
+    def test_deadline_between_column_queries(self):
+        """A deadline passing mid-page stops the remaining per-table column queries."""
+        client = MagicMock()
+        table_columns = [
+            "database", "name", "engine", "create_table_query", "dependencies_database",
+            "dependencies_table", "engine_full", "sorting_key", "primary_key", "total_rows",
+            "total_bytes", "total_bytes_uncompressed", "parts", "active_parts", "total_marks",
+            "comment",
+        ]
+        page = SimpleNamespace(
+            column_names=table_columns,
+            result_rows=[
+                ("db", name, "MergeTree", "", "", "", "", "", "", 0, 0, 0, 0, 0, 0, None)
+                for name in ("t1", "t2")
+            ],
+        )
+        columns = SimpleNamespace(column_names=["database", "table", "name"], result_rows=[])
+        clock = iter([0.0, 0.0, 10.0])
+        client.query.side_effect = [page, columns, columns]
+
+        with patch("mcp_clickhouse.mcp_server.time.monotonic", side_effect=lambda: next(clock)):
+            with pytest.raises(ToolError, match="list_tables timed out"):
+                mcp_server.get_paginated_table_data(client, "db", ["t1", "t2"], 0, 50, deadline=5.0)
+
+        # Page query and the first table's column query ran; the second did not.
+        assert client.query.call_count == 2

@@ -49,7 +49,7 @@ This module has meaningful import-time behavior. `mcp_server.py` loads `.env`, r
 - Tool results are deliberately JSON-encoded strings. Do not return raw dictionaries or lists without verifying FastMCP protocol behavior and updating all affected tests and documentation.
 - Test public tool behavior through `fastmcp.Client` when the MCP boundary matters. Direct helper tests alone do not validate registration, serialization, or protocol errors.
 - Pagination tokens are stateful, single-use cache entries with expiry. Preserve filter and option validation, expiry behavior, and cleanup when changing pagination.
-- Context-state client configuration overrides are request-scoped. FastMCP context state is async; only the async MCP-facing tool wrappers read it, and they pass the snapshot explicitly to the sync helpers. Do not let one request's overrides leak into another or mutate the base configuration.
+- Context-state client configuration overrides are request-scoped. FastMCP context state is async; only the async MCP-facing tool wrappers read it, and they pass the snapshot explicitly to the sync helpers. Middleware must set the key with `serializable=False` because FastMCP 4's default `set_state` is session-scoped and would apply the value to every later call in the same HTTP session; the server's consume-on-read of a session-scoped copy is defense in depth only. Do not let one request's overrides leak into another or mutate the base configuration.
 - chDB initialization and registration are conditional. A missing optional dependency must not prevent ClickHouse-only startup.
 
 ## Security And Operational Safety

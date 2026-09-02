@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import inspect
 import sys
 import threading
@@ -361,7 +362,7 @@ def test_http_app_restores_auth_between_static_and_module_construction(
 
 
 def test_http_app_auth_swap_is_serialized_across_threads(monkeypatch: pytest.MonkeyPatch):
-    """Concurrent http_app() calls hold the auth lock and never see a stale provider."""
+    """A second http_app() call waits for the first and never sees a stale provider."""
     _clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret-token")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
@@ -369,29 +370,43 @@ def test_http_app_auth_swap_is_serialized_across_threads(monkeypatch: pytest.Mon
     original_auth = server.auth
     observed = []
     observed_lock = threading.Lock()
+    first_inside = threading.Event()
+    release_first = threading.Event()
 
+    @functools.wraps(FastMCP.http_app)
     def fake_upstream_http_app(self, *args, **kwargs):
         with observed_lock:
-            observed.append((self.auth, _http_app_auth_lock.locked()))
+            observed.append((self.auth, _http_app_auth_lock.locked(), kwargs.get("transport")))
+            is_first = len(observed) == 1
+        if is_first:
+            first_inside.set()
+            assert release_first.wait(timeout=5)
         app = Starlette()
         app.state.path = "/mcp"
         return app
 
     monkeypatch.setattr(FastMCP, "http_app", fake_upstream_http_app)
 
-    threads = [
-        threading.Thread(target=server.http_app, kwargs={"transport": "http"}) for _ in range(2)
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=5)
+    first = threading.Thread(target=server.http_app, kwargs={"transport": "http"})
+    second = threading.Thread(target=server.http_app, kwargs={"transport": "http"})
+    first.start()
+    assert first_inside.wait(timeout=5)
+    second.start()
+    # While the first construction holds the lock the second cannot enter.
+    second.join(timeout=0.3)
+    assert second.is_alive()
+    assert len(observed) == 1
+
+    release_first.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert not first.is_alive() and not second.is_alive()
 
     assert len(observed) == 2
-    for auth, lock_was_held in observed:
+    for auth, lock_was_held, transport in observed:
         assert lock_was_held is True
         assert isinstance(auth, StaticTokenVerifier)
-        assert auth is not original_auth
+        assert transport == "http"
     assert server.auth is original_auth
     assert not _http_app_auth_lock.locked()
 
