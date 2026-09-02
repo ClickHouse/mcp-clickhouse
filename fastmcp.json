@@ -5,6 +5,7 @@
     "entrypoint": "mcp"
   },
   "environment": {
+    "project": ".",
     "dependencies": [
       "clickhouse-connect",
       "python-dotenv",
@@ -16,5 +17,8 @@
       "mcp",
       "pydantic"
     ]
+  },
+  "deployment": {
+    "cwd": "."
   }
 }

@@ -26,7 +26,7 @@ All notable changes to this project will be documented in this file.
 - `mcp_clickhouse.table_pagination_cache`, `mcp_clickhouse.fetch_table_names_from_system`, `mcp_clickhouse.get_paginated_table_data`, and `mcp_clickhouse.create_page_token` are internal pagination helpers that were re-exported from the package namespace. Accessing them through `mcp_clickhouse` now emits a `DeprecationWarning`, and they leave `__all__` and the package namespace in the next minor release. The supported Python API is `list_databases`, `list_tables`, `run_query`, `run_chdb_select_query`, and `create_clickhouse_client`.
 
 ### Fixed
-- `fastmcp.json` now declares every runtime dependency (`cachetools`, `simplejson`, `uvicorn`, `starlette`, `mcp`, `pydantic`) instead of three of them. `starlette`, `mcp`, and `pydantic` are also declared as direct dependencies in `pyproject.toml` because the server imports them directly. `fastmcp run fastmcp.json` still needs the project installed, because the server uses absolute `mcp_clickhouse.` imports.
+- `fastmcp.json` now declares every runtime dependency (`cachetools`, `simplejson`, `uvicorn`, `starlette`, `mcp`, `pydantic`) instead of three of them. `starlette`, `mcp`, and `pydantic` are also declared as direct dependencies in `pyproject.toml` because the server imports them directly. It also sets `environment.project` and `deployment.cwd` to the repository root, so `fastmcp run /path/to/fastmcp.json` now works from any directory against a source checkout; previously the relative source path and the absolute `mcp_clickhouse.` imports made it fail outside the repository root.
 
 ## 0.5.0 - 2026-09-01
 

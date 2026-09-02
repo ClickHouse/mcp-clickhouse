@@ -87,3 +87,26 @@ def test_fastmcp_json_has_no_stale_dependencies():
         f"fastmcp.json environment.dependencies lists packages that are neither runtime "
         f"nor optional dependencies of {PACKAGE_NAME} in pyproject.toml: {sorted(stale)}."
     )
+
+
+def _fastmcp_json() -> dict:
+    with FASTMCP_JSON_PATH.open("r", encoding="utf-8") as config_file:
+        return json.load(config_file)
+
+
+def test_fastmcp_json_runs_the_project_from_any_directory():
+    """fastmcp run /path/to/fastmcp.json must work outside the repository root.
+
+    The server uses absolute ``mcp_clickhouse.`` imports and FastMCP's filesystem
+    source only puts the entrypoint's own directory on sys.path, so the project
+    itself has to be installed: ``environment.project`` makes ``uv run --project``
+    sync it. FastMCP resolves ``project`` against the process working directory
+    but ``deployment.cwd`` against the config file, so ``cwd`` is set too; the
+    CLI applies it before it builds the uv command. Verified end to end with
+    ``fastmcp inspect`` from an unrelated directory (MIGRATION_DECISIONS.md D25).
+    """
+    config = _fastmcp_json()
+
+    assert config["environment"]["project"] == "."
+    assert config["deployment"]["cwd"] == "."
+    assert config["source"] == {"path": "mcp_clickhouse/mcp_server.py", "entrypoint": "mcp"}
