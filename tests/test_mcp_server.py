@@ -397,11 +397,15 @@ async def test_run_query_does_not_block_other_mcp_requests(mcp_server):
     """
     entered = threading.Event()
     release = threading.Event()
+    released_by_timeout = threading.Event()
     payload = json.dumps({"columns": ["value"], "rows": [[1]]})
 
     def blocked_execute_query(_query: str, _query_id: str, _client_config: dict):
         entered.set()
-        release.wait()
+        # Bounded so a wrapper that blocks the loop fails the test instead of
+        # hanging it: nothing on a blocked loop could ever set `release`.
+        if not release.wait(timeout=5):
+            released_by_timeout.set()
         return payload
 
     async with Client(mcp_server) as client:
@@ -417,5 +421,6 @@ async def test_run_query_does_not_block_other_mcp_requests(mcp_server):
                 release.set()
             result = await asyncio.wait_for(slow_task, timeout=5)
 
+    assert not released_by_timeout.is_set(), "worker released by timeout: the loop was blocked"
     assert len(tools) >= 1
     assert result.content[0].text == payload

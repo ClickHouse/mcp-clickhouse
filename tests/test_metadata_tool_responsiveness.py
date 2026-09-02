@@ -18,12 +18,23 @@ from fastmcp import Client
 from mcp_clickhouse import mcp_server
 
 
-def _blocking_helper(entered: threading.Event, release: threading.Event, payload: str):
-    """Build a fake sync helper: signal entry, block on release, then return payload."""
+def _blocking_helper(
+    entered: threading.Event,
+    release: threading.Event,
+    released_by_timeout: threading.Event,
+    payload: str,
+):
+    """Build a fake sync helper: signal entry, block on release, then return payload.
+
+    The wait is bounded. If the wrapper ran this helper on the event loop, nothing
+    on the loop could ever set `release`, so an unbounded wait would hang the
+    test instead of failing it; the bound turns that into a recorded failure.
+    """
 
     def _helper(*args, **kwargs):
         entered.set()
-        release.wait()
+        if not release.wait(timeout=5):
+            released_by_timeout.set()
         return payload
 
     return _helper
@@ -60,9 +71,11 @@ async def test_metadata_tool_does_not_block_other_mcp_requests(
     """
     entered = threading.Event()
     release = threading.Event()
+    released_by_timeout = threading.Event()
+    helper = _blocking_helper(entered, release, released_by_timeout, fake_payload)
 
     async with Client(mcp_server.mcp) as client:
-        with patch(patch_target, side_effect=_blocking_helper(entered, release, fake_payload)):
+        with patch(patch_target, side_effect=helper):
             blocked_task = asyncio.create_task(client.call_tool(tool_name, tool_args))
             try:
                 entered_in_time = await asyncio.get_running_loop().run_in_executor(
@@ -81,6 +94,9 @@ async def test_metadata_tool_does_not_block_other_mcp_requests(
 
             result = await asyncio.wait_for(blocked_task, timeout=5)
 
+    assert not released_by_timeout.is_set(), (
+        f"{tool_name} helper was released by its timeout: the event loop was blocked"
+    )
     assert len(result.content) == 1
     assert result.content[0].text == fake_payload
 
