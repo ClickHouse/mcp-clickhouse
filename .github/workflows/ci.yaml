@@ -16,11 +16,19 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     name: test (python ${{ matrix.python-version }})
+    timeout-minutes: 30
 
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.13"]
+
+    # UV_PYTHON outranks the committed .python-version (3.10) for every uv
+    # command in the job. Without it, `uv run` would notice the interpreter
+    # mismatch after `uv sync --python 3.13`, recreate .venv at 3.10 without the
+    # dev extras, and fail to find pytest.
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
 
     services:
       clickhouse:
@@ -40,7 +48,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install Project (Python ${{ matrix.python-version }})
-        run: uv sync --all-extras --dev --python ${{ matrix.python-version }}
+        run: uv sync --all-extras --dev
 
       - name: Run tests
         env:
@@ -67,6 +75,7 @@ jobs:
     # Regular PR/push checks only; the weekly schedule only runs fastmcp-latest.
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -109,6 +118,9 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     name: fastmcp-latest (python 3.13)
+    timeout-minutes: 30
+    env:
+      UV_PYTHON: "3.13"
 
     services:
       clickhouse:
