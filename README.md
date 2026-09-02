@@ -439,6 +439,7 @@ An example middleware module is provided in `example_middleware.py` showing comm
 - Logging all MCP requests
 - Logging tool calls specifically
 - Measuring request processing time
+- Setting a per-request ClickHouse client configuration override with `serializable=False` (see [Dynamic Client Configuration via Context State](#dynamic-client-configuration-via-context-state))
 
 To use the example:
 ```json

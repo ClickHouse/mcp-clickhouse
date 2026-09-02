@@ -15,15 +15,21 @@ Or in your Claude Desktop config:
 """
 
 import logging
+import time
+from typing import Any
+
+from fastmcp.server.dependencies import get_context
 from fastmcp.server.middleware import Middleware, MiddlewareContext, CallNext
+
+from mcp_clickhouse.mcp_server import CLIENT_CONFIG_OVERRIDES_KEY
 
 logger = logging.getLogger("example-middleware")
 
 
 class LoggingMiddleware(Middleware):
     """Example middleware that logs all MCP requests."""
-    
-    async def on_request(self, context: MiddlewareContext, call_next: CallNext) -> any:
+
+    async def on_request(self, context: MiddlewareContext, call_next: CallNext) -> Any:
         """Log all incoming requests."""
         logger.info(f"Incoming MCP request: method={context.method}, type={context.type}")
         result = await call_next(context)
@@ -33,12 +39,12 @@ class LoggingMiddleware(Middleware):
 
 class ToolCallLoggingMiddleware(Middleware):
     """Example middleware that specifically logs tool calls."""
-    
-    async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext) -> any:
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext) -> Any:
         """Log tool execution details."""
-        tool_name = context.message.name if hasattr(context.message, 'name') else 'unknown'
+        tool_name = context.message.name if hasattr(context.message, "name") else "unknown"
         logger.info(f"Executing tool: {tool_name}")
-        
+
         try:
             result = await call_next(context)
             logger.info(f"Tool {tool_name} completed successfully")
@@ -50,38 +56,65 @@ class ToolCallLoggingMiddleware(Middleware):
 
 class TimingMiddleware(Middleware):
     """Example middleware that measures request processing time."""
-    
-    async def on_message(self, context: MiddlewareContext, call_next: CallNext) -> any:
+
+    async def on_message(self, context: MiddlewareContext, call_next: CallNext) -> Any:
         """Measure processing time for all messages."""
-        import time
         start_time = time.time()
-        
+
         result = await call_next(context)
-        
+
         elapsed = time.time() - start_time
         logger.info(f"Request {context.method} took {elapsed:.4f} seconds")
         return result
 
 
+class ClientConfigOverrideMiddleware(Middleware):
+    """Example middleware that overrides ClickHouse client configuration per request.
+
+    This uses FastMCP's asynchronous context state to pass a request-scoped
+    override to the server. `serializable=False` is mandatory: FastMCP 4's
+    default `set_state` writes to a session-scoped store keyed by
+    `mcp-session-id` with a 24 hour TTL, so without it this override would
+    apply to every later tool call in the same streamable HTTP session, not
+    just this one. `serializable=False` stores the value in
+    FastMCP's request-scoped state instead, which lives only for the current
+    tool call.
+    """
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext) -> Any:
+        """Set a fixed timeout override for the duration of this tool call."""
+        ctx = get_context()
+        await ctx.set_state(
+            CLIENT_CONFIG_OVERRIDES_KEY,
+            {"connect_timeout": 60, "send_receive_timeout": 120},
+            serializable=False,
+        )
+        return await call_next(context)
+
+
 def setup_middleware(mcp):
     """
     Setup function called by the MCP server to register middleware.
-    
+
     Args:
         mcp: The FastMCP instance
     """
     logger.info("Setting up example middleware")
-    
+
     # Add logging middleware
     mcp.add_middleware(LoggingMiddleware())
     logger.info("Added LoggingMiddleware")
-    
+
     # Add tool-specific logging
     mcp.add_middleware(ToolCallLoggingMiddleware())
     logger.info("Added ToolCallLoggingMiddleware")
-    
+
     # Add timing middleware
     mcp.add_middleware(TimingMiddleware())
     logger.info("Added TimingMiddleware")
-    
+
+    # Add client configuration override middleware
+    mcp.add_middleware(ClientConfigOverrideMiddleware())
+    logger.info("Added ClientConfigOverrideMiddleware")
+
     logger.info("Example middleware setup complete")
