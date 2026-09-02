@@ -927,6 +927,7 @@ dependencies = [
     { name = "fastmcp" },
     { name = "python-dotenv" },
     { name = "simplejson" },
+    { name = "starlette" },
     { name = "truststore" },
     { name = "uvicorn" },
 ]
@@ -952,6 +953,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "simplejson", specifier = ">=3.17.2,<5" },
+    { name = "starlette", specifier = ">=1.0.1" },
     { name = "truststore", specifier = ">=0.10" },
     { name = "uvicorn", specifier = ">=0.31.0" },
 ]

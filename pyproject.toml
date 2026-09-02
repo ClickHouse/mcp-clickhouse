@@ -14,6 +14,7 @@ dependencies = [
      "cachetools>=5.5.0",
      "uvicorn>=0.31.0",
      "simplejson>=3.17.2,<5",
+     "starlette>=1.0.1",
 ]
 
 [project.scripts]

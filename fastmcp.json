@@ -8,7 +8,11 @@
     "dependencies": [
       "clickhouse-connect",
       "python-dotenv",
-      "truststore"
+      "truststore",
+      "cachetools",
+      "simplejson",
+      "uvicorn",
+      "starlette"
     ]
   }
 }
