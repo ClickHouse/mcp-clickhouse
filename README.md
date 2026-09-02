@@ -440,7 +440,7 @@ An example middleware module is provided in `example_middleware.py` showing comm
 - Logging all MCP requests
 - Logging tool calls specifically
 - Measuring request processing time
-- Setting a per-request ClickHouse client configuration override with `serializable=False` (see [Dynamic Client Configuration via Context State](#dynamic-client-configuration-via-context-state))
+- A `ClientConfigOverrideMiddleware` template for per-request ClickHouse client configuration overrides with `serializable=False` (see [Dynamic Client Configuration via Context State](#dynamic-client-configuration-via-context-state)). It is not registered by the example's `setup_middleware`, because it would replace your configured timeouts on every call; copy it into your own middleware module
 
 To use the example:
 ```json
@@ -731,8 +731,8 @@ On an IPv6 or dual-stack bind, IPv4 proxies may appear as IPv4-mapped addresses 
 
 #### Common configuration pitfalls
 
-* **`CLICKHOUSE_SECURE` vs MCP / ingress TLS** — Turning off `CLICKHOUSE_SECURE` because the MCP server sits behind Kubernetes ingress, a reverse proxy, or is reached over plain HTTP does not disable database TLS; it only changes how this process connects to ClickHouse. Configure ingress TLS separately from the database client settings.
-* **Native protocol ports** — `CLICKHOUSE_PORT` must target ClickHouse's HTTP interface (`8123`/`8443` by default). Ports `9000`/`9440` are for the native TCP protocol (`clickhouse-client`) and will not work with this server.
+* **`CLICKHOUSE_SECURE` vs MCP / ingress TLS**: Turning off `CLICKHOUSE_SECURE` because the MCP server sits behind Kubernetes ingress, a reverse proxy, or is reached over plain HTTP does not disable database TLS; it only changes how this process connects to ClickHouse. Configure ingress TLS separately from the database client settings.
+* **Native protocol ports**: `CLICKHOUSE_PORT` must target ClickHouse's HTTP interface (`8123`/`8443` by default). Ports `9000`/`9440` are for the native TCP protocol (`clickhouse-client`) and will not work with this server.
 * **Host confusion**: `CLICKHOUSE_HOST` is the database hostname. `CLICKHOUSE_MCP_BIND_HOST` is only the address the MCP HTTP server listens on.
 
 #### Example Configurations

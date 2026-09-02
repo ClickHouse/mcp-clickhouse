@@ -38,9 +38,10 @@ def example_middleware_module(monkeypatch: pytest.MonkeyPatch):
 
 
 class TestExampleMiddlewareLoading:
-    def test_setup_middleware_registers_all_four_in_order(
+    def test_setup_middleware_registers_the_three_logging_middleware_in_order(
         self, monkeypatch: pytest.MonkeyPatch, example_middleware_module
     ):
+        """The override template is not registered: it would replace configured timeouts."""
         monkeypatch.setenv("MCP_MIDDLEWARE_MODULE", "example_middleware")
         server = FastMCP("t")
         initial_count = len(server.middleware)
@@ -54,8 +55,8 @@ class TestExampleMiddlewareLoading:
             em.LoggingMiddleware,
             em.ToolCallLoggingMiddleware,
             em.TimingMiddleware,
-            em.ClientConfigOverrideMiddleware,
         ]
+        assert not any(isinstance(m, em.ClientConfigOverrideMiddleware) for m in registered)
 
 
 class TestClientConfigOverrideMiddleware:

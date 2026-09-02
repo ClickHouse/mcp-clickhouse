@@ -79,6 +79,13 @@ class ClientConfigOverrideMiddleware(Middleware):
     just this one. `serializable=False` stores the value in
     FastMCP's request-scoped state instead, which lives only for the current
     tool call.
+
+    This class is a template and is deliberately not registered by
+    `setup_middleware` below: registering it would replace the configured
+    CLICKHOUSE_CONNECT_TIMEOUT and CLICKHOUSE_SEND_RECEIVE_TIMEOUT on every tool
+    call for anyone who enables the example module. Copy it into your own
+    middleware module and call `mcp.add_middleware(ClientConfigOverrideMiddleware())`
+    from that module's `setup_middleware`.
     """
 
     async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext) -> Any:
@@ -113,8 +120,7 @@ def setup_middleware(mcp):
     mcp.add_middleware(TimingMiddleware())
     logger.info("Added TimingMiddleware")
 
-    # Add client configuration override middleware
-    mcp.add_middleware(ClientConfigOverrideMiddleware())
-    logger.info("Added ClientConfigOverrideMiddleware")
+    # ClientConfigOverrideMiddleware is intentionally not registered here; see
+    # its docstring.
 
     logger.info("Example middleware setup complete")
