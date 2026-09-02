@@ -461,6 +461,80 @@ the test saturates the executor to prove it.
   `list_tools` must complete. `Client.ping()` is not implemented by this
   server's in-memory transport, so `list_tools` is the probe.
 
+- Tool-error wire shape, verified over real streamable HTTP: a timeout
+  `ToolError` and a `list_tables` validation failure both arrive as a JSON-RPC
+  result with `isError: true`, never a JSON-RPC error object. FastMCP 4's
+  `to_mcp_error` (INTERNAL_ERROR -32603, INVALID_PARAMS -32602) is only used
+  for requests that never reach a tool. The handover's "JSON-RPC error code
+  for a timeout" item therefore pins the result shape instead; the timeout
+  text is also asserted not to contain the ClickHouse host or "password".
+- `server.json` is not edited. Tests pin what holds today (both package
+  entries declare the same variables, every declared variable is documented
+  in the README and read in `mcp_env.py`, versions parse as PEP 440) and two
+  `xfail(strict=True)` tests record the known gaps so fixing either forces the
+  marker out: version equality with pyproject (0.4.0 vs 0.5.0, release prep
+  decides) and the seventeen README-documented variables that server.json
+  omits (`CHDB_*`, `CLICKHOUSE_ENABLED`, the timeouts, `CLICKHOUSE_PROXY_PATH`,
+  `CLICKHOUSE_SERVER_HOST_NAME`, every `CLICKHOUSE_MCP_*` transport and auth
+  variable, `MCP_MIDDLEWARE_MODULE`). Whether the registry manifest should
+  list HTTP-only variables for stdio packages is a release-prep call.
+
+## D28. Queue C test hygiene
+
+- `tests/conftest.py` holds fixtures only: the shared `mcp_server` fixture
+  (the module singleton), an autouse `reset_server_state` that runs
+  `_clear_client_cache()` (closing cached clients), clears `_active_queries`
+  under its lock and `table_pagination_cache`, and resets
+  `_grants_advisory_done` before and after every test, plus `clean_http_env`
+  and `authenticated_app_env`. Nothing in the suite relied on cross-test
+  state; five `setup_method`/`teardown_method` pairs in the client-cache tests,
+  three in cancellation, three in context-override, one autouse fixture in
+  connection-errors, and the wire tests' pairs became redundant and were
+  removed.
+- Constants, classes, and plain functions used at 70+ call sites live in an
+  importable `tests/helpers.py` (with an empty `tests/__init__.py`) rather
+  than fixtures, because `from tests.helpers import fake_clickhouse_client`
+  reads better than a fixture parameter at that many sites:
+  `fake_clickhouse_client` (37 former `MagicMock(server_version=...)` sites),
+  `HTTP_ENV_VARS`/`clear_http_env` (the union of four scrub lists; the
+  auth-config tests now also clear bind and allow-list variables they never
+  read), `MCP_HEADERS`, `INITIALIZE_REQUEST`, `initialize_request(version)`,
+  `jsonrpc_body`, `install_auth_module`, `static_token_provider`,
+  `RecordingApp`, `send_asgi_request(_async)`. The initialize request is
+  standardized on protocol 2025-11-25 (the context-override HTTP session tests
+  moved from 2025-06-18 and still observe the leak).
+- The two incompatible `_install_auth_module` helpers are resolved: the
+  auth-config tests use the shared installer; the boundary tests keep a
+  three-line `_install_static_token_auth_module` that also sets
+  `CLICKHOUSE_MCP_AUTH_MODULE`.
+- `[tool.pytest.ini_options]`: `testpaths = ["tests"]`, `asyncio_mode = "auto"`,
+  `asyncio_default_fixture_loop_scope = "function"` (pytest-asyncio 1.3.0),
+  and `filterwarnings = ["error::DeprecationWarning"]`, so CI now enforces
+  what the handover verified by hand. Existing `@pytest.mark.asyncio` marks
+  are kept as documentation; every async test carries one. The hand-rolled
+  module-scoped `event_loop` fixture in `tests/test_mcp_server.py` is gone and
+  `setup_test_database` is a plain sync module-scoped fixture, which is what
+  makes the function-scoped default loop safe.
+- `FASTMCP_MCP_CAMELCASE_COMPAT=false` is applied by
+  `os.environ.setdefault` at the top of `conftest.py`, before anything imports
+  fastmcp (its settings object is built at import). A test asserts
+  `fastmcp.settings.mcp_camelcase_compat is False`. CI keeps the explicit
+  variable; it is now redundant.
+- Wall-clock assertions replaced by event gates: `run_query`'s
+  does-not-block test parks `execute_query` on a `threading.Event` while
+  `list_tools` must complete; the health-probe and cancellation off-loop tests
+  wait for the worker's start event through `run_in_executor` and then assert
+  `not task.done()`, which can only hold if the blocking call ran off the
+  loop. `test_pathological_detach_input_is_fast` keeps its generous
+  regex-runtime guard; bounded `asyncio.sleep(0.01)` polling loops are retries,
+  not assertions.
+- pytest-randomly is not added: the suite is verified identical in forward,
+  reverse-file, and per-file-isolated order, and that is not worth a lockfile
+  change.
+- Counts: 562 tests at the start of this tranche's second session, 602 at the
+  end (600 passed, 2 strict xfails). No test was removed in queue C; the SSE
+  removal dropped 11 cases and added 10.
+
 ## Review findings and resolutions
 
 An adversarial review of the code diff ran after the first three commits.
@@ -563,22 +637,19 @@ state; `http_app` does not mutate the shared `mcp` instance; explicit
 
 ## Remaining open items
 
-- SSE removal (D20), not started. Closes F5 as moot.
-- CHANGELOG deprecation notice for the internal exports (D21), not written.
-- Queue B and Queue C from the handover document (D23), not started.
-- README chDB section does not document the `{"status": "error"}` payload
-  shape (D13 follow-up).
-- `fastmcp.json` could use `"project": "."` (or `"editable": ["."]`) so
-  `fastmcp run fastmcp.json` works outside the repository root; the
-  hand-maintained dependency list does not fix the `mcp_clickhouse` import
-  (D18). Needs an end-to-end `fastmcp run` check first.
-- Scheduled CI job installing the latest FastMCP 4.x (D19), not added.
-- Resolved: `tests/test_mcp_server.py::test_system_database_access` failed on
-  ClickHouse 26.8 because it requested `page_size=100` and the `system` database
-  now holds 139 tables, so `tables` (alphabetical position 124) fell on the
-  second page. The test now follows `next_page_token` until it is null, asserts
-  the collected count equals `total_tables`, and checks the expected names in
-  the union, so it is independent of the ClickHouse version.
+- Release prep (not this branch): choose the version number (breaking:
+  FastMCP 4, SSE removal), sync `server.json` to it and decide whether it
+  should list the HTTP-only variables; the two strict xfails in
+  `tests/test_server_json.py` flag both.
+- Next minor: remove the four deprecated pagination internals from
+  `mcp_clickhouse.__all__` and `__getattr__` (D21, D26);
+  `tests/test_public_api.py` pins the current state so the removal is a
+  deliberate edit.
+- If an SSE user objects, reinstate the transport as deprecated rather than
+  supported (D20).
+- Later, optional, assessed and not adopted this round: argument completion
+  for `list_tables`, progress notifications in the `list_tables` deadline
+  loop, per-tool auth scopes, schema resources, response caching middleware.
 - A stale worktree from an earlier session sits at
   `.claude/worktrees/agent-a688a0c4ef7bbe86d` with uncommitted `pyproject.toml`
   and `uv.lock` edits. It is untracked and was left alone.
