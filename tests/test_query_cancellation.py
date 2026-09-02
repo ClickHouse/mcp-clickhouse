@@ -12,6 +12,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from mcp_clickhouse import mcp_server
+from tests.helpers import fake_clickhouse_client
 from mcp_clickhouse.mcp_server import (
     _ActiveQueryState,
     _ClientCacheEntry,
@@ -19,7 +20,6 @@ from mcp_clickhouse.mcp_server import (
     _active_queries_lock,
     _cancel_query,
     _cancel_query_async,
-    _clear_client_cache,
     _resolve_client_config,
     _run_metadata_tool,
     execute_query,
@@ -31,20 +31,10 @@ from mcp_clickhouse.mcp_server import (
 class TestQueryIdTracking:
     """Tests for query_id propagation through execute_query."""
 
-    def setup_method(self):
-        _clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
-
-    def teardown_method(self):
-        _clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
-
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_query_id_passed_in_settings(self, mock_cc):
         """query_id should be included in the settings dict passed to client.query()."""
-        mock_client = MagicMock(server_version="24.1")
+        mock_client = fake_clickhouse_client("24.1")
         mock_client.server_settings = {}
         mock_result = MagicMock()
         mock_result.result_rows = [("row1",)]
@@ -63,7 +53,7 @@ class TestQueryIdTracking:
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_active_queries_tracked_and_cleaned(self, mock_cc):
         """execute_query should register in _active_queries and clean up on completion."""
-        mock_client = MagicMock(server_version="24.1")
+        mock_client = fake_clickhouse_client("24.1")
         mock_client.server_settings = {}
         mock_result = MagicMock()
         mock_result.result_rows = []
@@ -86,7 +76,7 @@ class TestQueryIdTracking:
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_active_queries_cleaned_on_error(self, mock_cc):
         """execute_query should clean up _active_queries even on error."""
-        mock_client = MagicMock(server_version="24.1")
+        mock_client = fake_clickhouse_client("24.1")
         mock_client.server_settings = {}
         mock_client.query.side_effect = Exception("DB error")
         mock_cc.get_client.return_value = mock_client
@@ -102,16 +92,6 @@ class TestQueryIdTracking:
 
 class TestCancelQuery:
     """Tests for _cancel_query server-side cancellation."""
-
-    def setup_method(self):
-        _clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
-
-    def teardown_method(self):
-        _clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
 
     def test_cancel_issues_kill_query(self):
         """_cancel_query should issue KILL QUERY via the cached client."""
@@ -202,16 +182,6 @@ class TestCancelQuery:
 
 class TestRunQueryTimeout:
     """Tests for run_query timeout triggering _cancel_query."""
-
-    def setup_method(self):
-        _clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
-
-    def teardown_method(self):
-        _clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
 
     @patch("mcp_clickhouse.mcp_server._cancel_query")
     @patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR")
@@ -485,15 +455,18 @@ class TestRunQueryTimeout:
             patch("mcp_clickhouse.mcp_server._QUERY_CANCELLATION_WAIT_SECONDS", 0.08),
         ):
             query_executor.submit.return_value = pending_query
-            started_at = time.monotonic()
             task = asyncio.create_task(run_query_async("SELECT sleep(999)"))
             try:
-                await asyncio.sleep(0.04)
-                assert time.monotonic() - started_at < 0.15
-                assert started.is_set()
+                # Waiting for the cancel's start signal on a worker thread proves the
+                # loop stayed free: had _cancel_query run inline, the task would
+                # already be done by the time control returns here.
+                cancel_started = await asyncio.get_running_loop().run_in_executor(
+                    None, started.wait, 5
+                )
+                assert cancel_started
                 assert not task.done()
                 with pytest.raises(ToolError, match="timed out"):
-                    await asyncio.wait_for(task, timeout=0.2)
+                    await asyncio.wait_for(task, timeout=5)
             finally:
                 release.set()
 

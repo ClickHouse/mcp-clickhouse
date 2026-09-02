@@ -7,11 +7,10 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from mcp_clickhouse.mcp_env import get_mcp_config
+from tests.helpers import fake_clickhouse_client
 from mcp_clickhouse.mcp_server import (
     _ClientCacheEntry,
     _acquire_clickhouse_client,
-    _active_queries,
-    _active_queries_lock,
     _clear_client_cache,
     _client_cache,
     _client_cache_lock,
@@ -61,16 +60,10 @@ class TestConfigToCacheKey:
 class TestClientCaching:
     """Tests for client cache behavior."""
 
-    def setup_method(self):
-        _clear_client_cache()
-
-    def teardown_method(self):
-        _clear_client_cache()
-
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_same_config_reuses_cached_client(self, mock_cc):
         """Same config should reuse the internal cached client."""
-        mock_client = MagicMock(server_version="24.1")
+        mock_client = fake_clickhouse_client("24.1")
         mock_cc.get_client.return_value = mock_client
         config = _resolve_client_config()
 
@@ -85,8 +78,8 @@ class TestClientCaching:
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_different_config_creates_new_client(self, mock_cc):
         """Different request configs should produce different cached clients."""
-        mock_client_a = MagicMock(server_version="24.1")
-        mock_client_b = MagicMock(server_version="24.1")
+        mock_client_a = fake_clickhouse_client("24.1")
+        mock_client_b = fake_clickhouse_client("24.1")
         mock_cc.get_client.side_effect = [mock_client_a, mock_client_b]
 
         # First call: no overrides
@@ -105,9 +98,9 @@ class TestClientCaching:
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_stale_client_evicted_on_ping_failure(self, mock_cc):
         """Client that fails ping after idle should be evicted and recreated."""
-        mock_client_old = MagicMock(server_version="24.1")
+        mock_client_old = fake_clickhouse_client("24.1")
         mock_client_old.ping.return_value = False
-        mock_client_new = MagicMock(server_version="24.2")
+        mock_client_new = fake_clickhouse_client("24.2")
         mock_cc.get_client.side_effect = [mock_client_old, mock_client_new]
 
         config = _resolve_client_config()
@@ -128,7 +121,7 @@ class TestClientCaching:
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_autogenerate_session_id_disabled(self, mock_cc):
         """Cached clients should be created with autogenerate_session_id=False."""
-        mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+        mock_cc.get_client.return_value = fake_clickhouse_client("24.1")
 
         entry = _acquire_clickhouse_client(_resolve_client_config())
         _release_client_entry(entry)
@@ -142,8 +135,8 @@ class TestClientCaching:
             __hash__ = None
 
         clients = [
-            MagicMock(server_version="24.1"),
-            MagicMock(server_version="24.2"),
+            fake_clickhouse_client("24.1"),
+            fake_clickhouse_client("24.2"),
         ]
         mock_cc.get_client.side_effect = clients
 
@@ -166,7 +159,7 @@ class TestClientCaching:
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_clear_cache_closes_clients(self, mock_cc):
         """_clear_client_cache should close all cached clients."""
-        mock_client = MagicMock(server_version="24.1")
+        mock_client = fake_clickhouse_client("24.1")
         mock_cc.get_client.return_value = mock_client
 
         entry = _acquire_clickhouse_client(_resolve_client_config())
@@ -178,7 +171,7 @@ class TestClientCaching:
     @patch("mcp_clickhouse.mcp_server._CLIENT_CACHE_MAXSIZE", 2)
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_cache_cardinality_is_bounded_and_lru_client_is_closed(self, mock_cc):
-        clients = [MagicMock(server_version=f"24.{index}") for index in range(3)]
+        clients = [fake_clickhouse_client(f"24.{index}") for index in range(3)]
         mock_cc.get_client.side_effect = clients
 
         for timeout in (31, 32, 33):
@@ -194,7 +187,7 @@ class TestClientCaching:
     @patch("mcp_clickhouse.mcp_server._CLIENT_CACHE_MAXSIZE", 2)
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_lru_eviction_waits_for_in_use_client_release(self, mock_cc):
-        clients = [MagicMock(server_version=f"24.{index}") for index in range(3)]
+        clients = [fake_clickhouse_client(f"24.{index}") for index in range(3)]
         mock_cc.get_client.side_effect = clients
         first_config = _resolve_client_config({"connect_timeout": 31})
         first_entry = _acquire_clickhouse_client(first_config)
@@ -236,20 +229,10 @@ class TestResolveClientConfig:
 class TestEvictionOnError:
     """Tests for client eviction on connection errors."""
 
-    def setup_method(self):
-        _clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
-
-    def teardown_method(self):
-        _clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
-
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_execute_query_evicts_on_connection_error(self, mock_cc):
         """execute_query should evict the cached client on connection errors."""
-        mock_client = MagicMock(server_version="24.1")
+        mock_client = fake_clickhouse_client("24.1")
         mock_client.server_settings = {}
         mock_client.query.side_effect = ConnectionError("connection reset")
         mock_cc.get_client.return_value = mock_client
@@ -260,7 +243,7 @@ class TestEvictionOnError:
             execute_query("SELECT 1", "evict-test", config)
 
         # Client should have been evicted — next call creates a new one
-        mock_client_new = MagicMock(server_version="24.2")
+        mock_client_new = fake_clickhouse_client("24.2")
         mock_client_new.server_settings = {}
         mock_result = MagicMock()
         mock_result.result_rows = []
@@ -274,7 +257,7 @@ class TestEvictionOnError:
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_execute_query_no_evict_on_sql_error(self, mock_cc):
         """execute_query should NOT evict on normal SQL errors (not connection)."""
-        mock_client = MagicMock(server_version="24.1")
+        mock_client = fake_clickhouse_client("24.1")
         mock_client.server_settings = {}
         mock_client.query.side_effect = Exception("Unknown column 'x'")
         mock_cc.get_client.return_value = mock_client
@@ -297,8 +280,8 @@ class TestEvictionOnError:
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_late_error_does_not_evict_concurrent_replacement(self, mock_cc):
-        failed_client = MagicMock(server_version="24.1")
-        replacement = MagicMock(server_version="24.2")
+        failed_client = fake_clickhouse_client("24.1")
+        replacement = fake_clickhouse_client("24.2")
         mock_cc.get_client.side_effect = [failed_client, replacement]
         config = _resolve_client_config({"connect_timeout": 41})
         failed_entry = _acquire_clickhouse_client(config)
@@ -322,18 +305,12 @@ class TestEvictionOnError:
 class TestPingExceptionHandling:
     """Tests for ping exception handling in the internal client cache."""
 
-    def setup_method(self):
-        _clear_client_cache()
-
-    def teardown_method(self):
-        _clear_client_cache()
-
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_ping_exception_evicts_and_recreates(self, mock_cc):
         """A ping() that raises should evict the client and create a new one."""
-        mock_client_old = MagicMock(server_version="24.1")
+        mock_client_old = fake_clickhouse_client("24.1")
         mock_client_old.ping.side_effect = Exception("boom")
-        mock_client_new = MagicMock(server_version="24.2")
+        mock_client_new = fake_clickhouse_client("24.2")
         mock_cc.get_client.side_effect = [mock_client_old, mock_client_new]
 
         config = _resolve_client_config()
@@ -355,18 +332,12 @@ class TestPingExceptionHandling:
 class TestCacheRaceHandling:
     """Tests for identity-checked cache updates around the idle-ping path."""
 
-    def setup_method(self):
-        _clear_client_cache()
-
-    def teardown_method(self):
-        _clear_client_cache()
-
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_ping_ok_yields_to_newer_cached_client(self, mock_cc):
         """If another thread replaced the cached client during ping,
         a successful ping must not resurrect our stale candidate."""
-        stale = MagicMock(server_version="24.1", name="stale")
-        replacement = MagicMock(server_version="24.2", name="replacement")
+        stale = fake_clickhouse_client("24.1", name="stale")
+        replacement = fake_clickhouse_client("24.2", name="replacement")
         mock_cc.get_client.return_value = stale
 
         config = _resolve_client_config()
@@ -399,8 +370,8 @@ class TestCacheRaceHandling:
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_ping_fail_preserves_newer_cached_client(self, mock_cc):
         """A failed ping must not drop a replacement installed by another thread."""
-        stale = MagicMock(server_version="24.1", name="stale")
-        replacement = MagicMock(server_version="24.2", name="replacement")
+        stale = fake_clickhouse_client("24.1", name="stale")
+        replacement = fake_clickhouse_client("24.2", name="replacement")
         mock_cc.get_client.return_value = stale
 
         config = _resolve_client_config()
@@ -433,15 +404,9 @@ class TestCacheRaceHandling:
 class TestCompatibilityClientLifetime:
     """Tests for the exported raw client helper."""
 
-    def setup_method(self):
-        _clear_client_cache()
-
-    def teardown_method(self):
-        _clear_client_cache()
-
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_default_session_id_behavior_is_preserved(self, mock_cc):
-        mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+        mock_cc.get_client.return_value = fake_clickhouse_client("24.1")
 
         create_clickhouse_client()
 
@@ -449,7 +414,7 @@ class TestCompatibilityClientLifetime:
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_explicit_session_id_behavior_is_preserved(self, mock_cc):
-        mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+        mock_cc.get_client.return_value = fake_clickhouse_client("24.1")
 
         create_clickhouse_client({"autogenerate_session_id": True})
 
@@ -458,9 +423,9 @@ class TestCompatibilityClientLifetime:
     @patch("mcp_clickhouse.mcp_server._CLIENT_CACHE_MAXSIZE", 2)
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_retained_client_survives_internal_cache_churn(self, mock_cc):
-        retained = MagicMock(server_version="24.0")
+        retained = fake_clickhouse_client("24.0")
         cached_clients = [
-            MagicMock(server_version=f"24.{index}") for index in range(1, 4)
+            fake_clickhouse_client(f"24.{index}") for index in range(1, 4)
         ]
         mock_cc.get_client.side_effect = [retained, *cached_clients]
 

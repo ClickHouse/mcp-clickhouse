@@ -10,7 +10,6 @@ all in the path.
 import warnings
 from unittest.mock import patch
 
-import pytest
 from starlette.exceptions import StarletteDeprecationWarning
 
 with warnings.catch_warnings():
@@ -18,41 +17,10 @@ with warnings.catch_warnings():
     from starlette.testclient import TestClient
 
 from mcp_clickhouse import mcp_server
+from tests.helpers import INITIALIZE_REQUEST, MCP_HEADERS
 
 _HEALTH_FAILURE_BODY = "ERROR. ClickHouse connection failed. Check server logs for details."
 _HOSTILE_HEADERS = {"host": "attacker.example", "origin": "http://attacker.example"}
-_INITIALIZE_REQUEST = {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-11-25",
-        "capabilities": {},
-        "clientInfo": {"name": "test-client", "version": "1"},
-    },
-}
-_MCP_HEADERS = {
-    "accept": "application/json, text/event-stream",
-    "content-type": "application/json",
-}
-
-
-@pytest.fixture
-def authenticated_app_env(monkeypatch: pytest.MonkeyPatch):
-    for name in (
-        "CLICKHOUSE_MCP_ALLOWED_HOSTS",
-        "CLICKHOUSE_MCP_ALLOWED_ORIGINS",
-        "CLICKHOUSE_MCP_TRUSTED_PROXIES",
-        "CLICKHOUSE_MCP_AUTH_DISABLED",
-        "CLICKHOUSE_MCP_AUTH_MODULE",
-        "CLICKHOUSE_MCP_AUTH_TOKEN",
-        "FASTMCP_SERVER_AUTH",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("CLICKHOUSE_ENABLED", "true")
-    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret-token")
-    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
-    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_ORIGINS", "http://client.example")
 
 
 def test_health_is_reachable_without_credentials_while_mcp_requires_them(
@@ -70,7 +38,7 @@ def test_health_is_reachable_without_credentials_while_mcp_requires_them(
         TestClient(app) as client,
     ):
         health = client.get("/health")
-        unauthenticated_mcp = client.post("/mcp", json=_INITIALIZE_REQUEST, headers=_MCP_HEADERS)
+        unauthenticated_mcp = client.post("/mcp", json=INITIALIZE_REQUEST, headers=MCP_HEADERS)
 
     assert health.status_code == 200
     assert health.text == "OK"

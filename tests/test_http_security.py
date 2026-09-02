@@ -10,44 +10,7 @@ from mcp_clickhouse.http_security import (
     transport_security_middleware,
 )
 from mcp_clickhouse.mcp_env import MCPServerConfig
-
-
-class _RecordingApp:
-    """Inner ASGI app that records whether it was reached."""
-
-    def __init__(self):
-        self.called = False
-
-    async def __call__(self, scope, receive, send):
-        self.called = True
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"reached"})
-
-
-def _send_request(middleware, path="/mcp", headers=None, scope_type="http", method="POST"):
-    """Drive one request through the middleware, returning (status, body)."""
-    raw_headers = [
-        (name.lower().encode(), value.encode()) for name, value in (headers or {}).items()
-    ]
-    scope = {
-        "type": scope_type,
-        "method": method,
-        "path": path,
-        "headers": raw_headers,
-    }
-    messages = []
-
-    async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(message):
-        messages.append(message)
-
-    asyncio.run(middleware(scope, receive, send))
-
-    status = next(m["status"] for m in messages if m["type"] == "http.response.start")
-    body = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
-    return status, body
+from tests.helpers import RecordingApp, send_asgi_request
 
 
 def _middleware(app, allowed_hosts=("localhost:8000",), allowed_origins=()):
@@ -77,8 +40,8 @@ def _middleware(app, allowed_hosts=("localhost:8000",), allowed_origins=()):
     ],
 )
 def test_host_header_is_checked_against_the_allow_list(allowed_hosts, host, expected_status):
-    app = _RecordingApp()
-    status, _ = _send_request(_middleware(app, allowed_hosts=allowed_hosts), headers={"host": host})
+    app = RecordingApp()
+    status, _ = send_asgi_request(_middleware(app, allowed_hosts=allowed_hosts), headers={"host": host})
 
     assert status == expected_status
     assert app.called is (expected_status == 200)
@@ -86,9 +49,9 @@ def test_host_header_is_checked_against_the_allow_list(allowed_hosts, host, expe
 
 def test_missing_host_header_is_rejected():
     """Every HTTP/1.1 client sends a Host header, so its absence is not served."""
-    app = _RecordingApp()
+    app = RecordingApp()
 
-    status, body = _send_request(_middleware(app), headers={})
+    status, body = send_asgi_request(_middleware(app), headers={})
 
     assert status == 421
     assert body == b"Invalid Host header"
@@ -96,9 +59,9 @@ def test_missing_host_header_is_rejected():
 
 
 def test_empty_allow_list_rejects_every_host():
-    app = _RecordingApp()
+    app = RecordingApp()
 
-    status, _ = _send_request(
+    status, _ = send_asgi_request(
         _middleware(app, allowed_hosts=[]), headers={"host": "localhost:8000"}
     )
 
@@ -119,12 +82,12 @@ def test_empty_allow_list_rejects_every_host():
     ],
 )
 def test_origin_header_is_checked_against_the_allow_list(allowed_origins, origin, expected_status):
-    app = _RecordingApp()
+    app = RecordingApp()
     headers = {"host": "localhost:8000"}
     if origin is not None:
         headers["origin"] = origin
 
-    status, _ = _send_request(_middleware(app, allowed_origins=allowed_origins), headers=headers)
+    status, _ = send_asgi_request(_middleware(app, allowed_origins=allowed_origins), headers=headers)
 
     assert status == expected_status
     assert app.called is (expected_status == 200)
@@ -132,9 +95,9 @@ def test_origin_header_is_checked_against_the_allow_list(allowed_origins, origin
 
 def test_invalid_origin_is_rejected_before_host_validation():
     """A present invalid Origin always receives the MCP-required 403."""
-    app = _RecordingApp()
+    app = RecordingApp()
 
-    status, body = _send_request(
+    status, body = send_asgi_request(
         _middleware(app, allowed_origins=["http://localhost:3000"]),
         headers={"host": "attacker.example.com", "origin": "http://attacker.example.com"},
     )
@@ -148,9 +111,9 @@ def test_invalid_origin_is_rejected_before_host_validation():
     [("GET", ""), ("GET", "http://attacker.example"), ("HEAD", "http://attacker.example")],
 )
 def test_health_endpoint_is_exempt_from_transport_validation(method, origin):
-    app = _RecordingApp()
+    app = RecordingApp()
 
-    status, _ = _send_request(
+    status, _ = send_asgi_request(
         _middleware(app),
         path="/health",
         headers={"host": "attacker.example", "origin": origin},
@@ -162,9 +125,9 @@ def test_health_endpoint_is_exempt_from_transport_validation(method, origin):
 
 
 def test_health_exemption_uses_the_exact_path():
-    app = _RecordingApp()
+    app = RecordingApp()
 
-    status, body = _send_request(
+    status, body = send_asgi_request(
         _middleware(app),
         path="/health/",
         headers={"host": "attacker.example", "origin": "http://attacker.example"},
@@ -177,9 +140,9 @@ def test_health_exemption_uses_the_exact_path():
 
 
 def test_health_exemption_only_applies_to_probe_methods():
-    app = _RecordingApp()
+    app = RecordingApp()
 
-    status, body = _send_request(
+    status, body = send_asgi_request(
         _middleware(app),
         path="/health",
         headers={"host": "attacker.example", "origin": "http://attacker.example"},
@@ -193,7 +156,7 @@ def test_health_exemption_only_applies_to_probe_methods():
 
 def test_non_http_scopes_pass_through():
     """FastMCP's MCP transports do not use non-HTTP ASGI scopes."""
-    app = _RecordingApp()
+    app = RecordingApp()
     middleware = _middleware(app)
     scope = {"type": "lifespan"}
 

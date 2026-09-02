@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import re
 import threading
 import warnings
 from types import SimpleNamespace
@@ -29,6 +28,13 @@ from mcp_clickhouse.mcp_server import (
     mcp,
     run_query,
     run_query_async,
+)
+from tests.helpers import (
+    INITIALIZE_REQUEST,
+    MCP_HEADERS,
+    clear_http_env,
+    fake_clickhouse_client,
+    jsonrpc_body,
 )
 
 
@@ -142,15 +148,9 @@ class FakeQueryClient:
 
 
 class TestConfigOverrideUnit:
-    def setup_method(self):
-        _clear_client_cache()
-
-    def teardown_method(self):
-        _clear_client_cache()
-
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_overrides_merged_into_client_config(self, mock_cc):
-        mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+        mock_cc.get_client.return_value = fake_clickhouse_client("24.1")
 
         create_clickhouse_client({"connect_timeout": 99, "send_receive_timeout": 199})
 
@@ -160,7 +160,7 @@ class TestConfigOverrideUnit:
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_empty_overrides_no_change(self, mock_cc):
-        mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+        mock_cc.get_client.return_value = fake_clickhouse_client("24.1")
 
         create_clickhouse_client({})
 
@@ -170,7 +170,7 @@ class TestConfigOverrideUnit:
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_none_overrides_no_change(self, mock_cc):
-        mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+        mock_cc.get_client.return_value = fake_clickhouse_client("24.1")
 
         create_clickhouse_client(None)
 
@@ -178,7 +178,7 @@ class TestConfigOverrideUnit:
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
     def test_no_request_context_falls_back_to_defaults(self, mock_cc):
-        mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+        mock_cc.get_client.return_value = fake_clickhouse_client("24.1")
 
         create_clickhouse_client()
 
@@ -295,7 +295,7 @@ class TestConfigOverrideUnit:
         mock_get_config.return_value = _mock_config(
             _base_client_config(settings=base_settings, generic_args=base_generic_args)
         )
-        mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+        mock_cc.get_client.return_value = fake_clickhouse_client("24.1")
 
         create_clickhouse_client(
             {
@@ -320,7 +320,7 @@ class TestConfigOverrideUnit:
         mock_get_config.return_value = _mock_config(
             _base_client_config(settings={"role": "tenant_a"})
         )
-        mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+        mock_cc.get_client.return_value = fake_clickhouse_client("24.1")
 
         create_clickhouse_client({"settings": {"role": "tenant_b"}})
 
@@ -333,7 +333,7 @@ class TestConfigOverrideUnit:
                 raise AssertionError("must not be deep-copied")
 
         pool_manager = OpaquePoolManager()
-        mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+        mock_cc.get_client.return_value = fake_clickhouse_client("24.1")
 
         create_clickhouse_client({"pool_mgr": pool_manager})
 
@@ -389,18 +389,7 @@ class TestConfigOverrideUnit:
         assert config["connect_timeout"] == 42
 
 
-@pytest.fixture
-def mcp_server():
-    return mcp
-
-
 class TestConfigOverrideMcpBoundary:
-    def setup_method(self):
-        _clear_client_cache()
-
-    def teardown_method(self):
-        _clear_client_cache()
-
     @pytest.mark.asyncio
     async def test_registered_run_query_receives_context_overrides(self, mcp_server):
         middleware = ConfigOverrideMiddleware({"connect_timeout": 99})
@@ -548,31 +537,6 @@ class TestConfigOverrideMcpBoundary:
             mcp_server.middleware.remove(override_middleware)
 
 
-_MCP_HEADERS = {
-    "accept": "application/json, text/event-stream",
-    "content-type": "application/json",
-}
-_INITIALIZE_REQUEST = {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "test-client", "version": "1"},
-    },
-}
-
-
-def _jsonrpc_body(response):
-    """Decode a JSON or single-event event-stream response body from the MCP endpoint."""
-    if response.headers.get("content-type", "").startswith("application/json"):
-        return response.json()
-    match = re.search(r"^data: (.*)$", response.text, re.M)
-    assert match is not None, response.text
-    return json.loads(match.group(1))
-
-
 class TestConfigOverrideHttpSession:
     """Drive real streamable HTTP with the mcp-session-id header echoed.
 
@@ -580,26 +544,13 @@ class TestConfigOverrideHttpSession:
     tests cannot observe FastMCP 4's session-scoped state store.
     """
 
-    def setup_method(self):
-        _clear_client_cache()
-
-    def teardown_method(self):
-        _clear_client_cache()
-
     def _run_session_calls(self, monkeypatch, first_call_state, call_count):
         """Initialize one streamable HTTP session and call list_databases repeatedly.
 
         Returns the decoded JSON-RPC result objects in call order and the base
         connect_timeout the tool falls back to without overrides.
         """
-        for name in (
-            "CLICKHOUSE_MCP_ALLOWED_ORIGINS",
-            "CLICKHOUSE_MCP_TRUSTED_PROXIES",
-            "CLICKHOUSE_MCP_AUTH_MODULE",
-            "CLICKHOUSE_MCP_AUTH_TOKEN",
-            "FASTMCP_SERVER_AUTH",
-        ):
-            monkeypatch.delenv(name, raising=False)
+        clear_http_env(monkeypatch)
         monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
         monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
         base_timeout = get_config().get_client_config()["connect_timeout"]
@@ -613,10 +564,10 @@ class TestConfigOverrideHttpSession:
             with patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client") as get_client:
                 get_client.side_effect = lambda **kwargs: FakeQueryClient(**kwargs)
                 with TestClient(app) as client:
-                    init = client.post("/mcp", json=_INITIALIZE_REQUEST, headers=_MCP_HEADERS)
+                    init = client.post("/mcp", json=INITIALIZE_REQUEST, headers=MCP_HEADERS)
                     assert init.status_code == 200
                     session_headers = {
-                        **_MCP_HEADERS,
+                        **MCP_HEADERS,
                         "mcp-session-id": init.headers["mcp-session-id"],
                     }
                     client.post(
@@ -637,7 +588,7 @@ class TestConfigOverrideHttpSession:
                             headers=session_headers,
                         )
                         assert response.status_code == 200
-                        body = _jsonrpc_body(response)
+                        body = jsonrpc_body(response)
                         assert "error" not in body, body
                         results.append(body["result"])
                         # Force the next call to build a client from its own config.

@@ -1,3 +1,4 @@
+import fastmcp
 import pytest
 
 from mcp_clickhouse.mcp_env import ClickHouseConfig
@@ -120,3 +121,13 @@ def test_server_host_name_omitted_when_unset(monkeypatch: pytest.MonkeyPatch):
     client_config = config.get_client_config()
 
     assert "server_host_name" not in client_config
+
+
+def test_camelcase_compat_bridge_is_off_for_the_suite():
+    """conftest.py defaults FASTMCP_MCP_CAMELCASE_COMPAT=false before fastmcp is imported.
+
+    The MCP SDK v2 renamed protocol fields to snake_case; FastMCP 4 keeps a warning
+    bridge for camelCase reads. The suite runs with it off so a legacy read fails
+    loudly (MIGRATION_DECISIONS.md D6), locally as well as in CI.
+    """
+    assert fastmcp.settings.mcp_camelcase_compat is False

@@ -199,14 +199,17 @@ async def test_health_check_probe_is_off_loop_and_bounded(caplog):
             patch.object(mcp_server, "_probe_clickhouse_health", side_effect=slow_probe),
             patch.object(mcp_server, "_HEALTH_CHECK_TIMEOUT_SECONDS", 0.08),
         ):
-            started_at = time.monotonic()
             task = asyncio.create_task(mcp_server.health_check(request))
             try:
-                await asyncio.sleep(0.04)
-                assert time.monotonic() - started_at < 0.15
-                assert started.is_set()
+                # Waiting for the probe's start signal on a worker thread proves the
+                # loop stayed free: had the probe run inline, the task would already
+                # be done by the time control returns here.
+                probe_started = await asyncio.get_running_loop().run_in_executor(
+                    None, started.wait, 5
+                )
+                assert probe_started
                 assert not task.done()
-                response = await asyncio.wait_for(task, timeout=0.2)
+                response = await asyncio.wait_for(task, timeout=5)
             finally:
                 release.set()
 

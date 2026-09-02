@@ -1,32 +1,17 @@
 import os
 import sys
-import types
 
 import pytest
 from fastmcp.server.auth import AuthProvider
-from fastmcp.server.auth.providers.jwt import JWTVerifier, StaticTokenVerifier
+from fastmcp.server.auth.providers.jwt import JWTVerifier
 
 from mcp_clickhouse.mcp_auth_hook import load_auth_provider
 from mcp_clickhouse.mcp_env import MCPServerConfig, TransportType
 from mcp_clickhouse.mcp_server import _resolve_auth
+from tests.helpers import clear_http_env, install_auth_module, static_token_provider
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXAMPLE_AUTH_ENV_VARS = ("MCP_AUTH_JWKS_URI", "MCP_AUTH_ISSUER", "MCP_AUTH_AUDIENCE")
-
-
-def _install_auth_module(monkeypatch: pytest.MonkeyPatch, name: str, **attrs) -> None:
-    """Register an in-memory module so CLICKHOUSE_MCP_AUTH_MODULE can import it."""
-    module = types.ModuleType(name)
-    for key, value in attrs.items():
-        setattr(module, key, value)
-    monkeypatch.setitem(sys.modules, name, module)
-
-
-def _static_provider(token: str = "module-token") -> StaticTokenVerifier:
-    return StaticTokenVerifier(
-        tokens={token: {"client_id": "module-client", "scopes": []}},
-        required_scopes=[],
-    )
 
 
 def test_auth_token_configuration(monkeypatch: pytest.MonkeyPatch):
@@ -133,19 +118,9 @@ def test_transport_type_has_no_sse_member():
     assert TransportType.values() == ["stdio", "http"]
 
 
-def _clear_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in (
-        "CLICKHOUSE_MCP_AUTH_TOKEN",
-        "CLICKHOUSE_MCP_AUTH_DISABLED",
-        "CLICKHOUSE_MCP_AUTH_MODULE",
-        "FASTMCP_SERVER_AUTH",
-    ):
-        monkeypatch.delenv(var, raising=False)
-
-
 def test_resolve_auth_stdio_returns_no_kwargs(monkeypatch: pytest.MonkeyPatch):
     """Non-HTTP transports do not resolve or require any auth mode."""
-    _clear_auth_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "stdio")
 
     assert _resolve_auth(MCPServerConfig()) == {}
@@ -153,10 +128,10 @@ def test_resolve_auth_stdio_returns_no_kwargs(monkeypatch: pytest.MonkeyPatch):
 
 def test_resolve_auth_module_returns_the_provider(monkeypatch: pytest.MonkeyPatch):
     """CLICKHOUSE_MCP_AUTH_MODULE alone resolves to the module's provider."""
-    _clear_auth_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
-    provider = _static_provider()
-    _install_auth_module(monkeypatch, "auth_mod_ok", create_auth_provider=lambda: provider)
+    provider = static_token_provider()
+    install_auth_module(monkeypatch, "auth_mod_ok", create_auth_provider=lambda: provider)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", "auth_mod_ok")
 
     assert _resolve_auth(MCPServerConfig()) == {"auth": provider}
@@ -164,9 +139,9 @@ def test_resolve_auth_module_returns_the_provider(monkeypatch: pytest.MonkeyPatc
 
 def test_resolve_auth_module_without_factory_raises(monkeypatch: pytest.MonkeyPatch):
     """A module without create_auth_provider() fails clearly."""
-    _clear_auth_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
-    _install_auth_module(monkeypatch, "auth_mod_no_factory", create_auth_provider="not-callable")
+    install_auth_module(monkeypatch, "auth_mod_no_factory", create_auth_provider="not-callable")
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", "auth_mod_no_factory")
 
     with pytest.raises(ValueError, match="must define a callable create_auth_provider"):
@@ -175,9 +150,9 @@ def test_resolve_auth_module_without_factory_raises(monkeypatch: pytest.MonkeyPa
 
 def test_resolve_auth_module_returning_wrong_type_raises(monkeypatch: pytest.MonkeyPatch):
     """create_auth_provider() must return a fastmcp AuthProvider."""
-    _clear_auth_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
-    _install_auth_module(
+    install_auth_module(
         monkeypatch, "auth_mod_wrong_type", create_auth_provider=lambda: {"not": "a provider"}
     )
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", "auth_mod_wrong_type")
@@ -188,7 +163,7 @@ def test_resolve_auth_module_returning_wrong_type_raises(monkeypatch: pytest.Mon
 
 def test_resolve_auth_module_import_failure_raises(monkeypatch: pytest.MonkeyPatch):
     """An unimportable module fails with an ImportError naming the module."""
-    _clear_auth_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", "definitely_missing_auth_module_xyz")
 
@@ -198,14 +173,14 @@ def test_resolve_auth_module_import_failure_raises(monkeypatch: pytest.MonkeyPat
 
 def test_resolve_auth_module_factory_exception_is_wrapped(monkeypatch: pytest.MonkeyPatch):
     """An exception raised inside create_auth_provider() fails startup with context."""
-    _clear_auth_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
     original = RuntimeError("boom")
 
     def failing_factory():
         raise original
 
-    _install_auth_module(monkeypatch, "auth_mod_raises", create_auth_provider=failing_factory)
+    install_auth_module(monkeypatch, "auth_mod_raises", create_auth_provider=failing_factory)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", "auth_mod_raises")
 
     with pytest.raises(ValueError) as exc_info:
@@ -221,7 +196,7 @@ def test_resolve_auth_module_factory_exception_is_wrapped(monkeypatch: pytest.Mo
 
 def test_resolve_auth_rejects_legacy_fastmcp_server_auth(monkeypatch: pytest.MonkeyPatch):
     """FASTMCP_SERVER_AUTH is rejected with a migration message, never ignored."""
-    _clear_auth_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
     monkeypatch.setenv("FASTMCP_SERVER_AUTH", "fastmcp.server.auth.providers.jwt.JWTVerifier")
 
@@ -233,7 +208,7 @@ def test_resolve_auth_rejects_legacy_fastmcp_server_auth_even_with_token(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """A stale FASTMCP_SERVER_AUTH fails startup even when another mode is valid."""
-    _clear_auth_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret")
     monkeypatch.setenv("FASTMCP_SERVER_AUTH", "fastmcp.server.auth.providers.jwt.JWTVerifier")
@@ -244,7 +219,7 @@ def test_resolve_auth_rejects_legacy_fastmcp_server_auth_even_with_token(
 
 def test_resolve_auth_disabled_passes_explicit_none(monkeypatch: pytest.MonkeyPatch):
     """CLICKHOUSE_MCP_AUTH_DISABLED=true returns {"auth": None}, not {}."""
-    _clear_auth_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
 
@@ -253,10 +228,10 @@ def test_resolve_auth_disabled_passes_explicit_none(monkeypatch: pytest.MonkeyPa
 
 def test_resolve_auth_rejects_multiple_modes(monkeypatch: pytest.MonkeyPatch):
     """Configuring more than one auth mode raises ValueError."""
-    _clear_auth_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret")
-    _install_auth_module(monkeypatch, "auth_mod_unused", create_auth_provider=_static_provider)
+    install_auth_module(monkeypatch, "auth_mod_unused", create_auth_provider=static_token_provider)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", "auth_mod_unused")
 
     with pytest.raises(ValueError, match="mutually exclusive") as exc_info:
@@ -268,7 +243,7 @@ def test_resolve_auth_rejects_multiple_modes(monkeypatch: pytest.MonkeyPatch):
 
 def test_resolve_auth_http_without_any_mode_raises(monkeypatch: pytest.MonkeyPatch):
     """HTTP transport with no auth configured raises ValueError naming every mode."""
-    _clear_auth_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
 
     with pytest.raises(ValueError) as exc_info:
@@ -282,8 +257,8 @@ def test_resolve_auth_http_without_any_mode_raises(monkeypatch: pytest.MonkeyPat
 
 def test_load_auth_provider_accepts_any_auth_provider_subclass(monkeypatch: pytest.MonkeyPatch):
     """The hook validates against the AuthProvider base class, not a concrete type."""
-    provider = _static_provider()
-    _install_auth_module(monkeypatch, "auth_mod_direct", create_auth_provider=lambda: provider)
+    provider = static_token_provider()
+    install_auth_module(monkeypatch, "auth_mod_direct", create_auth_provider=lambda: provider)
 
     loaded = load_auth_provider("auth_mod_direct")
 

@@ -1,9 +1,7 @@
 import asyncio
 import functools
 import inspect
-import sys
 import threading
-import types
 import warnings
 from pathlib import Path
 
@@ -25,51 +23,27 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 import mcp_clickhouse.mcp_server as mcp_server_module
 import mcp_clickhouse.main as main_module
 from mcp_clickhouse.mcp_server import ClickHouseFastMCP, _http_app_auth_lock
-
-_INITIALIZE_REQUEST = {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-11-25",
-        "capabilities": {},
-        "clientInfo": {"name": "test-client", "version": "1"},
-    },
-}
-_MCP_HEADERS = {
-    "accept": "application/json, text/event-stream",
-    "content-type": "application/json",
-}
+from tests.helpers import (
+    INITIALIZE_REQUEST,
+    MCP_HEADERS,
+    clear_http_env,
+    install_auth_module,
+    static_token_provider,
+)
 
 
-def _clear_http_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in (
-        "CLICKHOUSE_MCP_ALLOWED_HOSTS",
-        "CLICKHOUSE_MCP_ALLOWED_ORIGINS",
-        "CLICKHOUSE_MCP_TRUSTED_PROXIES",
-        "CLICKHOUSE_MCP_AUTH_DISABLED",
-        "CLICKHOUSE_MCP_AUTH_MODULE",
-        "CLICKHOUSE_MCP_AUTH_TOKEN",
-        "CLICKHOUSE_MCP_BIND_HOST",
-        "CLICKHOUSE_MCP_BIND_PORT",
-        "FASTMCP_SERVER_AUTH",
-    ):
-        monkeypatch.delenv(name, raising=False)
-
-
-def _install_auth_module(monkeypatch: pytest.MonkeyPatch, name: str, token: str) -> None:
-    """Register an in-memory CLICKHOUSE_MCP_AUTH_MODULE returning a static verifier."""
-    module = types.ModuleType(name)
-    module.create_auth_provider = lambda: StaticTokenVerifier(
-        tokens={token: {"client_id": "module-client", "scopes": []}},
-        required_scopes=[],
+def _install_static_token_auth_module(
+    monkeypatch: pytest.MonkeyPatch, name: str, token: str
+) -> None:
+    """Register an in-memory auth module returning a static verifier and select it."""
+    install_auth_module(
+        monkeypatch, name, create_auth_provider=lambda: static_token_provider(token)
     )
-    monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", name)
 
 
 def test_exported_app_rejects_hostile_origin_before_auth(monkeypatch: pytest.MonkeyPatch):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret-token")
     server = ClickHouseFastMCP("test")
     app = server.http_app(transport="http")
@@ -84,7 +58,7 @@ def test_exported_app_rejects_hostile_origin_before_auth(monkeypatch: pytest.Mon
 
 
 def test_exported_app_rejects_hostile_host_by_default(monkeypatch: pytest.MonkeyPatch):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     server = ClickHouseFastMCP("test")
     app = server.http_app(transport="http")
@@ -107,7 +81,7 @@ def test_http_app_rejects_removed_sse_transport(
     monkeypatch: pytest.MonkeyPatch, auth_env: dict
 ):
     """SSE is refused before auth resolution, whatever the auth configuration."""
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     for name, value in auth_env.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
@@ -129,7 +103,7 @@ def test_http_app_rejects_removed_sse_transport(
 
 def test_resolve_auth_rejects_removed_sse_transport(monkeypatch: pytest.MonkeyPatch):
     """_resolve_auth never answers "no auth" for the removed transport."""
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
 
     with pytest.raises(ValueError, match="SSE transport was removed"):
@@ -141,7 +115,7 @@ def test_resolve_auth_rejects_removed_sse_transport(monkeypatch: pytest.MonkeyPa
 def test_http_app_allows_configured_request_with_auth_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_ORIGINS", "http://client.example")
@@ -150,8 +124,8 @@ def test_http_app_allows_configured_request_with_auth_disabled(
     with TestClient(app) as client:
         response = client.post(
             "/mcp",
-            json=_INITIALIZE_REQUEST,
-            headers={**_MCP_HEADERS, "origin": "http://client.example"},
+            json=INITIALIZE_REQUEST,
+            headers={**MCP_HEADERS, "origin": "http://client.example"},
         )
 
     assert response.status_code == 200
@@ -167,7 +141,7 @@ def test_http_app_allows_configured_request_with_auth_disabled(
 def test_trusted_proxy_host_is_applied_at_fastmcp_boundary(
     monkeypatch: pytest.MonkeyPatch, transport: str, path: str, method: str
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
     monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.0.0.0/24")
@@ -175,7 +149,7 @@ def test_trusted_proxy_host_is_applied_at_fastmcp_boundary(
         transport=transport,
         raw_client_address_preserved=True,
     )
-    request_kwargs = {"json": _INITIALIZE_REQUEST, "headers": _MCP_HEADERS}
+    request_kwargs = {"json": INITIALIZE_REQUEST, "headers": MCP_HEADERS}
 
     with TestClient(app, client=("10.0.0.8", 1234)) as client:
         response = client.request(
@@ -195,7 +169,7 @@ def test_trusted_proxy_host_is_applied_at_fastmcp_boundary(
 def test_host_validation_runs_before_proxy_headers_are_applied(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
     monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.0.0.0/24")
@@ -226,7 +200,7 @@ def test_host_validation_runs_before_proxy_headers_are_applied(
 def test_ipv4_mapped_peer_passes_host_validation_and_proxy_headers(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
     monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.0.0.0/24")
@@ -259,7 +233,7 @@ def _proxy_headers_entries(app):
 
 
 def test_proxy_headers_trust_includes_ipv4_mapped_forms(monkeypatch: pytest.MonkeyPatch):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
     monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.20.0.8,10.0.0.0/24,2001:db8::1")
@@ -282,7 +256,7 @@ def test_proxy_headers_trust_includes_ipv4_mapped_forms(monkeypatch: pytest.Monk
 def test_raw_client_assertion_without_trusted_proxies_is_a_no_op(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
 
@@ -292,14 +266,14 @@ def test_raw_client_assertion_without_trusted_proxies_is_a_no_op(
 
     assert _proxy_headers_entries(app) == []
     with TestClient(app) as client:
-        response = client.post("/mcp", json=_INITIALIZE_REQUEST, headers=_MCP_HEADERS)
+        response = client.post("/mcp", json=INITIALIZE_REQUEST, headers=MCP_HEADERS)
     assert response.status_code == 200
 
 
 def test_direct_http_app_requires_raw_client_address_assertion(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
     monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.0.0.0/24")
@@ -311,17 +285,17 @@ def test_direct_http_app_requires_raw_client_address_assertion(
 def test_static_auth_is_enforced_and_accepts_the_configured_token(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret-token")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
     app = ClickHouseFastMCP("test").http_app(transport="http")
 
     with TestClient(app) as client:
-        unauthorized = client.post("/mcp", json=_INITIALIZE_REQUEST, headers=_MCP_HEADERS)
+        unauthorized = client.post("/mcp", json=INITIALIZE_REQUEST, headers=MCP_HEADERS)
         authorized = client.post(
             "/mcp",
-            json=_INITIALIZE_REQUEST,
-            headers={**_MCP_HEADERS, "authorization": "Bearer secret-token"},
+            json=INITIALIZE_REQUEST,
+            headers={**MCP_HEADERS, "authorization": "Bearer secret-token"},
         )
 
     assert unauthorized.status_code == 401
@@ -331,7 +305,7 @@ def test_static_auth_is_enforced_and_accepts_the_configured_token(
 def test_http_app_restores_auth_between_static_and_module_construction(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     constructor_provider = StaticTokenVerifier(
         tokens={"constructor-token": {"client_id": "constructor-client", "scopes": []}},
         required_scopes=[],
@@ -344,15 +318,15 @@ def test_http_app_restores_auth_between_static_and_module_construction(
 
     assert server.auth is constructor_provider
     monkeypatch.delenv("CLICKHOUSE_MCP_AUTH_TOKEN")
-    _install_auth_module(monkeypatch, "boundary_auth_module", token="module-token")
+    _install_static_token_auth_module(monkeypatch, "boundary_auth_module", token="module-token")
     module_app = server.http_app(transport="http")
     assert server.auth is constructor_provider
 
     with TestClient(module_app) as client:
         response = client.post(
             "/mcp",
-            json=_INITIALIZE_REQUEST,
-            headers={**_MCP_HEADERS, "authorization": "Bearer module-token"},
+            json=INITIALIZE_REQUEST,
+            headers={**MCP_HEADERS, "authorization": "Bearer module-token"},
         )
 
     assert response.status_code == 200
@@ -360,7 +334,7 @@ def test_http_app_restores_auth_between_static_and_module_construction(
 
 def test_http_app_auth_swap_is_serialized_across_threads(monkeypatch: pytest.MonkeyPatch):
     """A second http_app() call waits for the first and never sees a stale provider."""
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret-token")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
     server = ClickHouseFastMCP("test")
@@ -428,7 +402,7 @@ def test_run_http_async_forwarded_kwargs_bind_to_upstream_signature(
 
 def test_module_provider_gates_the_mcp_endpoint(monkeypatch: pytest.MonkeyPatch):
     """A CLICKHOUSE_MCP_AUTH_MODULE provider rejects missing and foreign tokens."""
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     server = ClickHouseFastMCP("test")
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "static-token")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
@@ -437,21 +411,21 @@ def test_module_provider_gates_the_mcp_endpoint(monkeypatch: pytest.MonkeyPatch)
 
     assert server.auth is None
     monkeypatch.delenv("CLICKHOUSE_MCP_AUTH_TOKEN")
-    _install_auth_module(monkeypatch, "boundary_gate_module", token="module-token")
+    _install_static_token_auth_module(monkeypatch, "boundary_gate_module", token="module-token")
     app = server.http_app(transport="http")
     assert server.auth is None
 
     with TestClient(app) as client:
-        missing = client.post("/mcp", json=_INITIALIZE_REQUEST, headers=_MCP_HEADERS)
+        missing = client.post("/mcp", json=INITIALIZE_REQUEST, headers=MCP_HEADERS)
         stale_static = client.post(
             "/mcp",
-            json=_INITIALIZE_REQUEST,
-            headers={**_MCP_HEADERS, "authorization": "Bearer static-token"},
+            json=INITIALIZE_REQUEST,
+            headers={**MCP_HEADERS, "authorization": "Bearer static-token"},
         )
         accepted = client.post(
             "/mcp",
-            json=_INITIALIZE_REQUEST,
-            headers={**_MCP_HEADERS, "authorization": "Bearer module-token"},
+            json=INITIALIZE_REQUEST,
+            headers={**MCP_HEADERS, "authorization": "Bearer module-token"},
         )
 
     assert missing.status_code == 401
@@ -462,7 +436,7 @@ def test_module_provider_gates_the_mcp_endpoint(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_http_app_rejects_legacy_fastmcp_server_auth(monkeypatch: pytest.MonkeyPatch):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
     monkeypatch.setenv("FASTMCP_SERVER_AUTH", "example.OAuthProvider")
 
@@ -471,7 +445,7 @@ def test_http_app_rejects_legacy_fastmcp_server_auth(monkeypatch: pytest.MonkeyP
 
 
 def test_http_app_detects_positional_transport(monkeypatch: pytest.MonkeyPatch):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     seen_transports = []
     resolve_auth = mcp_server_module._resolve_auth
@@ -488,7 +462,7 @@ def test_http_app_detects_positional_transport(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_http_app_rejects_positional_sse_transport(monkeypatch: pytest.MonkeyPatch):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
 
     with pytest.raises(ValueError, match="SSE transport was removed"):
@@ -506,7 +480,7 @@ def test_http_app_rejects_positional_sse_transport(monkeypatch: pytest.MonkeyPat
 def test_http_app_rejects_health_transport_path(
     monkeypatch: pytest.MonkeyPatch, transport: str, positional: bool
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     server = ClickHouseFastMCP("test")
 
@@ -521,7 +495,7 @@ def test_http_app_rejects_health_transport_path_from_fastmcp_settings(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """FastMCP 4 reads the default transport path from its global settings."""
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.setattr(fastmcp.settings, "streamable_http_path", "/health")
     server = ClickHouseFastMCP("test")
@@ -533,7 +507,7 @@ def test_http_app_rejects_health_transport_path_from_fastmcp_settings(
 def test_health_route_is_unauthenticated_and_exempt_from_transport_validation(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret-token")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_ORIGINS", "http://client.example")
@@ -574,7 +548,7 @@ def test_health_route_is_unauthenticated_and_exempt_from_transport_validation(
 
 
 def test_runtime_http_override_requires_auth(monkeypatch: pytest.MonkeyPatch):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "stdio")
     server = ClickHouseFastMCP("test")
 
@@ -585,7 +559,7 @@ def test_runtime_http_override_requires_auth(monkeypatch: pytest.MonkeyPatch):
 def test_run_http_async_disables_outer_proxy_header_processing(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
     monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.0.0.0/24")
@@ -613,7 +587,7 @@ def test_run_http_async_disables_outer_proxy_header_processing(
 def test_run_http_async_rejects_conflicting_proxy_header_processing(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
     monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.0.0.0/24")
@@ -630,7 +604,7 @@ def test_run_http_async_rejects_conflicting_proxy_header_processing(
 def test_run_http_async_preserves_uvicorn_behavior_without_trusted_proxies(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     uvicorn_config = {"proxy_headers": True}
     called = {}
@@ -655,7 +629,7 @@ def test_run_http_async_preserves_uvicorn_behavior_without_trusted_proxies(
 def test_builtin_runner_raw_client_assertion_is_consumed_by_one_app(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
     monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.0.0.0/24")
@@ -674,7 +648,7 @@ def test_builtin_runner_raw_client_assertion_is_consumed_by_one_app(
 
 
 def test_project_cli_uses_the_secured_builtin_http_runner(monkeypatch: pytest.MonkeyPatch):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
     monkeypatch.setenv("CLICKHOUSE_MCP_BIND_HOST", "127.0.0.1")
     monkeypatch.setenv("CLICKHOUSE_MCP_BIND_PORT", "4200")
@@ -703,7 +677,7 @@ def test_project_cli_uses_the_secured_builtin_http_runner(monkeypatch: pytest.Mo
 async def test_fastmcp_json_loads_the_protected_exported_server(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "stdio")
     config_path = Path(__file__).parents[1] / "fastmcp.json"
     config = FastMCPFileConfig.from_file(config_path)
@@ -728,7 +702,7 @@ async def test_fastmcp_json_loads_the_protected_exported_server(
 async def test_fastmcp_json_requires_raw_peer_assertion_for_direct_embedding(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_http_env(monkeypatch)
+    clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "stdio")
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")

@@ -11,46 +11,15 @@ from mcp_clickhouse.http_security import (
     transport_security_middleware,
 )
 from mcp_clickhouse.mcp_env import MCPServerConfig
+from tests.helpers import RecordingApp, send_asgi_request_async
 
 
-class _RecordingApp:
-    """Inner ASGI app that records the scopes it receives."""
-
-    def __init__(self):
-        self.scopes = []
-
-    async def __call__(self, scope, receive, send):
-        self.scopes.append(scope)
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"reached"})
-
-
-async def _send_request_async(
-    middleware,
-    headers=None,
-    client=("203.0.113.10", 1234),
-    path="/mcp",
-):
-    if isinstance(headers, dict):
-        headers = list(headers.items())
-    raw_headers = [(name.lower().encode(), value.encode()) for name, value in (headers or [])]
-    scope = {
-        "type": "http",
-        "method": "POST",
-        "path": path,
-        "headers": raw_headers,
-        "client": client,
-    }
-    messages = []
-
-    async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(message):
-        messages.append(message)
-
-    await middleware(scope, receive, send)
-    return next(message["status"] for message in messages if message["type"] == "http.response.start")
+async def _send_request_async(middleware, *, client=("203.0.113.10", 1234), **kwargs):
+    """Status of one request; the scope always carries a client, None for a missing peer."""
+    status, _ = await send_asgi_request_async(
+        middleware, client=client, include_client=True, **kwargs
+    )
+    return status
 
 
 def _send_request(middleware, **kwargs):
@@ -80,7 +49,7 @@ class TestTrustedPeerSelection:
         ],
     )
     def test_exact_and_cidr_proxy_peers_are_trusted(self, trusted_proxy, client):
-        app = _RecordingApp()
+        app = RecordingApp()
 
         status = _send_request(
             _middleware(app, trusted_proxies=(trusted_proxy,)),
@@ -93,7 +62,7 @@ class TestTrustedPeerSelection:
 
     @pytest.mark.parametrize("trusted_proxy", ["10.20.0.8", "10.20.0.0/24"])
     def test_ipv4_mapped_peer_matches_ipv4_entries(self, trusted_proxy):
-        app = _RecordingApp()
+        app = RecordingApp()
 
         status = _send_request(
             _middleware(app, trusted_proxies=(trusted_proxy,)),
@@ -106,7 +75,7 @@ class TestTrustedPeerSelection:
 
     @pytest.mark.parametrize("client", [("10.0.1.8", 1234), ("not-an-ip", 1234), None])
     def test_untrusted_or_missing_peer_ignores_forwarded_host(self, client):
-        app = _RecordingApp()
+        app = RecordingApp()
 
         status = _send_request(
             _middleware(app, trusted_proxies=("10.0.0.0/24",)),
@@ -121,7 +90,7 @@ class TestTrustedPeerSelection:
         headers = {"host": "attacker.example.com", "x-forwarded-host": "mcp.example.com"}
 
         status = _send_request(
-            _middleware(_RecordingApp(), trusted_proxies=("10.0.0.0/24",)),
+            _middleware(RecordingApp(), trusted_proxies=("10.0.0.0/24",)),
             headers=headers,
             client=("203.0.113.10", 1234),
         )
@@ -132,7 +101,7 @@ class TestTrustedPeerSelection:
         headers = {"host": "mcp.example.com", "x-forwarded-host": "bad, list"}
 
         status = _send_request(
-            _middleware(_RecordingApp(), trusted_proxies=("10.0.0.0/24",)),
+            _middleware(RecordingApp(), trusted_proxies=("10.0.0.0/24",)),
             headers=headers,
             client=("203.0.113.10", 1234),
         )
@@ -156,7 +125,7 @@ class TestForwardedHostValidation:
         headers = [("host", "mcp.example.com"), *forwarded_headers]
 
         status = _send_request(
-            _middleware(_RecordingApp(), trusted_proxies=("10.0.0.8",)),
+            _middleware(RecordingApp(), trusted_proxies=("10.0.0.8",)),
             headers=headers,
             client=("10.0.0.8", 1234),
         )
@@ -167,7 +136,7 @@ class TestForwardedHostValidation:
         headers = {"host": "internal-upstream", "x-forwarded-host": "  mcp.example.com  "}
 
         status = _send_request(
-            _middleware(_RecordingApp(), trusted_proxies=("10.0.0.8",)),
+            _middleware(RecordingApp(), trusted_proxies=("10.0.0.8",)),
             headers=headers,
             client=("10.0.0.8", 1234),
         )
@@ -176,7 +145,7 @@ class TestForwardedHostValidation:
 
     def test_missing_forwarded_host_falls_back_to_raw_host(self):
         status = _send_request(
-            _middleware(_RecordingApp(), trusted_proxies=("10.0.0.8",)),
+            _middleware(RecordingApp(), trusted_proxies=("10.0.0.8",)),
             headers={"host": "mcp.example.com"},
             client=("10.0.0.8", 1234),
         )
@@ -192,7 +161,7 @@ class TestForwardedHostValidation:
 
         status = _send_request(
             _middleware(
-                _RecordingApp(),
+                RecordingApp(),
                 trusted_proxies=("10.0.0.8",),
                 allowed_origins=("https://app.example.com",),
             ),
@@ -208,7 +177,7 @@ class TestForwardedHostValidation:
 
         with caplog.at_level(logging.WARNING, logger="mcp-clickhouse"):
             status = _send_request(
-                _middleware(_RecordingApp(), trusted_proxies=("10.0.0.8",)),
+                _middleware(RecordingApp(), trusted_proxies=("10.0.0.8",)),
                 headers=headers,
                 client=("10.0.0.8", 1234),
             )
@@ -217,7 +186,7 @@ class TestForwardedHostValidation:
         assert forwarded_value not in caplog.text
 
     def test_concurrent_requests_do_not_share_peer_state(self):
-        middleware = _middleware(_RecordingApp(), trusted_proxies=("10.0.0.0/24",))
+        middleware = _middleware(RecordingApp(), trusted_proxies=("10.0.0.0/24",))
 
         async def run_requests():
             return await asyncio.gather(
@@ -299,7 +268,7 @@ class TestConfig:
 
         assert parsed == [ip_network("10.20.0.0/24")]
         middleware = DNSRebindingProtectionMiddleware(
-            _RecordingApp(),
+            RecordingApp(),
             allowed_hosts=("mcp.example.com",),
             trusted_proxies=parsed,
         )

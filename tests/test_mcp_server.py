@@ -1,11 +1,10 @@
 import pytest
-import pytest_asyncio
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 import asyncio
-import time
+import threading
 from unittest.mock import patch
-from mcp_clickhouse.mcp_server import mcp, create_clickhouse_client
+from mcp_clickhouse.mcp_server import create_clickhouse_client
 from dotenv import load_dotenv
 import json
 
@@ -14,16 +13,13 @@ load_dotenv()
 
 
 @pytest.fixture(scope="module")
-def event_loop():
-    """Create an instance of the default event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+def setup_test_database():
+    """Set up test database and tables before running tests.
 
-
-@pytest_asyncio.fixture(scope="module")
-async def setup_test_database():
-    """Set up test database and tables before running tests."""
+    Synchronous on purpose: it only drives the blocking clickhouse-connect client,
+    so it needs no event loop and can stay module scoped under pytest-asyncio's
+    function-scoped default loop.
+    """
     client = create_clickhouse_client()
 
     # Test database and table names
@@ -81,12 +77,6 @@ async def setup_test_database():
 
     # Cleanup after tests
     client.command(f"DROP DATABASE IF EXISTS {test_db}")
-
-
-@pytest.fixture
-def mcp_server():
-    """Return the MCP server instance for testing."""
-    return mcp
 
 
 @pytest.mark.asyncio
@@ -399,22 +389,33 @@ async def test_concurrent_queries(mcp_server, setup_test_database):
 
 @pytest.mark.asyncio
 async def test_run_query_does_not_block_other_mcp_requests(mcp_server):
-    """list_tools should complete while a query is in flight."""
+    """list_tools completes while a run_query worker is parked.
 
-    def slow_execute_query(_query: str, _query_id: str, _client_config: dict):
-        time.sleep(0.75)
-        return json.dumps({"columns": ["value"], "rows": [[1]]})
+    The patched execute_query blocks on a threading.Event inside QUERY_EXECUTOR.
+    If run_query_async ran it on the event loop instead, list_tools could not be
+    answered until the event was set. The 5 second timeouts are hang guards only.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+    payload = json.dumps({"columns": ["value"], "rows": [[1]]})
+
+    def blocked_execute_query(_query: str, _query_id: str, _client_config: dict):
+        entered.set()
+        release.wait()
+        return payload
 
     async with Client(mcp_server) as client:
-        with patch("mcp_clickhouse.mcp_server.execute_query", side_effect=slow_execute_query):
+        with patch("mcp_clickhouse.mcp_server.execute_query", side_effect=blocked_execute_query):
             slow_task = asyncio.create_task(client.call_tool("run_query", {"query": "SELECT 1"}))
-            await asyncio.sleep(0.05)
-
-            start = time.perf_counter()
-            tools = await client.list_tools()
-            list_tools_elapsed = time.perf_counter() - start
-
-            await slow_task
+            try:
+                entered_in_time = await asyncio.get_running_loop().run_in_executor(
+                    None, entered.wait, 5
+                )
+                assert entered_in_time, "run_query worker was never entered"
+                tools = await asyncio.wait_for(client.list_tools(), timeout=5)
+            finally:
+                release.set()
+            result = await asyncio.wait_for(slow_task, timeout=5)
 
     assert len(tools) >= 1
-    assert list_tools_elapsed < 0.5
+    assert result.content[0].text == payload

@@ -13,8 +13,6 @@ are easy to break silently on a FastMCP bump:
    (MIGRATION_DECISIONS.md D7).
 """
 
-import json
-import re
 import warnings
 
 import fastmcp
@@ -27,52 +25,7 @@ with warnings.catch_warnings():
     from starlette.testclient import TestClient
 
 from mcp_clickhouse import mcp_server
-
-_MCP_HEADERS = {
-    "accept": "application/json, text/event-stream",
-    "content-type": "application/json",
-}
-
-
-def _initialize_request(protocol_version: str) -> dict:
-    return {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": protocol_version,
-            "capabilities": {},
-            "clientInfo": {"name": "test-client", "version": "1"},
-        },
-    }
-
-
-def _jsonrpc_body(response):
-    """Decode a JSON or single-event event-stream response body from the MCP endpoint."""
-    if response.headers.get("content-type", "").startswith("application/json"):
-        return response.json()
-    match = re.search(r"^data: (.*)$", response.text, re.M)
-    assert match is not None, response.text
-    return json.loads(match.group(1))
-
-
-@pytest.fixture
-def authenticated_app_env(monkeypatch: pytest.MonkeyPatch):
-    """Mirrors test_health_endpoint.py's fixture; kept self-contained here."""
-    for name in (
-        "CLICKHOUSE_MCP_ALLOWED_HOSTS",
-        "CLICKHOUSE_MCP_ALLOWED_ORIGINS",
-        "CLICKHOUSE_MCP_TRUSTED_PROXIES",
-        "CLICKHOUSE_MCP_AUTH_DISABLED",
-        "CLICKHOUSE_MCP_AUTH_MODULE",
-        "CLICKHOUSE_MCP_AUTH_TOKEN",
-        "FASTMCP_SERVER_AUTH",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("CLICKHOUSE_ENABLED", "true")
-    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret-token")
-    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
-    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_ORIGINS", "http://client.example")
+from tests.helpers import MCP_HEADERS, initialize_request, jsonrpc_body
 
 
 # Verified empirically against fastmcp 4.0.1: the first three requested
@@ -105,12 +58,12 @@ def test_protocol_version_negotiation(
     with TestClient(app) as client:
         response = client.post(
             "/mcp",
-            json=_initialize_request(requested_version),
-            headers={**_MCP_HEADERS, "authorization": "Bearer secret-token"},
+            json=initialize_request(requested_version),
+            headers={**MCP_HEADERS, "authorization": "Bearer secret-token"},
         )
 
     assert response.status_code == 200
-    body = _jsonrpc_body(response)
+    body = jsonrpc_body(response)
     assert body["result"]["protocolVersion"] == expected_version
     # Every case above negotiates a stateful session (default stateless_http
     # is False), so a session id is always issued.
@@ -127,9 +80,9 @@ class TestStatelessHttpParametrized:
         with TestClient(app) as client:
             response = client.post(
                 "/mcp",
-                json=_initialize_request("2025-11-25"),
+                json=initialize_request("2025-11-25"),
                 headers={
-                    **_MCP_HEADERS,
+                    **MCP_HEADERS,
                     "host": "attacker.example",
                     "authorization": "Bearer secret-token",
                 },
@@ -145,8 +98,8 @@ class TestStatelessHttpParametrized:
         with TestClient(app) as client:
             response = client.post(
                 "/mcp",
-                json=_initialize_request("2025-11-25"),
-                headers=_MCP_HEADERS,
+                json=initialize_request("2025-11-25"),
+                headers=MCP_HEADERS,
             )
 
         assert response.status_code == 401
@@ -166,8 +119,8 @@ class TestStatelessHttpParametrized:
         with TestClient(app) as client:
             init = client.post(
                 "/mcp",
-                json=_initialize_request("2025-11-25"),
-                headers={**_MCP_HEADERS, "authorization": "Bearer secret-token"},
+                json=initialize_request("2025-11-25"),
+                headers={**MCP_HEADERS, "authorization": "Bearer secret-token"},
             )
 
         assert init.status_code == 200

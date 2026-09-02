@@ -1,24 +1,17 @@
 """Tests for ClickHouse connection failure hints."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from clickhouse_connect.driver.exceptions import OperationalError
 
 from mcp_clickhouse.mcp_server import (
     _NATIVE_PROTOCOL_PORTS,
-    _clear_client_cache,
     _connection_error_hints,
     _format_connection_failure,
     create_clickhouse_client,
 )
-
-
-@pytest.fixture(autouse=True)
-def clear_client_cache():
-    _clear_client_cache()
-    yield
-    _clear_client_cache()
+from tests.helpers import fake_clickhouse_client
 
 
 def test_native_protocol_ports_constant():
@@ -172,7 +165,7 @@ def test_create_client_warns_on_native_port(mock_cc, monkeypatch, caplog):
 
     mcp_env._CONFIG_INSTANCE = None
 
-    mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+    mock_cc.get_client.return_value = fake_clickhouse_client("24.1")
 
     with caplog.at_level(logging.WARNING, logger="mcp-clickhouse"):
         create_clickhouse_client()
