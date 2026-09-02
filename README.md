@@ -21,6 +21,7 @@ integers and booleans keep their JSON types.
   * Execute SQL queries on your ClickHouse cluster.
   * Input: `query` (string): The SQL query to execute.
   * Queries run in read-only mode by default (`CLICKHOUSE_ALLOW_WRITE_ACCESS=false`), but writes can be enabled explicitly if needed.
+  * The tool description tells clients which mode this server instance runs in (read-only, writes without destructive statements, or writes including destructive statements), so a client does not need to attempt a write to find out.
 
 * `list_databases`
   * List all databases on your ClickHouse cluster.
@@ -46,7 +47,8 @@ integers and booleans keep their JSON types.
   * Integers outside `[-9007199254740991, 9007199254740991]` are returned as decimal strings.
   * Query data directly from various sources (files, URLs, databases) without ETL processes.
   * Requires the optional `chdb` extra: `pip install 'mcp-clickhouse[chdb]'`
-  * Query failures, timeouts, and unexpected exceptions are returned as a normal tool result whose text is `{"status": "error", "message": "..."}`. Unlike `run_query`, this tool does not raise an MCP tool error (`isError`); check the `status` field.
+  * Results are a JSON array with one object per row. Query failures, timeouts, and unexpected exceptions raise an MCP tool error (`isError`) with a `chDB query failed: ...` or `chDB query timed out ...` message, the same way `run_query` reports failures.
+  * With the default in-memory `CHDB_DATA_PATH` the tool is advertised as read-only and idempotent. With a filesystem data path any SQL, including `CREATE`, `INSERT`, and `DROP`, persists across restarts, so the tool is advertised as writable and destructive.
 
 ### Health Check Endpoint
 

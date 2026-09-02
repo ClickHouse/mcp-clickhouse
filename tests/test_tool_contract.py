@@ -142,6 +142,51 @@ async def test_run_query_annotations_are_read_from_the_environment(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("allow_write_access", "allow_drop", "must_contain", "must_not_contain"),
+    [
+        (
+            False,
+            False,
+            ["This server is read-only", "CLICKHOUSE_ALLOW_WRITE_ACCESS=true", "SETTINGS"],
+            ["CLICKHOUSE_ALLOW_DROP", "allows DDL"],
+        ),
+        (
+            True,
+            False,
+            ["This server allows DDL and DML", "CLICKHOUSE_ALLOW_DROP=true", "DROP, TRUNCATE"],
+            ["read-only", "CLICKHOUSE_ALLOW_WRITE_ACCESS"],
+        ),
+        (
+            True,
+            True,
+            ["destructive statements", "Nothing in the MCP server blocks them", "grants"],
+            ["read-only", "CLICKHOUSE_ALLOW_DROP=true", "CLICKHOUSE_ALLOW_WRITE_ACCESS"],
+        ),
+    ],
+)
+async def test_run_query_description_states_the_configured_mode(
+    allow_write_access, allow_drop, must_contain, must_not_contain
+):
+    """A client can tell a read-only instance from a writable one without a write."""
+    with patch.object(
+        mcp_server, "ClickHouseConfig", return_value=_config(allow_write_access, allow_drop)
+    ):
+        server = FastMCP("description-test")
+        mcp_server._register_clickhouse_tools(server)
+
+    tools = await _list_tools_by_name(server)
+    description = tools["run_query"].description
+    assert description.startswith("Execute SQL queries in ClickHouse.")
+    for text in must_contain:
+        assert text in description, text
+    for text in must_not_contain:
+        assert text not in description, text
+    assert "9007199254740991" in description
+    assert tools["run_query"].input_schema["properties"]["query"]["description"]
+
+
+@pytest.mark.asyncio
 async def test_registration_survives_incomplete_config_and_advertises_read_only():
     """Import never failed on missing connection variables; keep it that way."""
     server = FastMCP("annotations-test")
@@ -159,12 +204,24 @@ async def test_registration_survives_incomplete_config_and_advertises_read_only(
         "idempotent_hint": False,
         "open_world_hint": True,
     }
+    assert "This server is read-only" in tools["run_query"].description
 
 
-@pytest.mark.asyncio
-async def test_chdb_tool_is_registered_with_read_only_annotations_and_no_output_schema():
+_PERSISTENT_CHDB_ANNOTATIONS = {
+    "read_only_hint": False,
+    "destructive_hint": True,
+    "idempotent_hint": False,
+    "open_world_hint": True,
+}
+
+
+async def _register_chdb_tool_on_fresh_server(monkeypatch, data_path):
+    monkeypatch.setenv("CHDB_ENABLED", "true")
+    if data_path is None:
+        monkeypatch.delenv("CHDB_DATA_PATH", raising=False)
+    else:
+        monkeypatch.setenv("CHDB_DATA_PATH", data_path)
     with (
-        patch.dict("os.environ", {"CHDB_ENABLED": "true"}, clear=False),
         patch.object(mcp_server, "_init_chdb_client", return_value=MagicMock()),
         patch.object(mcp_server, "_chdb_client", None),
         patch.object(mcp_server.mcp, "add_tool") as add_tool,
@@ -178,9 +235,32 @@ async def test_chdb_tool_is_registered_with_read_only_annotations_and_no_output_
     server.add_tool(chdb_tool)
     tools = await _list_tools_by_name(server)
     assert set(tools) == {"run_chdb_select_query"}
-    assert _annotations(tools["run_chdb_select_query"]) == _READ_ONLY_ANNOTATIONS
-    assert tools["run_chdb_select_query"].output_schema is None
-    assert tools["run_chdb_select_query"].title == "Run Chdb Select Query"
+    return tools["run_chdb_select_query"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data_path", [None, ":memory:"])
+async def test_chdb_tool_in_memory_is_read_only_with_no_output_schema(monkeypatch, data_path):
+    tool = await _register_chdb_tool_on_fresh_server(monkeypatch, data_path)
+
+    assert _annotations(tool) == _READ_ONLY_ANNOTATIONS
+    assert tool.output_schema is None
+    assert tool.title == "Run Chdb Select Query"
+    assert "in-memory" in tool.description
+    assert "raise a tool error" in tool.description
+    assert tool.input_schema["properties"]["query"]["description"]
+
+
+@pytest.mark.asyncio
+async def test_chdb_tool_on_a_filesystem_data_path_is_writable_and_destructive(
+    monkeypatch, tmp_path
+):
+    """chDB runs any SQL; with a persistent data path a CREATE or DROP is durable."""
+    tool = await _register_chdb_tool_on_fresh_server(monkeypatch, str(tmp_path / "chdb"))
+
+    assert _annotations(tool) == _PERSISTENT_CHDB_ANNOTATIONS
+    assert "persists data on disk" in tool.description
+    assert str(tmp_path) not in tool.description
 
 
 @pytest.mark.asyncio

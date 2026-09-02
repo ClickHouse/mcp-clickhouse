@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from ipaddress import IPv4Network, IPv6Network
+from types import SimpleNamespace
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 import clickhouse_connect
@@ -1321,6 +1322,10 @@ async def run_query_async(query: str) -> str:
 
     Awaits the worker-pool future asynchronously so concurrent tool calls are
     served while a slow query is in flight.
+
+    Args:
+        query: The SQL statement to execute. One statement per call. The result is
+            a JSON object with "columns" (names) and "rows" (arrays of values).
     """
     logger.info(f"Executing query: {query}")
 
@@ -2012,38 +2017,51 @@ def execute_chdb_query(query: str):
 
 
 def _process_chdb_result(result) -> str:
+    """Serialize a chDB result, raising ToolError for a failed query.
+
+    execute_chdb_query reports engine errors as {"error": message}; they surface
+    to MCP clients as a tool error (isError) with the message, matching run_query.
+    """
     if isinstance(result, dict) and "error" in result:
         logger.warning(f"chDB query failed: {result['error']}")
-        return _serialize_tool_result({
-            "status": "error",
-            "message": f"chDB query failed: {result['error']}",
-        })
+        raise ToolError(f"chDB query failed: {result['error']}")
     return _serialize_tool_result(result)
 
 
 def run_chdb_select_query(query: str) -> str:
-    """Run SQL in chDB, an in-process ClickHouse engine"""
+    """Run SQL in chDB, an in-process ClickHouse engine.
+
+    Raises ToolError on a chDB error, a timeout, or an unexpected failure, like
+    run_query.
+
+    Args:
+        query: The SQL statement to run in chDB.
+    """
     logger.info(f"Executing chDB SELECT query: {query}")
     try:
         future = QUERY_EXECUTOR.submit(execute_chdb_query, query)
         timeout_secs = get_mcp_config().query_timeout
         try:
             result = future.result(timeout=timeout_secs)
-            return _process_chdb_result(result)
         except concurrent.futures.TimeoutError:
             logger.warning(f"chDB query timed out after {timeout_secs} seconds: {query}")
             future.cancel()
-            return _serialize_tool_result({
-                "status": "error",
-                "message": f"chDB query timed out after {timeout_secs} seconds",
-            })
+            raise ToolError(f"chDB query timed out after {timeout_secs} seconds")
+        return _process_chdb_result(result)
+    except ToolError:
+        raise
     except Exception as e:
         logger.error(f"Unexpected error in run_chdb_select_query: {e}")
-        return _serialize_tool_result({"status": "error", "message": f"Unexpected error: {e}"})
+        raise ToolError(f"chDB query failed: {e}")
 
 
 async def run_chdb_select_query_async(query: str) -> str:
-    """Async MCP-facing wrapper for chDB queries."""
+    """Async MCP-facing wrapper for chDB queries.
+
+    Args:
+        query: The SQL statement to run in chDB. The result is a JSON array with
+            one object per row, keyed by column name.
+    """
     logger.info(f"Executing chDB SELECT query: {query}")
     try:
         future = QUERY_EXECUTOR.submit(execute_chdb_query, query)
@@ -2057,15 +2075,14 @@ async def run_chdb_select_query_async(query: str) -> str:
                 f"chDB query timed out after {timeout_secs} seconds: {query}"
             )
             future.cancel()
-            return _serialize_tool_result({
-                "status": "error",
-                "message": f"chDB query timed out after {timeout_secs} seconds",
-            })
+            raise ToolError(f"chDB query timed out after {timeout_secs} seconds")
 
         return await asyncio.to_thread(_process_chdb_result, result)
+    except ToolError:
+        raise
     except Exception as e:
         logger.error(f"Unexpected error in run_chdb_select_query_async: {e}")
-        return _serialize_tool_result({"status": "error", "message": f"Unexpected error: {e}"})
+        raise ToolError(f"chDB query failed: {e}")
 
 
 def chdb_initial_prompt() -> str:
@@ -2112,7 +2129,8 @@ def _init_chdb_client():
         return None
 
 
-# Metadata and chDB tools read from an external engine without mutating it.
+# Metadata tools, and the chDB tool on an in-memory data path, read without
+# durable side effects.
 _READ_ONLY_TOOL_ANNOTATIONS = ToolAnnotations(
     read_only_hint=True,
     destructive_hint=False,
@@ -2126,6 +2144,51 @@ _READ_ONLY_RUN_QUERY_ANNOTATIONS = ToolAnnotations(
     idempotent_hint=False,
     open_world_hint=True,
 )
+
+
+# chDB on a filesystem CHDB_DATA_PATH: the tool runs any SQL, so a CREATE, INSERT,
+# or DROP persists across restarts and the read-only hints would over-claim.
+_PERSISTENT_CHDB_TOOL_ANNOTATIONS = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=False,
+    open_world_hint=True,
+)
+_CHDB_IN_MEMORY_DATA_PATH = ":memory:"
+
+
+def _chdb_tool_annotations(chdb_config: Any) -> ToolAnnotations:
+    """Annotations for run_chdb_select_query, driven by CHDB_DATA_PATH.
+
+    In-memory chDB state lives only for the process, so the tool is advertised
+    as read-only and idempotent. A filesystem data path makes every statement
+    durable and the tool accepts any SQL, so it is advertised as writable and
+    destructive.
+    """
+    if chdb_config.data_path == _CHDB_IN_MEMORY_DATA_PATH:
+        return _READ_ONLY_TOOL_ANNOTATIONS
+    return _PERSISTENT_CHDB_TOOL_ANNOTATIONS
+
+
+def _chdb_tool_description(chdb_config: Any) -> str:
+    """Description for run_chdb_select_query, stating where its state lives."""
+    if chdb_config.data_path == _CHDB_IN_MEMORY_DATA_PATH:
+        storage = (
+            "This chDB instance is in-memory: tables created here do not survive a "
+            "server restart."
+        )
+    else:
+        storage = (
+            "This chDB instance persists data on disk, and any SQL including CREATE, "
+            "INSERT, and DROP is executed."
+        )
+    return (
+        "Run SQL in chDB, an in-process ClickHouse engine. "
+        f"{storage} "
+        "Returns a JSON array with one object per row. Query failures raise a tool "
+        "error. Integers outside [-9007199254740991, 9007199254740991] are returned "
+        "as decimal strings."
+    )
 
 
 def _register_chdb_tools():
@@ -2144,15 +2207,13 @@ def _register_chdb_tools():
         return
 
     atexit.register(_chdb_client.close)
+    chdb_config = get_chdb_config()
     mcp.add_tool(
         Tool.from_function(
             run_chdb_select_query_async,
             name="run_chdb_select_query",
-            description=(
-                "Run SQL in chDB, an in-process ClickHouse engine. Integers outside "
-                "[-9007199254740991, 9007199254740991] are returned as decimal strings."
-            ),
-            annotations=_READ_ONLY_TOOL_ANNOTATIONS,
+            description=_chdb_tool_description(chdb_config),
+            annotations=_chdb_tool_annotations(chdb_config),
             output_schema=None,
         )
     )
@@ -2187,6 +2248,50 @@ def _run_query_annotations(config: Any) -> ToolAnnotations:
     )
 
 
+_DESTRUCTIVE_STATEMENTS_TEXT = (
+    "DROP, TRUNCATE, DELETE, UPDATE, REPLACE TABLE/PARTITION, CREATE OR REPLACE, "
+    "CLEAR COLUMN/INDEX/PROJECTION, DETACH PERMANENTLY"
+)
+_BIG_INTEGER_TEXT = (
+    "Integers outside [-9007199254740991, 9007199254740991] are returned as decimal "
+    "strings."
+)
+
+
+def _run_query_description(config: Any) -> str:
+    """Describe run_query for the mode this server instance is configured in.
+
+    The description is computed at registration from the same gates as the
+    annotations, so a client can tell a read-only instance from a writable one
+    without trying a write. It names the operator variable that changes the mode
+    but speaks to the user first.
+    """
+    if not config.allow_write_access:
+        mode = (
+            "This server is read-only: SELECT and other read statements only. DDL and "
+            "DML are rejected by ClickHouse (queries run with readonly=1), and a "
+            "SETTINGS clause is not permitted. Operators enable writes with "
+            "CLICKHOUSE_ALLOW_WRITE_ACCESS=true."
+        )
+    elif not config.allow_drop:
+        mode = (
+            "This server allows DDL and DML (CREATE, INSERT, ALTER ADD COLUMN, and "
+            f"similar). Destructive statements ({_DESTRUCTIVE_STATEMENTS_TEXT}) are "
+            "refused by a best-effort accident guard, not a security boundary; "
+            "operators enable them with CLICKHOUSE_ALLOW_DROP=true."
+        )
+    else:
+        mode = (
+            "This server allows DDL, DML, and destructive statements "
+            f"({_DESTRUCTIVE_STATEMENTS_TEXT}). Nothing in the MCP server blocks them; "
+            "the ClickHouse user's grants are the only protection."
+        )
+    return (
+        "Execute SQL queries in ClickHouse. Returns a JSON object with \"columns\" and "
+        f"\"rows\". {mode} {_BIG_INTEGER_TEXT}"
+    )
+
+
 def _register_clickhouse_tools(server: FastMCP) -> None:
     """Register the ClickHouse tools on the given server.
 
@@ -2197,7 +2302,9 @@ def _register_clickhouse_tools(server: FastMCP) -> None:
         # A throwaway instance, not get_config(): the singleton must not be
         # created at import, so later environment changes still get the lazy
         # validation on the first tool call.
-        run_query_annotations = _run_query_annotations(ClickHouseConfig())
+        config = ClickHouseConfig()
+        run_query_annotations = _run_query_annotations(config)
+        run_query_description = _run_query_description(config)
     except ValueError:
         # Required connection variables are missing. Importing the module has
         # never failed for that; the first tool call reports it. Advertise the
@@ -2207,6 +2314,9 @@ def _register_clickhouse_tools(server: FastMCP) -> None:
             "read-only until the first tool call reports the missing variables"
         )
         run_query_annotations = _READ_ONLY_RUN_QUERY_ANNOTATIONS
+        run_query_description = _run_query_description(
+            SimpleNamespace(allow_write_access=False, allow_drop=False)
+        )
 
     # output_schema=None on every tool: results are JSON-encoded strings by
     # contract, and FastMCP 4 would otherwise derive a {"result": string}
@@ -2242,15 +2352,7 @@ def _register_clickhouse_tools(server: FastMCP) -> None:
         Tool.from_function(
             run_query_async,
             name="run_query",
-            description=(
-                "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
-                "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML operations. "
-                "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow destructive operations "
-                "(DROP, TRUNCATE, DELETE, UPDATE, REPLACE TABLE/PARTITION, CREATE OR REPLACE, "
-                "CLEAR COLUMN/INDEX/PROJECTION, DETACH PERMANENTLY). That gate is a best-effort "
-                "accident guard, not a security boundary. Integers outside "
-                "[-9007199254740991, 9007199254740991] are returned as decimal strings."
-            ),
+            description=run_query_description,
             annotations=run_query_annotations,
             output_schema=None,
         )

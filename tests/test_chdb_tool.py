@@ -1,13 +1,16 @@
+import concurrent.futures
 import importlib.util
 import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from dotenv import load_dotenv
 from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
 
 from mcp_clickhouse import mcp_server
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
@@ -68,12 +71,12 @@ class TestChDBTools(unittest.TestCase):
         self.assertEqual(result[0]["total"], 6)
 
     def test_run_chdb_select_query_failure(self):
-        """Test running a SELECT query with an error in chDB."""
+        """A failing chDB query raises ToolError from the sync helper, like run_query."""
         query = "SELECT * FROM non_existent_table_chDB"
-        result = json.loads(mcp_server.run_chdb_select_query(query))
-        self.assertIsInstance(result, dict)
-        self.assertEqual(result["status"], "error")
-        self.assertIn("message", result)
+        with self.assertRaises(ToolError) as raised:
+            mcp_server.run_chdb_select_query(query)
+        self.assertIn("chDB query failed: ", str(raised.exception))
+        self.assertIn("non_existent_table_chDB", str(raised.exception))
 
     def test_run_chdb_select_query_empty_result(self):
         """Test running a SELECT query that returns empty result in chDB."""
@@ -146,7 +149,9 @@ async def test_chdb_tool_is_exposed_over_mcp(chdb_mcp):
     assert tool.description.startswith("Run SQL in chDB, an in-process ClickHouse engine.")
     assert "decimal strings" in tool.description
     assert tool.input_schema["required"] == ["query"]
-    assert tool.input_schema["properties"]["query"] == {"type": "string"}
+    query_schema = tool.input_schema["properties"]["query"]
+    assert query_schema["type"] == "string"
+    assert query_schema["description"].startswith("The SQL statement to run in chDB.")
 
 
 @requires_chdb
@@ -165,41 +170,64 @@ async def test_chdb_select_returns_json_encoded_rows_over_mcp(chdb_mcp):
 
 @requires_chdb
 @pytest.mark.asyncio
-async def test_chdb_query_failure_is_a_successful_result_with_error_payload(chdb_mcp):
-    """Unlike run_query, the chDB tool reports query failures in its JSON payload.
+async def test_chdb_query_failure_is_a_tool_error(chdb_mcp):
+    """A failing chDB query is an MCP tool error (isError), like run_query.
 
-    This is the documented, pre-existing response shape and therefore part of the
-    public tool contract: isError stays false and the payload carries
-    ``{"status": "error", "message": "chDB query failed: <chDB error>"}``.
+    Until this release the tool answered with a successful result carrying
+    ``{"status": "error", "message": ...}``; D30 aligned it with run_query.
     """
     query = "SELECT * FROM non_existent_table_chDB"
 
     async with Client(chdb_mcp) as client:
-        result = await client.call_tool("run_chdb_select_query", {"query": query})
+        result = await client.call_tool(
+            "run_chdb_select_query", {"query": query}, raise_on_error=False
+        )
 
-    assert result.is_error is False
-    payload = json.loads(result.content[0].text)
-    assert set(payload) == {"status", "message"}
-    assert payload["status"] == "error"
-    assert payload["message"].startswith("chDB query failed: ")
-    assert "non_existent_table_chDB" in payload["message"]
-    assert "Traceback" not in payload["message"]
+    assert result.is_error is True
+    text = result.content[0].text
+    assert text.startswith("chDB query failed: ")
+    assert "non_existent_table_chDB" in text
+    assert "Traceback" not in text
+    assert '"status"' not in text
 
 
 @requires_chdb
 @pytest.mark.asyncio
-async def test_chdb_unexpected_exception_is_reported_in_error_payload(chdb_mcp):
+async def test_chdb_unexpected_exception_is_a_tool_error(chdb_mcp):
     def explode(_query):
         raise RuntimeError("engine crashed at /var/lib/chdb/private")
 
     with patch.object(mcp_server, "execute_chdb_query", side_effect=explode):
         async with Client(chdb_mcp) as client:
-            result = await client.call_tool("run_chdb_select_query", {"query": "SELECT 1"})
+            result = await client.call_tool(
+                "run_chdb_select_query", {"query": "SELECT 1"}, raise_on_error=False
+            )
 
-    assert result.is_error is False
-    payload = json.loads(result.content[0].text)
-    assert payload["status"] == "error"
-    assert payload["message"] == "Unexpected error: engine crashed at /var/lib/chdb/private"
+    assert result.is_error is True
+    assert result.content[0].text == "chDB query failed: engine crashed at /var/lib/chdb/private"
+
+
+@requires_chdb
+@pytest.mark.asyncio
+async def test_chdb_timeout_is_a_tool_error(chdb_mcp):
+    """A pending chDB future past CLICKHOUSE_MCP_QUERY_TIMEOUT is a tool error."""
+    pending = concurrent.futures.Future()
+
+    with (
+        patch.object(mcp_server, "QUERY_EXECUTOR") as query_executor,
+        patch.object(
+            mcp_server, "get_mcp_config", return_value=SimpleNamespace(query_timeout=0.02)
+        ),
+    ):
+        query_executor.submit.return_value = pending
+        async with Client(chdb_mcp) as client:
+            result = await client.call_tool(
+                "run_chdb_select_query", {"query": "SELECT sleep(3)"}, raise_on_error=False
+            )
+
+    assert result.is_error is True
+    assert result.content[0].text == "chDB query timed out after 0.02 seconds"
+    assert pending.cancelled()
 
 
 @requires_chdb
