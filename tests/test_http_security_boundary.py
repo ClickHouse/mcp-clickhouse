@@ -142,7 +142,7 @@ def test_http_app_allows_configured_request_with_auth_disabled(
     assert response.status_code == 200
 
 
-def test_sse_app_allows_configured_request_with_auth_disabled(
+def test_http_app_sse_transport_reaches_session_handler_with_auth_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ):
     _clear_http_env(monkeypatch)
