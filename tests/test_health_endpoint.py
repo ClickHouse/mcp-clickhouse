@@ -55,15 +55,11 @@ def authenticated_app_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_ORIGINS", "http://client.example")
 
 
-@pytest.mark.parametrize(
-    "transport,mcp_path,mcp_method",
-    [("http", "/mcp", "POST"), ("sse", "/sse", "GET")],
-)
 def test_health_is_reachable_without_credentials_while_mcp_requires_them(
-    authenticated_app_env, transport: str, mcp_path: str, mcp_method: str
+    authenticated_app_env,
 ):
     """Real ClickHouse probe, real route, real auth: /health is open, the MCP path is not."""
-    app = mcp_server.mcp.http_app(transport=transport)
+    app = mcp_server.mcp.http_app(transport="http")
 
     with (
         patch.object(
@@ -74,10 +70,7 @@ def test_health_is_reachable_without_credentials_while_mcp_requires_them(
         TestClient(app) as client,
     ):
         health = client.get("/health")
-        mcp_kwargs = {"json": _INITIALIZE_REQUEST, "headers": _MCP_HEADERS}
-        if transport == "sse":
-            mcp_kwargs = {}
-        unauthenticated_mcp = client.request(mcp_method, mcp_path, **mcp_kwargs)
+        unauthenticated_mcp = client.post("/mcp", json=_INITIALIZE_REQUEST, headers=_MCP_HEADERS)
 
     assert health.status_code == 200
     assert health.text == "OK"
@@ -135,11 +128,10 @@ def test_health_body_never_carries_backend_version(authenticated_app_env):
     assert "clickhouse" not in response.text.lower()
 
 
-@pytest.mark.parametrize("transport", ["http", "sse"])
 def test_health_exemption_from_host_and_origin_checks_is_exact_in_real_app(
-    authenticated_app_env, transport: str
+    authenticated_app_env,
 ):
-    app = mcp_server.mcp.http_app(transport=transport)
+    app = mcp_server.mcp.http_app(transport="http")
 
     with (
         patch.object(mcp_server, "_probe_clickhouse_health", return_value=None),

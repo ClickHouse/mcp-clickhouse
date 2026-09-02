@@ -49,7 +49,7 @@ integers and booleans keep their JSON types.
 
 ### Health Check Endpoint
 
-When running with HTTP or SSE transport, a health check endpoint is available at `/health`. This endpoint:
+When running with the HTTP transport, a health check endpoint is available at `/health`. This endpoint:
 - Returns `200 OK` (body: `OK`) if the server is healthy and can connect to ClickHouse
 - Returns `503 Service Unavailable` with a generic error message if the server cannot connect to ClickHouse
 - Returns `503` if a ClickHouse probe does not finish within two seconds. Concurrent requests share one in-flight probe
@@ -64,9 +64,9 @@ curl http://localhost:8000/health
 
 ## Security
 
-### Authentication for HTTP/SSE Transports
+### Authentication for the HTTP Transport
 
-When using HTTP or SSE transport, authentication is **required by default**. The `stdio` transport (default) does not require authentication as it only communicates via standard input/output.
+When using the HTTP transport, authentication is **required by default**. The `stdio` transport (default) does not require authentication as it only communicates via standard input/output.
 
 Three authentication modes are supported. Pick one:
 
@@ -76,7 +76,7 @@ Three authentication modes are supported. Pick one:
 | Auth module (FastMCP provider) | Azure Entra, Google, GitHub, WorkOS, custom JWT, etc. | `CLICKHOUSE_MCP_AUTH_MODULE=<module>` defining `create_auth_provider()` |
 | Disabled                     | Local development only                    | `CLICKHOUSE_MCP_AUTH_DISABLED=true`                                     |
 
-Startup fails if none of these are configured for HTTP/SSE transports, and if more than one is set.
+Startup fails if none of these are configured for the HTTP transport, and if more than one is set.
 
 > [!NOTE]
 > Migration: `FASTMCP_SERVER_AUTH` and the `FASTMCP_SERVER_AUTH_*` variables are no longer supported because FastMCP 3+ removed environment-based provider loading. If `FASTMCP_SERVER_AUTH` is set, the server refuses to start and points you to `CLICKHOUSE_MCP_AUTH_MODULE`.
@@ -99,7 +99,7 @@ Startup fails if none of these are configured for HTTP/SSE transports, and if mo
 
 3. Configure your MCP client to include the token in requests:
 
-   For Claude Desktop with HTTP/SSE transport:
+   For Claude Desktop with HTTP transport:
    ```json
    {
      "mcpServers": {
@@ -485,7 +485,7 @@ class TimeoutOverrideMiddleware(Middleware):
         return await call_next(context)
 ```
 
-`serializable=False` is required. It stores the value in FastMCP's request-scoped state, which lives only for the current tool call. FastMCP 4's default `set_state` writes to a session-scoped store keyed by `mcp-session-id` with a 24 hour TTL, so without it overrides set on one call would apply to every later call in the same HTTP session (streamable HTTP or SSE), and opaque values such as `pool_mgr` would raise `TypeError`. As defense in depth the server removes any session-scoped copy of the key when it reads it and keeps a request-scoped copy for the rest of the request, so a value written with the default `set_state` applies to one request only. Concurrent requests in one session can still observe each other's session-scoped value before it is removed, which is why `serializable=False` is required rather than optional. Set overrides on every call that needs them.
+`serializable=False` is required. It stores the value in FastMCP's request-scoped state, which lives only for the current tool call. FastMCP 4's default `set_state` writes to a session-scoped store keyed by `mcp-session-id` with a 24 hour TTL, so without it overrides set on one call would apply to every later call in the same streamable HTTP session, and opaque values such as `pool_mgr` would raise `TypeError`. As defense in depth the server removes any session-scoped copy of the key when it reads it and keeps a request-scoped copy for the rest of the request, so a value written with the default `set_state` applies to one request only. Concurrent requests in one session can still observe each other's session-scoped value before it is removed, which is why `serializable=False` is required rather than optional. Set overrides on every call that needs them.
 
 This enables advanced use cases like dynamic timeout adjustments, tenant-specific routing, or per-user connection settings.
 
@@ -610,19 +610,20 @@ These variables configure the [clickhouse-connect](https://clickhouse.com/docs/e
 
 #### MCP server and transport
 
-These variables control the MCP process itself, including transport, authentication, and query-tool execution limits. They are independent of the ClickHouse database settings above. See also [Authentication for HTTP/SSE Transports](#authentication-for-httpsse-transports).
+These variables control the MCP process itself, including transport, authentication, and query-tool execution limits. They are independent of the ClickHouse database settings above. See also [Authentication for the HTTP Transport](#authentication-for-the-http-transport).
 
 * `CLICKHOUSE_MCP_SERVER_TRANSPORT`: Sets the transport method for the MCP server
   * Default: `"stdio"`
-  * Valid options: `"stdio"`, `"http"`, `"sse"`. This is useful for local development with tools like MCP Inspector.
-  * `stdio` is typical for Claude Desktop; `http`/`sse` expose a network listener (bind host/port below)
-* `CLICKHOUSE_MCP_BIND_HOST`: Host to bind the MCP server to when using HTTP or SSE transport
+  * Valid options: `"stdio"`, `"http"`. `http` is useful for local development with tools like MCP Inspector.
+  * `stdio` is typical for Claude Desktop; `http` exposes a streamable HTTP network listener (bind host/port below)
+  * The `sse` transport was removed. Setting `sse` fails startup with a migration message. Set `CLICKHOUSE_MCP_SERVER_TRANSPORT=http` instead; clients that only speak the legacy SSE transport need a streamable HTTP capable MCP client
+* `CLICKHOUSE_MCP_BIND_HOST`: Host to bind the MCP server to when using the HTTP transport
   * Default: `"127.0.0.1"`
   * Set to `"0.0.0.0"` to bind to all network interfaces (useful for Docker or remote access)
-  * Only used when transport is `"http"` or `"sse"` — not related to `CLICKHOUSE_HOST`
-* `CLICKHOUSE_MCP_BIND_PORT`: Port to bind the MCP server to when using HTTP or SSE transport
+  * Only used when transport is `"http"`, not related to `CLICKHOUSE_HOST`
+* `CLICKHOUSE_MCP_BIND_PORT`: Port to bind the MCP server to when using the HTTP transport
   * Default: `"8000"`
-  * Only used when transport is `"http"` or `"sse"` — not related to `CLICKHOUSE_PORT`
+  * Only used when transport is `"http"`, not related to `CLICKHOUSE_PORT`
 * `CLICKHOUSE_MCP_QUERY_TIMEOUT`: Timeout in seconds for `run_query`, `list_databases`, and `list_tables` tool calls
   * Default: `"30"`
   * Increase this if you see `Query timed out after ...` errors for heavy queries
@@ -631,9 +632,9 @@ These variables control the MCP process itself, including transport, authenticat
 * `CLICKHOUSE_MCP_MAX_WORKERS`: Maximum number of concurrent query worker threads
   * Default: `"10"`
   * Increase if your workload requires many concurrent tool calls
-* `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
+* `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for the HTTP transport
   * Default: None
-  * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `CLICKHOUSE_MCP_AUTH_MODULE`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for HTTP/SSE transports
+  * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `CLICKHOUSE_MCP_AUTH_MODULE`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for the HTTP transport
   * Generate using `uuidgen` or `openssl rand -hex 32`
   * Clients must send this token in the `Authorization: Bearer <token>` header
 * `CLICKHOUSE_MCP_AUTH_MODULE`: Delegate authentication to a [FastMCP auth provider](https://gofastmcp.com/servers/auth) built by your code
@@ -641,11 +642,11 @@ These variables control the MCP process itself, including transport, authenticat
   * Value is an **importable module name** (e.g. `my_auth`) that defines `create_auth_provider()` returning a `fastmcp.server.auth.AuthProvider` instance, such as `AzureProvider`, `GoogleProvider`, or `JWTVerifier` constructed with explicit keyword arguments
   * Leave `CLICKHOUSE_MCP_AUTH_TOKEN` unset in this mode. See [`example_auth.py`](example_auth.py)
   * `FASTMCP_SERVER_AUTH` is rejected at startup; FastMCP 3+ no longer loads providers from environment variables
-* `CLICKHOUSE_MCP_AUTH_DISABLED`: Disable authentication for HTTP/SSE transports
+* `CLICKHOUSE_MCP_AUTH_DISABLED`: Disable authentication for the HTTP transport
   * Default: `"false"` (authentication is enabled)
   * Set to `"true"` to disable authentication for local development/testing only
   * **WARNING:** Only use for local development. Do not disable when exposed to networks
-* `CLICKHOUSE_MCP_ALLOWED_HOSTS`: Comma separated `Host` header values the HTTP/SSE server answers for
+* `CLICKHOUSE_MCP_ALLOWED_HOSTS`: Comma separated `Host` header values the HTTP server answers for
   * Default for a loopback bind: bare and any-port forms of `127.0.0.1`, `localhost`, and `[::1]`
   * If set, the value must contain at least one Host entry.
   * A concrete non-loopback bind address defaults to that address and the configured port. A wildcard bind such as `0.0.0.0` or `::` requires an explicit non-empty value because the public Host cannot be inferred.
@@ -662,9 +663,9 @@ These variables control the MCP process itself, including transport, authenticat
   * Use the narrowest possible address or network. The MCP server must only be reachable through proxies in the configured ranges. Every trusted proxy must strip and overwrite client supplied `X-Forwarded-Host` and `X-Forwarded-Proto` values, and construct `X-Forwarded-For` from the verified connection peer.
   * The built-in server and `fastmcp run` disable Uvicorn's outer proxy-header handling, validate Host from the raw peer, then apply `X-Forwarded-For` and `X-Forwarded-Proto`. Explicitly enabling `uvicorn_config["proxy_headers"]` fails startup in this mode.
   * Direct ASGI embedding must disable proxy-header handling in the outer ASGI server and call `mcp.http_app(raw_client_address_preserved=True)`. Without that explicit assertion, app construction fails when trusted proxies are configured.
-* `CLICKHOUSE_MCP_ALLOWED_ORIGINS`: Comma separated `Origin` header values accepted on HTTP/SSE
+* `CLICKHOUSE_MCP_ALLOWED_ORIGINS`: Comma separated `Origin` header values accepted on HTTP
   * Default: None, which rejects every request that carries an `Origin` header
-  * MCP requires Origin validation for HTTP/SSE transport connections. Requests without an Origin are accepted because non-browser MCP clients normally omit it. A non-matching Origin gets `403 Forbidden`. The `/health` endpoint is exempt as described above.
+  * MCP requires Origin validation for HTTP transport connections. Requests without an Origin are accepted because non-browser MCP clients normally omit it. A non-matching Origin gets `403 Forbidden`. The `/health` endpoint is exempt as described above.
   * Entries are exact (`http://localhost:3000`) or accept any port (`http://localhost:*`). As with hosts, the any-port form matches only origins that carry a port; a standard-port origin (`https://app.example.com`) must be listed exactly.
 
 ##### Reverse proxy Host handling
@@ -730,7 +731,7 @@ On an IPv6 or dual-stack bind, IPv4 proxies may appear as IPv4-mapped addresses 
 
 * **`CLICKHOUSE_SECURE` vs MCP / ingress TLS** — Turning off `CLICKHOUSE_SECURE` because the MCP server sits behind Kubernetes ingress, a reverse proxy, or is reached over plain HTTP does not disable database TLS; it only changes how this process connects to ClickHouse. Configure ingress TLS separately from the database client settings.
 * **Native protocol ports** — `CLICKHOUSE_PORT` must target ClickHouse's HTTP interface (`8123`/`8443` by default). Ports `9000`/`9440` are for the native TCP protocol (`clickhouse-client`) and will not work with this server.
-* **Host confusion** — `CLICKHOUSE_HOST` is the database hostname. `CLICKHOUSE_MCP_BIND_HOST` is only the address the MCP HTTP/SSE server listens on.
+* **Host confusion** — `CLICKHOUSE_HOST` is the database hostname. `CLICKHOUSE_MCP_BIND_HOST` is only the address the MCP HTTP server listens on.
 
 #### Example Configurations
 
@@ -796,7 +797,7 @@ CLICKHOUSE_PASSWORD=clickhouse
 CLICKHOUSE_MCP_SERVER_TRANSPORT=http
 CLICKHOUSE_MCP_BIND_HOST=0.0.0.0  # Bind to all interfaces
 CLICKHOUSE_MCP_BIND_PORT=4200  # Custom port (default: 8000)
-CLICKHOUSE_MCP_AUTH_TOKEN=your-generated-token  # One auth mode required for HTTP/SSE (or CLICKHOUSE_MCP_AUTH_MODULE, or CLICKHOUSE_MCP_AUTH_DISABLED=true)
+CLICKHOUSE_MCP_AUTH_TOKEN=your-generated-token  # One auth mode required for HTTP (or CLICKHOUSE_MCP_AUTH_MODULE, or CLICKHOUSE_MCP_AUTH_DISABLED=true)
 CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:4200,localhost:4200,mcp.example.com:4200  # Include every Host value clients and proxies send
 ```
 
@@ -844,7 +845,7 @@ You can set these variables in your environment, in a `.env` file, or in the Cla
 }
 ```
 
-Note: The bind host and port settings are only used when transport is set to "http" or "sse".
+Note: The bind host and port settings are only used when transport is set to "http".
 
 ### Running tests
 

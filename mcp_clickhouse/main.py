@@ -10,9 +10,8 @@ def main():
     # Setup any custom middleware
     setup_middleware(mcp)
 
-    # For HTTP and SSE transports, we need to specify host and port
-    http_transports = [TransportType.HTTP.value, TransportType.SSE.value]
-    if transport in http_transports:
+    # The HTTP transport needs a bind host and port
+    if transport == TransportType.HTTP.value:
         # Use the configured bind host (defaults to 127.0.0.1, can be set to 0.0.0.0)
         # and bind port (defaults to 8000)
         mcp.run(

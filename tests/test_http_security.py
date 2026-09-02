@@ -1,4 +1,4 @@
-"""Tests for Host and Origin validation on the HTTP and SSE transports."""
+"""Tests for Host and Origin validation on the HTTP transport."""
 
 import asyncio
 

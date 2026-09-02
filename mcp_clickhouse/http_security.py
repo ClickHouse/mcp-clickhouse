@@ -1,4 +1,4 @@
-"""Host and Origin validation for HTTP and SSE transports."""
+"""Host and Origin validation for the HTTP transport."""
 
 import logging
 from ipaddress import IPv4Network, IPv6Address, IPv6Network, ip_address

@@ -7,7 +7,7 @@ from fastmcp.server.auth import AuthProvider
 from fastmcp.server.auth.providers.jwt import JWTVerifier, StaticTokenVerifier
 
 from mcp_clickhouse.mcp_auth_hook import load_auth_provider
-from mcp_clickhouse.mcp_env import MCPServerConfig
+from mcp_clickhouse.mcp_env import MCPServerConfig, TransportType
 from mcp_clickhouse.mcp_server import _resolve_auth
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -102,16 +102,35 @@ def test_auth_token_with_http_transport(monkeypatch: pytest.MonkeyPatch):
     assert config.auth_disabled is False
 
 
-def test_auth_token_with_sse_transport(monkeypatch: pytest.MonkeyPatch):
-    """Test that auth token is correctly configured for SSE transport."""
-    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "sse")
-    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "sse-auth-token")
+@pytest.mark.parametrize("value", ["sse", "SSE"])
+def test_sse_transport_is_rejected_with_migration_error(
+    monkeypatch: pytest.MonkeyPatch, value: str
+):
+    """The removed SSE transport fails with a message naming http as the replacement."""
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", value)
 
-    config = MCPServerConfig()
+    with pytest.raises(ValueError, match="SSE transport was removed") as exc_info:
+        MCPServerConfig().server_transport
 
-    assert config.server_transport == "sse"
-    assert config.auth_token == "sse-auth-token"
-    assert config.auth_disabled is False
+    message = str(exc_info.value)
+    assert "CLICKHOUSE_MCP_SERVER_TRANSPORT=http" in message
+    assert "Invalid transport" not in message
+
+
+def test_unknown_transport_lists_only_supported_values(monkeypatch: pytest.MonkeyPatch):
+    """Other unknown values keep the generic error, which no longer offers sse."""
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "grpc")
+
+    with pytest.raises(ValueError, match="Invalid transport 'grpc'") as exc_info:
+        MCPServerConfig().server_transport
+
+    message = str(exc_info.value)
+    assert 'Valid options: "stdio", "http"' in message
+    assert "sse" not in message
+
+
+def test_transport_type_has_no_sse_member():
+    assert TransportType.values() == ["stdio", "http"]
 
 
 def _clear_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:

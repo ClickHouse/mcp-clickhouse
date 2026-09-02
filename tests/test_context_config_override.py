@@ -565,7 +565,7 @@ _INITIALIZE_REQUEST = {
 
 
 def _jsonrpc_body(response):
-    """Decode a JSON or single-event SSE response body from the MCP endpoint."""
+    """Decode a JSON or single-event event-stream response body from the MCP endpoint."""
     if response.headers.get("content-type", "").startswith("application/json"):
         return response.json()
     match = re.search(r"^data: (.*)$", response.text, re.M)

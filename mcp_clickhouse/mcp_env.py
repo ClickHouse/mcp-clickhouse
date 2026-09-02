@@ -19,12 +19,16 @@ class TransportType(str, Enum):
 
     STDIO = "stdio"
     HTTP = "http"
-    SSE = "sse"
 
     @classmethod
     def values(cls) -> list[str]:
         """Get all valid transport values."""
         return [transport.value for transport in cls]
+
+
+# The SSE transport was removed; the value is kept only to reject it with a
+# migration error instead of the generic invalid-transport message.
+REMOVED_SSE_TRANSPORT = "sse"
 
 
 @dataclass
@@ -316,20 +320,21 @@ class MCPServerConfig:
     intentionally independent of ClickHouse connection validation.
 
     Optional environment variables (with defaults):
-        CLICKHOUSE_MCP_SERVER_TRANSPORT: "stdio", "http", or "sse" (default: stdio)
-        CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP/SSE (default: 127.0.0.1)
-        CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
+        CLICKHOUSE_MCP_SERVER_TRANSPORT: "stdio" or "http" (default: stdio). The SSE
+            transport was removed; "sse" is rejected with a migration error.
+        CLICKHOUSE_MCP_BIND_HOST: Bind host for HTTP (default: 127.0.0.1)
+        CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP (default: 8000)
         CLICKHOUSE_MCP_QUERY_TIMEOUT: Timeout in seconds for run_query, list_databases,
             and list_tables tool calls (default: 30)
         CLICKHOUSE_MCP_MAX_WORKERS: Maximum thread pool workers for query execution (default: 10)
         CLICKHOUSE_MCP_ALLOWED_HOSTS: Comma separated Host header values accepted on
-            HTTP/SSE (default: derived from a concrete bind host and port)
+            HTTP (default: derived from a concrete bind host and port)
         CLICKHOUSE_MCP_TRUSTED_PROXIES: Comma separated proxy IP addresses or CIDR
             networks whose X-Forwarded-* headers are trusted (default: none)
         CLICKHOUSE_MCP_ALLOWED_ORIGINS: Comma separated Origin header values accepted on
-            HTTP/SSE (default: no browser origins are allowed)
-        CLICKHOUSE_MCP_AUTH_TOKEN: Static bearer token for HTTP/SSE transports.
-            One authentication mode must be configured for HTTP/SSE; the other two
+            HTTP (default: no browser origins are allowed)
+        CLICKHOUSE_MCP_AUTH_TOKEN: Static bearer token for the HTTP transport.
+            One authentication mode must be configured for HTTP; the other two
             options are CLICKHOUSE_MCP_AUTH_MODULE (a module that builds a FastMCP
             AuthProvider) and CLICKHOUSE_MCP_AUTH_DISABLED=true.
         CLICKHOUSE_MCP_AUTH_MODULE: Importable module exposing create_auth_provider()
@@ -341,6 +346,12 @@ class MCPServerConfig:
     @property
     def server_transport(self) -> str:
         transport = os.getenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", TransportType.STDIO.value).lower()
+        if transport == REMOVED_SSE_TRANSPORT:
+            raise ValueError(
+                "CLICKHOUSE_MCP_SERVER_TRANSPORT=sse is no longer supported: the SSE "
+                "transport was removed. Set CLICKHOUSE_MCP_SERVER_TRANSPORT=http and "
+                "connect with a streamable HTTP client."
+            )
         if transport not in TransportType.values():
             valid_options = ", ".join(f'"{t}"' for t in TransportType.values())
             raise ValueError(f"Invalid transport '{transport}'. Valid options: {valid_options}")
@@ -368,7 +379,7 @@ class MCPServerConfig:
 
     @property
     def allowed_hosts(self) -> List[str]:
-        """Host header values the HTTP/SSE transports answer for.
+        """Host header values the HTTP transport answers for.
 
         A concrete bind address supplies a secure default. Loopback binds accept
         the IPv4, IPv6, and localhost aliases on any port. Wildcard binds require
@@ -434,7 +445,7 @@ class MCPServerConfig:
 
     @property
     def allowed_origins(self) -> List[str]:
-        """Origin header values the HTTP/SSE transports accept.
+        """Origin header values the HTTP transport accepts.
 
         Requests without an Origin header are always accepted. An empty list
         rejects every request that carries an Origin header.
@@ -443,7 +454,7 @@ class MCPServerConfig:
 
     @property
     def auth_token(self) -> Optional[str]:
-        """Get the authentication token for HTTP/SSE transports."""
+        """Get the authentication token for the HTTP transport."""
         return os.getenv("CLICKHOUSE_MCP_AUTH_TOKEN", None)
 
     @property
@@ -453,7 +464,7 @@ class MCPServerConfig:
 
     @property
     def auth_module(self) -> Optional[str]:
-        """Get the module that builds a FastMCP AuthProvider for HTTP/SSE transports.
+        """Get the module that builds a FastMCP AuthProvider for the HTTP transport.
 
         Whitespace-only values are treated as unset.
         """

@@ -68,21 +68,14 @@ def _install_auth_module(monkeypatch: pytest.MonkeyPatch, name: str, token: str)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_MODULE", name)
 
 
-@pytest.mark.parametrize(
-    "transport,path",
-    [("http", "/mcp"), ("sse", "/sse")],
-)
-def test_exported_app_rejects_hostile_origin_before_auth(
-    monkeypatch: pytest.MonkeyPatch, transport: str, path: str
-):
+def test_exported_app_rejects_hostile_origin_before_auth(monkeypatch: pytest.MonkeyPatch):
     _clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret-token")
     server = ClickHouseFastMCP("test")
-    app = server.http_app(transport=transport)
+    app = server.http_app(transport="http")
 
-    response = TestClient(app).request(
-        "POST" if transport == "http" else "GET",
-        path,
+    response = TestClient(app).post(
+        "/mcp",
         headers={"host": "localhost:8000", "origin": "http://attacker.example"},
     )
 
@@ -90,37 +83,59 @@ def test_exported_app_rejects_hostile_origin_before_auth(
     assert response.text == "Invalid Origin header"
 
 
-@pytest.mark.parametrize(
-    "transport,path",
-    [("http", "/mcp"), ("sse", "/sse")],
-)
-def test_exported_app_rejects_hostile_host_by_default(
-    monkeypatch: pytest.MonkeyPatch, transport: str, path: str
-):
+def test_exported_app_rejects_hostile_host_by_default(monkeypatch: pytest.MonkeyPatch):
     _clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     server = ClickHouseFastMCP("test")
-    app = server.http_app(transport=transport)
+    app = server.http_app(transport="http")
 
-    response = TestClient(app).request(
-        "POST" if transport == "http" else "GET",
-        path,
-        headers={"host": "attacker.example"},
-    )
+    response = TestClient(app).post("/mcp", headers={"host": "attacker.example"})
 
     assert response.status_code == 421
     assert response.text == "Invalid Host header"
 
 
-def test_static_auth_is_enforced_on_sse(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    "auth_env",
+    [
+        pytest.param({"CLICKHOUSE_MCP_AUTH_TOKEN": "secret-token"}, id="static-token"),
+        pytest.param({"CLICKHOUSE_MCP_AUTH_DISABLED": "true"}, id="auth-disabled"),
+        pytest.param({}, id="no-auth-configured"),
+    ],
+)
+def test_http_app_rejects_removed_sse_transport(
+    monkeypatch: pytest.MonkeyPatch, auth_env: dict
+):
+    """SSE is refused before auth resolution, whatever the auth configuration."""
     _clear_http_env(monkeypatch)
-    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret-token")
+    for name, value in auth_env.items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
-    app = ClickHouseFastMCP("test").http_app(transport="sse")
+    resolve_auth_calls = []
+    resolve_auth = mcp_server_module._resolve_auth
 
-    response = TestClient(app).get("/sse")
+    def recording_resolve_auth(config, transport=None):
+        resolve_auth_calls.append(transport)
+        return resolve_auth(config, transport=transport)
 
-    assert response.status_code == 401
+    monkeypatch.setattr(mcp_server_module, "_resolve_auth", recording_resolve_auth)
+
+    with pytest.raises(ValueError, match="SSE transport was removed") as exc_info:
+        ClickHouseFastMCP("test").http_app(transport="sse")
+
+    assert 'transport="http"' in str(exc_info.value)
+    assert resolve_auth_calls == []
+
+
+def test_resolve_auth_rejects_removed_sse_transport(monkeypatch: pytest.MonkeyPatch):
+    """_resolve_auth never answers "no auth" for the removed transport."""
+    _clear_http_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
+
+    with pytest.raises(ValueError, match="SSE transport was removed"):
+        mcp_server_module._resolve_auth(
+            mcp_server_module.get_mcp_config(), transport="sse"
+        )
 
 
 def test_http_app_allows_configured_request_with_auth_disabled(
@@ -142,27 +157,11 @@ def test_http_app_allows_configured_request_with_auth_disabled(
     assert response.status_code == 200
 
 
-def test_http_app_sse_transport_reaches_session_handler_with_auth_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _clear_http_env(monkeypatch)
-    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
-    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
-    app = ClickHouseFastMCP("test").http_app(transport="sse")
-
-    with TestClient(app) as client:
-        response = client.post("/messages/?session_id=missing", json={"jsonrpc": "2.0"})
-
-    assert response.status_code == 400
-    assert response.text == "Invalid session ID"
-
-
 @pytest.mark.parametrize(
     "transport,path,method",
     [
         ("http", "/mcp", "POST"),
         ("streamable-http", "/mcp", "POST"),
-        ("sse", "/messages/?session_id=missing", "POST"),
     ],
 )
 def test_trusted_proxy_host_is_applied_at_fastmcp_boundary(
@@ -177,8 +176,6 @@ def test_trusted_proxy_host_is_applied_at_fastmcp_boundary(
         raw_client_address_preserved=True,
     )
     request_kwargs = {"json": _INITIALIZE_REQUEST, "headers": _MCP_HEADERS}
-    if transport == "sse":
-        request_kwargs = {"json": {"jsonrpc": "2.0"}}
 
     with TestClient(app, client=("10.0.0.8", 1234)) as client:
         response = client.request(
@@ -192,7 +189,7 @@ def test_trusted_proxy_host_is_applied_at_fastmcp_boundary(
             **request_kwargs,
         )
 
-    assert response.status_code == (400 if transport == "sse" else 200)
+    assert response.status_code == 200
 
 
 def test_host_validation_runs_before_proxy_headers_are_applied(
@@ -485,9 +482,17 @@ def test_http_app_detects_positional_transport(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(mcp_server_module, "_resolve_auth", recording_resolve_auth)
 
-    ClickHouseFastMCP("test").http_app(None, None, None, None, "sse")
+    ClickHouseFastMCP("test").http_app(None, None, None, None, "streamable-http")
 
-    assert seen_transports == ["sse"]
+    assert seen_transports == ["streamable-http"]
+
+
+def test_http_app_rejects_positional_sse_transport(monkeypatch: pytest.MonkeyPatch):
+    _clear_http_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
+
+    with pytest.raises(ValueError, match="SSE transport was removed"):
+        ClickHouseFastMCP("test").http_app(None, None, None, None, "sse")
 
 
 @pytest.mark.parametrize(
@@ -495,8 +500,7 @@ def test_http_app_detects_positional_transport(monkeypatch: pytest.MonkeyPatch):
     [
         pytest.param("http", False, id="http-keyword"),
         pytest.param("streamable-http", False, id="streamable-http-keyword"),
-        pytest.param("sse", False, id="sse-keyword"),
-        pytest.param("sse", True, id="sse-positional"),
+        pytest.param("http", True, id="http-positional"),
     ],
 )
 def test_http_app_rejects_health_transport_path(
@@ -513,24 +517,17 @@ def test_http_app_rejects_health_transport_path(
             server.http_app(path="/health", transport=transport)
 
 
-@pytest.mark.parametrize(
-    "transport, setting_name",
-    [
-        ("http", "streamable_http_path"),
-        ("sse", "sse_path"),
-    ],
-)
 def test_http_app_rejects_health_transport_path_from_fastmcp_settings(
-    monkeypatch: pytest.MonkeyPatch, transport: str, setting_name: str
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """FastMCP 4 reads the default transport path from its global settings."""
     _clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
-    monkeypatch.setattr(fastmcp.settings, setting_name, "/health")
+    monkeypatch.setattr(fastmcp.settings, "streamable_http_path", "/health")
     server = ClickHouseFastMCP("test")
 
     with pytest.raises(ValueError, match="MCP transport path cannot be /health"):
-        server.http_app(transport=transport)
+        server.http_app(transport="http")
 
 
 def test_health_route_is_unauthenticated_and_exempt_from_transport_validation(

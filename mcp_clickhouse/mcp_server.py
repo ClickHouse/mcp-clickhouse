@@ -40,6 +40,7 @@ from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 from mcp_clickhouse.http_security import transport_security_middleware
 from mcp_clickhouse.mcp_auth_hook import load_auth_provider
 from mcp_clickhouse.mcp_env import (
+    REMOVED_SSE_TRANSPORT,
     ClickHouseConfig,
     TransportType,
     get_chdb_config,
@@ -135,14 +136,19 @@ _health_probe_lock = threading.Lock()
 _http_app_auth_lock = threading.Lock()
 _logged_health_probe_futures: weakref.WeakSet[concurrent.futures.Future] = weakref.WeakSet()
 
-_HTTP_TRANSPORTS = (TransportType.HTTP.value, "streamable-http", TransportType.SSE.value)
+_HTTP_TRANSPORTS = (TransportType.HTTP.value, "streamable-http")
+_SSE_REMOVED_MESSAGE = (
+    "The SSE transport was removed from mcp-clickhouse. Use the streamable HTTP "
+    'transport instead: http_app(transport="http") or CLICKHOUSE_MCP_SERVER_TRANSPORT=http, '
+    "with a streamable HTTP client."
+)
 _BUILTIN_HTTP_RAW_CLIENT = ContextVar("builtin_http_raw_client", default=False)
 
 
 def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]:
     """Resolve FastMCP auth kwargs for the requested transport.
 
-    Non-HTTP transports return an empty dict. HTTP and SSE transports always
+    Non-HTTP transports return an empty dict. HTTP transports always
     return an explicit `auth` key: a StaticTokenVerifier for
     CLICKHOUSE_MCP_AUTH_TOKEN, the provider built by the
     CLICKHOUSE_MCP_AUTH_MODULE hook, or None when
@@ -151,8 +157,13 @@ def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]
     FastMCP 3 removed provider auto-loading from FASTMCP_SERVER_AUTH and the
     FASTMCP_SERVER_AUTH_* variables, so that configuration is rejected rather
     than silently starting without authentication.
+
+    The removed SSE transport is rejected here as well as in http_app so it can
+    never resolve to "no auth required" through any caller.
     """
     transport = transport or mcp_config.server_transport
+    if transport == REMOVED_SSE_TRANSPORT:
+        raise ValueError(_SSE_REMOVED_MESSAGE)
     if transport not in _HTTP_TRANSPORTS:
         return {}
 
@@ -174,13 +185,13 @@ def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]
 
     if len(active) > 1:
         raise ValueError(
-            "Multiple authentication modes configured for HTTP/SSE transport: "
+            "Multiple authentication modes configured for the HTTP transport: "
             f"{', '.join(active)}. These are mutually exclusive; unset all but one."
         )
 
     if not active:
         raise ValueError(
-            "Authentication is required for HTTP/SSE transports. Configure exactly one of:\n"
+            "Authentication is required for the HTTP transport. Configure exactly one of:\n"
             "  - CLICKHOUSE_MCP_AUTH_TOKEN=<token>     (static bearer token)\n"
             "  - CLICKHOUSE_MCP_AUTH_MODULE=<module>   (module defining create_auth_provider()\n"
             "       that returns a FastMCP AuthProvider, e.g. an OAuth/OIDC provider)\n"
@@ -198,7 +209,7 @@ def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]
             tokens={mcp_config.auth_token: {"client_id": "mcp-client", "scopes": []}},
             required_scopes=[],
         )
-        logger.info("Authentication enabled for HTTP/SSE transport (static bearer token)")
+        logger.info("Authentication enabled for the HTTP transport (static bearer token)")
         return {"auth": verifier}
 
     provider = load_auth_provider(mcp_config.auth_module)
@@ -239,6 +250,10 @@ class ClickHouseFastMCP(FastMCP):
         upstream_http_app = super().http_app
         bound_args = inspect.signature(upstream_http_app).bind_partial(*args, **kwargs)
         transport = bound_args.arguments.get("transport", TransportType.HTTP.value)
+        if transport == REMOVED_SSE_TRANSPORT:
+            # Reject before auth resolution so no launch path (including
+            # fastmcp run --transport sse) can build an SSE app at all.
+            raise ValueError(_SSE_REMOVED_MESSAGE)
         mcp_config = get_mcp_config()
         trusted_proxies = mcp_config.trusted_proxies
         if _BUILTIN_HTTP_RAW_CLIENT.get():
@@ -277,10 +292,9 @@ class ClickHouseFastMCP(FastMCP):
             )
         # FastMCP 4 ships its own host_origin_protection option. It is left at its
         # default (off) on purpose and this project's middleware is used instead:
-        # the built-in guard is disabled by default, does not cover the SSE
-        # transport, has no /health exemption for orchestrator probes, and has no
-        # X-Forwarded-Host or trusted-proxy support. See D7 in
-        # MIGRATION_DECISIONS.md.
+        # the built-in guard is disabled by default, has no /health exemption for
+        # orchestrator probes, and has no X-Forwarded-Host or trusted-proxy
+        # support. See D7 in MIGRATION_DECISIONS.md.
         for configured_middleware in transport_security_middleware(mcp_config):
             app.add_middleware(configured_middleware.cls, **configured_middleware.kwargs)
         return app
