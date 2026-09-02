@@ -302,7 +302,7 @@ the test saturates the executor to prove it.
   so it would not conflict and would resolve the import issue above, but it
   changes the execution strategy from an ephemeral `--with` environment to a
   full project sync, and `fastmcp run fastmcp.json` could not be exercised end
-  to end here. Candidate for a follow-up.
+  to end here. Adopted in D25 once the end-to-end check was possible.
 - The D7 comment in `http_app` now gives the real reasons for keeping this
   project's DNS-rebinding middleware (built-in guard off by default, no SSE
   coverage, no `/health` exemption, no `X-Forwarded-Host` or trusted-proxy
@@ -374,6 +374,92 @@ the test saturates the executor to prove it.
 - Version numbers in `pyproject.toml` and `server.json` are left alone (D8
   stands). Whoever cuts the release decides the number; the FastMCP jump and
   SSE removal make it a breaking release.
+
+## D24. SSE is rejected in three places (implements D20)
+
+- `TransportType.SSE` is gone. `mcp_env.REMOVED_SSE_TRANSPORT = "sse"` is the
+  one place the string lives. `MCPServerConfig.server_transport` rejects it
+  (case-insensitively) with a dedicated migration message naming
+  `CLICKHOUSE_MCP_SERVER_TRANSPORT=http` and a streamable HTTP client; other
+  unknown values keep the generic message, which now lists only `stdio` and
+  `http`.
+- `ClickHouseFastMCP.http_app` rejects `transport="sse"` (keyword or
+  positional) before `_resolve_auth` runs, so no launch path, including
+  `fastmcp run --transport sse`, can build an SSE app. `_resolve_auth` rejects
+  it as well rather than returning `{}`, so an HTTP-family transport can never
+  resolve to "no auth". Both use one module-level message.
+- The `/sse` and `/messages/` endpoints are gone with the transport. The
+  boundary tests keep every streamable HTTP assertion the removed SSE cases
+  also made; positional-transport detection now uses `"streamable-http"`.
+- Open item F5 (an SSE-specific session-leak regression test) closes as moot.
+- Released CHANGELOG entries that mention SSE are history and were not edited.
+
+## D25. `fastmcp.json` sets `environment.project` and `deployment.cwd`
+
+- With only `environment.dependencies`, `fastmcp inspect fastmcp.json` from an
+  unrelated directory failed twice over: the relative `source.path` resolves
+  against the process working directory (FastMCP only resolves
+  `deployment.cwd` against the config file), and the ephemeral `uv run --with`
+  environment neither contains `fastmcp` nor installs `mcp_clickhouse`.
+- `"project": "."` makes the CLI run `uv run --project <repo> --with ...`, which
+  syncs the checkout and installs the package. Because `project` is resolved
+  against the working directory, `"deployment": {"cwd": "."}` is set as well;
+  the CLI applies it before building the uv command. Verified end to end with
+  `fastmcp inspect --format mcp` from `/tmp` against the committed manifest.
+- The `--with` dependency list is now redundant with the project sync but is
+  kept, and `tests/test_packaging_metadata.py` still keeps it in sync with
+  pyproject and now asserts `project` and `cwd`.
+- Consequence: `fastmcp run fastmcp.json` from a checkout loads the
+  repository's `.env` because the process working directory is the repository
+  root. That matches `python -m mcp_clickhouse.main` run from the root.
+
+## D26. Deprecated internals warn through a module `__getattr__` (implements D21)
+
+- `mcp_clickhouse/__init__.py` no longer imports `table_pagination_cache`,
+  `fetch_table_names_from_system`, `get_paginated_table_data`, or
+  `create_page_token` directly. A module `__getattr__` emits a
+  `DeprecationWarning` naming the attribute and returns the `mcp_server`
+  object, so `mcp_clickhouse.create_page_token is mcp_server.create_page_token`
+  still holds. Unknown attributes raise `AttributeError` as before.
+- The four names stay in `__all__` this release (`from mcp_clickhouse import *`
+  therefore warns once per name, which is the intended signal) and leave
+  `__all__` in the next minor release. `tests/test_public_api.py` pins the
+  warning, the identity, the silence of the supported API, and the `__all__`
+  membership so the removal is a deliberate edit.
+- Nothing inside the package imports these names from the package namespace;
+  `tests/test_pagination.py` now imports them from `mcp_clickhouse.mcp_server`
+  so the suite stays clean under `-W error::DeprecationWarning`.
+
+## D27. Queue B and CI calls
+
+- CI runs the suite on Python 3.10 and 3.13 (`fail-fast: false`); ruff runs
+  once, on the 3.13 leg. A weekly `fastmcp-latest` job (also
+  `workflow_dispatch`) syncs the pinned environment, runs
+  `uv pip install --upgrade "fastmcp>=4,<5"`, and runs the suite with
+  `uv run --no-sync` so uv does not restore the pin. It is gated off
+  `pull_request` and `push`, and the regular jobs are gated off `schedule`, so
+  it can never block a PR (D19).
+- A `fastmcp inspect --format mcp` snapshot in CI was considered and not
+  adopted: `tests/test_tool_contract.py` already asserts the annotations,
+  schemas, titles, and output-schema suppression through `Client.list_tools()`,
+  and a whole-document snapshot would churn on every FastMCP change without
+  saying which contract moved.
+- `example_middleware.py` gains `ClientConfigOverrideMiddleware`, the README
+  pattern as runnable code, registered fourth by its `setup_middleware`. Tests
+  load the module through the `MCP_MIDDLEWARE_MODULE` hook on a fresh
+  `FastMCP("t")`, never the singleton, and spy on `Context.set_state` to pin
+  `serializable=False`.
+- Protocol negotiation is pinned against the real app: 2025-03-26, 2025-06-18,
+  and 2025-11-25 are echoed; 2026-07-28 is downgraded to 2025-11-25 over a
+  plain `initialize` POST and still gets an `mcp-session-id`, so every session
+  this server issues is handshake-era and D9 stays load bearing.
+  `stateless_http=True` removes the session id and leaves the 421 and 401
+  gates intact. `fastmcp.settings.http_host_origin_protection` is pinned at
+  `False` and `HostOriginGuardMiddleware` is asserted absent from the app.
+- The metadata-tool responsiveness tests are event-gated: the sync helper is
+  parked on a `threading.Event` inside `QUERY_EXECUTOR` while a concurrent
+  `list_tools` must complete. `Client.ping()` is not implemented by this
+  server's in-memory transport, so `list_tools` is the probe.
 
 ## Review findings and resolutions
 
