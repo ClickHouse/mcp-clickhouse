@@ -650,6 +650,17 @@ fixed here; the rest are pre-existing and deferred (D31).
 - The `query` parameter of both query tools gains a description through an
   `Args:` block on the MCP-facing wrappers; it was the only undocumented
   parameter, and FastMCP 4's docstring parser made the fix a docstring edit.
+- A second tester run on the rebuilt wheel confirmed all four fixes (the
+  mode-aware description was called out as the reason the write-mode
+  configurations are now distinguishable; the chDB tool error was called
+  consistent with `run_query`). It also found that release 0.5.0 already
+  emitted an output schema and `structuredContent: {"result": "<json>"}`,
+  which D15 removes; the CHANGELOG entry now states that break instead of
+  saying "as before". Two description nits from that run were fixed:
+  `list_tables` promised a "column count" field that does not exist, and the
+  write-mode `run_query` descriptions now say every statement is subject to
+  the ClickHouse user's grants (the `reader` configuration had made the
+  description over-promise).
 - Verified clean by the tester and not changed: HTTP auth, Host, and Origin
   gates over a real uvicorn process; the write and drop gates including the
   string-literal and comment edge cases; `list_tables` metadata parity between
@@ -712,6 +723,22 @@ user chooses. None blocks the FastMCP 4 PR.
    Agent Skills line in the server instructions is the 0.4.1 feature; prompts
    and annotations are invisible in the Claude Code client, which is a client
    limitation.
+9. Added by the second run: `DateTime64` text drops the fraction when it is
+   zero and keeps it otherwise (`2025-01-01 00:00:00+00:00` next to
+   `2025-01-01 00:00:00.123000+00:00` in one column), and the offset is the
+   ClickHouse server's timezone (`+01:00` on the 24.10 fixture), so the same
+   data renders differently on two servers; a single UInt64 column mixes JSON
+   numbers and strings around 2^53 (documented, still a footgun); the
+   `INSERT` into a missing table under read-only fails with `UNKNOWN_TABLE`
+   because ClickHouse resolves the table first, so the server could pre-empt
+   with its own read-only message for non-read statements when the write gate
+   is off (belongs with item 3); `columns[].database` and `columns[].table`
+   repeat the parent table on every column; the `page_size` validation error
+   is pydantic's text with an errors.pydantic.dev link; ClickHouse syntax
+   errors relay the full "Expected one of" list (about 2 KB); `open_world_hint`
+   is True on every tool although each talks to one configured database (D14
+   chose True because the database is external; debatable, left alone);
+   `serverInfo.version` is 0.5.0 on both builds until release prep bumps it.
 
 ## Review findings and resolutions
 
