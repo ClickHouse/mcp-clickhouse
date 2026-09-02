@@ -8,7 +8,7 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 
-from mcp_clickhouse import mcp_server
+from mcp_clickhouse import mcp_env, mcp_server
 from mcp_clickhouse.mcp_server import MCP_SERVER_WEBSITE_URL, mcp
 
 _READ_ONLY_ANNOTATIONS = {
@@ -46,12 +46,14 @@ def _annotations(tool) -> dict:
                 "open_world_hint": True,
             },
         ),
+        # The drop gate is a keyword guard, not a boundary, so write access is
+        # destructive with or without it.
         (
             True,
             False,
             {
                 "read_only_hint": False,
-                "destructive_hint": False,
+                "destructive_hint": True,
                 "idempotent_hint": False,
                 "open_world_hint": True,
             },
@@ -84,7 +86,7 @@ async def test_run_query_annotations_track_write_and_drop_gates(
 ):
     server = FastMCP("annotations-test")
     with patch.object(
-        mcp_server, "get_config", return_value=_config(allow_write_access, allow_drop)
+        mcp_server, "ClickHouseConfig", return_value=_config(allow_write_access, allow_drop)
     ):
         mcp_server._register_clickhouse_tools(server)
 
@@ -96,12 +98,56 @@ async def test_run_query_annotations_track_write_and_drop_gates(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("allow_write_access", "allow_drop", "read_only_hint", "destructive_hint"),
+    [
+        (None, None, True, False),
+        ("true", None, False, True),
+        ("true", "true", False, True),
+        (None, "true", True, False),
+    ],
+)
+async def test_run_query_annotations_are_read_from_the_environment(
+    monkeypatch, allow_write_access, allow_drop, read_only_hint, destructive_hint
+):
+    """The gates reach the annotations through ClickHouseConfig, not a stand-in.
+
+    Registration builds a throwaway config, so no singleton reset is needed and
+    the cached get_config() instance is left alone.
+    """
+    monkeypatch.setenv("CLICKHOUSE_ENABLED", "true")
+    monkeypatch.setenv("CLICKHOUSE_HOST", "localhost")
+    monkeypatch.setenv("CLICKHOUSE_USER", "default")
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "secret")
+    for name, value in (
+        ("CLICKHOUSE_ALLOW_WRITE_ACCESS", allow_write_access),
+        ("CLICKHOUSE_ALLOW_DROP", allow_drop),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    singleton_before = mcp_env._CONFIG_INSTANCE
+
+    server = FastMCP("annotations-env-test")
+    mcp_server._register_clickhouse_tools(server)
+
+    assert mcp_env._CONFIG_INSTANCE is singleton_before
+    tools = await _list_tools_by_name(server)
+    annotations = _annotations(tools["run_query"])
+    assert annotations["read_only_hint"] is read_only_hint
+    assert annotations["destructive_hint"] is destructive_hint
+    assert annotations["idempotent_hint"] is False
+    assert annotations["open_world_hint"] is True
+
+
+@pytest.mark.asyncio
 async def test_registration_survives_incomplete_config_and_advertises_read_only():
     """Import never failed on missing connection variables; keep it that way."""
     server = FastMCP("annotations-test")
     with patch.object(
         mcp_server,
-        "get_config",
+        "ClickHouseConfig",
         side_effect=ValueError("Missing required environment variables: CLICKHOUSE_HOST"),
     ):
         mcp_server._register_clickhouse_tools(server)

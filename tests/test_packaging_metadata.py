@@ -37,19 +37,26 @@ def _normalize(name: str) -> str:
     return name.strip().lower().replace("_", "-")
 
 
+def _declared_dependency_names() -> tuple[set[str], set[str]]:
+    """Return normalized names of required and optional-extra dependencies."""
+    requirement_strings = requires(PACKAGE_NAME) or []
+    ignored = {_normalize(pkg) for pkg in IGNORED_PACKAGES}
+    required = set()
+    extras = set()
+    for requirement_string in requirement_strings:
+        normalized = _normalize(_parse_requirement_name(requirement_string))
+        if normalized in ignored:
+            continue
+        if "extra ==" in requirement_string:
+            extras.add(normalized)
+        else:
+            required.add(normalized)
+    return required, extras
+
+
 def _runtime_dependency_names() -> set[str]:
     """Return normalized names of mcp-clickhouse's required (non-extra) dependencies."""
-    requirement_strings = requires(PACKAGE_NAME) or []
-    names = set()
-    for requirement_string in requirement_strings:
-        if "extra ==" in requirement_string:
-            continue
-        name = _parse_requirement_name(requirement_string)
-        normalized = _normalize(name)
-        if normalized in {_normalize(pkg) for pkg in IGNORED_PACKAGES}:
-            continue
-        names.add(normalized)
-    return names
+    return _declared_dependency_names()[0]
 
 
 def _fastmcp_json_dependency_names() -> set[str]:
@@ -71,11 +78,12 @@ def test_fastmcp_json_lists_every_runtime_dependency():
 
 
 def test_fastmcp_json_has_no_stale_dependencies():
-    runtime_dependencies = _runtime_dependency_names()
+    """Optional extras such as chdb may be listed; unknown packages may not."""
+    runtime_dependencies, optional_dependencies = _declared_dependency_names()
     fastmcp_json_dependencies = _fastmcp_json_dependency_names()
 
-    stale = fastmcp_json_dependencies - runtime_dependencies
+    stale = fastmcp_json_dependencies - runtime_dependencies - optional_dependencies
     assert not stale, (
-        f"fastmcp.json environment.dependencies lists packages that are not runtime "
-        f"dependencies of {PACKAGE_NAME} in pyproject.toml: {sorted(stale)}."
+        f"fastmcp.json environment.dependencies lists packages that are neither runtime "
+        f"nor optional dependencies of {PACKAGE_NAME} in pyproject.toml: {sorted(stale)}."
     )

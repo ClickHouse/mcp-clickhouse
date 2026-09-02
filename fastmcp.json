@@ -12,7 +12,9 @@
       "cachetools",
       "simplejson",
       "uvicorn",
-      "starlette"
+      "starlette",
+      "mcp",
+      "pydantic"
     ]
   }
 }

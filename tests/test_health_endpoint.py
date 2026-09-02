@@ -1,8 +1,8 @@
 """GET /health through the real exported ASGI app.
 
 The direct handler tests in test_optional_chdb.py exercise ``health_check`` with a
-hand-built Request, and test_http_security_boundary.py checks the exemption with a
-stub route on a throwaway server. These tests drive the module singleton's
+hand-built Request, and test_http_security.py checks the exemption against a
+recording stub app. These tests drive the module singleton's
 ``http_app`` so the real route, auth provider, and transport-security middleware are
 all in the path.
 """
@@ -96,12 +96,15 @@ def test_health_failure_body_is_minimal_and_leaks_nothing(authenticated_app_env)
     app = mcp_server.mcp.http_app(transport="http")
 
     with (
-        patch.object(mcp_server, "_resolve_client_config", return_value={}),
-        patch.object(mcp_server, "_probe_clickhouse_health", side_effect=raise_with_secrets),
+        patch.object(
+            mcp_server, "_probe_clickhouse_health", side_effect=raise_with_secrets
+        ) as probe,
         TestClient(app) as client,
     ):
         response = client.get("/health")
 
+    # The injected exception is the one the handler swallowed.
+    probe.assert_called_once()
     assert response.status_code == 503
     assert response.text == _HEALTH_FAILURE_BODY
     lowered = response.text.lower()
@@ -121,7 +124,6 @@ def test_health_body_never_carries_backend_version(authenticated_app_env):
     app = mcp_server.mcp.http_app(transport="http")
 
     with (
-        patch.object(mcp_server, "_resolve_client_config", return_value={}),
         patch.object(mcp_server, "_probe_clickhouse_health", return_value=None),
         TestClient(app) as client,
     ):
@@ -140,7 +142,6 @@ def test_health_exemption_from_host_and_origin_checks_is_exact_in_real_app(
     app = mcp_server.mcp.http_app(transport=transport)
 
     with (
-        patch.object(mcp_server, "_resolve_client_config", return_value={}),
         patch.object(mcp_server, "_probe_clickhouse_health", return_value=None),
         TestClient(app) as client,
     ):

@@ -39,7 +39,13 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 from mcp_clickhouse.http_security import transport_security_middleware
 from mcp_clickhouse.mcp_auth_hook import load_auth_provider
-from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
+from mcp_clickhouse.mcp_env import (
+    ClickHouseConfig,
+    TransportType,
+    get_chdb_config,
+    get_config,
+    get_mcp_config,
+)
 from mcp_clickhouse.skills_advisor import CLICKHOUSE_SERVER_INSTRUCTIONS
 
 
@@ -2141,19 +2147,22 @@ def _register_chdb_tools():
 
 
 def _run_query_annotations(config: Any) -> ToolAnnotations:
-    """Derive run_query tool annotations from the write and drop gates.
+    """Derive run_query tool annotations from the write gate.
 
     The annotations are part of the observable tool contract and must track
-    CLICKHOUSE_ALLOW_WRITE_ACCESS and CLICKHOUSE_ALLOW_DROP: read-only mode
-    is advertised as read_only_hint=True, write access without the drop gate
-    as writable but non-destructive, and write access with the drop gate as
-    destructive. run_query is never idempotent and always reaches an external
-    database.
+    CLICKHOUSE_ALLOW_WRITE_ACCESS: read-only mode is advertised as
+    read_only_hint=True, destructive_hint=False; write access as
+    read_only_hint=False, destructive_hint=True. CLICKHOUSE_ALLOW_DROP does not
+    lower destructive_hint because the drop gate is a best-effort keyword guard,
+    not a boundary: statements such as ALTER TABLE ... MODIFY COLUMN,
+    OPTIMIZE ... DEDUPLICATE, and ALTER TABLE ... MOVE PARTITION pass it and
+    still destroy data. run_query is never idempotent and always reaches an
+    external database.
     """
     allow_write_access = bool(config.allow_write_access)
     return ToolAnnotations(
         read_only_hint=not allow_write_access,
-        destructive_hint=allow_write_access and bool(config.allow_drop),
+        destructive_hint=allow_write_access,
         idempotent_hint=False,
         open_world_hint=True,
     )
@@ -2166,7 +2175,10 @@ def _register_clickhouse_tools(server: FastMCP) -> None:
     module load, or on a fresh FastMCP instance in tests.
     """
     try:
-        run_query_annotations = _run_query_annotations(get_config())
+        # A throwaway instance, not get_config(): the singleton must not be
+        # created at import, so later environment changes still get the lazy
+        # validation on the first tool call.
+        run_query_annotations = _run_query_annotations(ClickHouseConfig())
     except ValueError:
         # Required connection variables are missing. Importing the module has
         # never failed for that; the first tool call reports it. Advertise the

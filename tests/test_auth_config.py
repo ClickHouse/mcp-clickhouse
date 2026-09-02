@@ -276,16 +276,18 @@ def test_load_auth_provider_accepts_any_auth_provider_subclass(monkeypatch: pyte
 def example_auth_module(monkeypatch: pytest.MonkeyPatch):
     """Make the repo-root example_auth.py importable and scrub MCP_AUTH_* env vars.
 
-    Every MCP_AUTH_* variable is cleared before the test runs, and the cached
-    `example_auth` module is dropped both before and after, so this fixture
-    neither depends on nor leaks developer environment or module state.
+    Every MCP_AUTH_* variable is cleared before the test runs. A pre-existing
+    cached `example_auth` module is removed through monkeypatch so it is put
+    back on teardown; the module imported during the test is popped directly,
+    because monkeypatch.delitem on a key the test added would be undone and
+    would leak the module into later tests.
     """
     for var in EXAMPLE_AUTH_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.delitem(sys.modules, "example_auth", raising=False)
     monkeypatch.syspath_prepend(REPO_ROOT)
     yield
-    monkeypatch.delitem(sys.modules, "example_auth", raising=False)
+    sys.modules.pop("example_auth", None)
 
 
 def test_load_auth_provider_example_auth_happy_path(
