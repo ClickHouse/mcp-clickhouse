@@ -9,7 +9,6 @@ starts failing the moment someone fixes the underlying gap, which is the signal
 to remove the marker.
 """
 
-import importlib.metadata
 import json
 import re
 from pathlib import Path
@@ -24,6 +23,7 @@ except ImportError:  # pragma: no cover - packaging is a transitive dependency h
     _HAS_PACKAGING = False
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_PYPROJECT_PATH = _REPO_ROOT / "pyproject.toml"
 _SERVER_JSON_PATH = _REPO_ROOT / "server.json"
 _README_PATH = _REPO_ROOT / "README.md"
 _MCP_ENV_PATH = _REPO_ROOT / "mcp_clickhouse" / "mcp_env.py"
@@ -36,7 +36,10 @@ def _load_server_json() -> dict:
 
 
 def _pyproject_version() -> str:
-    return importlib.metadata.version("mcp-clickhouse")
+    """The [project] version string in pyproject.toml (no tomllib on Python 3.10)."""
+    match = re.search(r'^version = "([^"]+)"$', _PYPROJECT_PATH.read_text(), re.M)
+    assert match is not None, "pyproject.toml has no [project] version line"
+    return match.group(1)
 
 
 def _oci_tag(identifier: str) -> str:

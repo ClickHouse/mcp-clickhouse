@@ -461,6 +461,18 @@ def test_http_app_detects_positional_transport(monkeypatch: pytest.MonkeyPatch):
     assert seen_transports == ["streamable-http"]
 
 
+@pytest.mark.parametrize("value", ["SSE", "Sse"])
+def test_http_app_rejects_sse_transport_in_any_case(monkeypatch: pytest.MonkeyPatch, value: str):
+    """mcp_env lowercases the env value; the http_app and _resolve_auth checks match it."""
+    clear_http_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
+
+    with pytest.raises(ValueError, match="SSE transport was removed"):
+        ClickHouseFastMCP("test").http_app(transport=value)
+    with pytest.raises(ValueError, match="SSE transport was removed"):
+        mcp_server_module._resolve_auth(mcp_server_module.get_mcp_config(), transport=value)
+
+
 def test_http_app_rejects_positional_sse_transport(monkeypatch: pytest.MonkeyPatch):
     clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")

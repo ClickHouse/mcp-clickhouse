@@ -145,6 +145,11 @@ _SSE_REMOVED_MESSAGE = (
 _BUILTIN_HTTP_RAW_CLIENT = ContextVar("builtin_http_raw_client", default=False)
 
 
+def _is_removed_sse_transport(transport: Any) -> bool:
+    """True for the removed SSE transport in any letter case."""
+    return isinstance(transport, str) and transport.lower() == REMOVED_SSE_TRANSPORT
+
+
 def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]:
     """Resolve FastMCP auth kwargs for the requested transport.
 
@@ -162,7 +167,7 @@ def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]
     never resolve to "no auth required" through any caller.
     """
     transport = transport or mcp_config.server_transport
-    if transport == REMOVED_SSE_TRANSPORT:
+    if _is_removed_sse_transport(transport):
         raise ValueError(_SSE_REMOVED_MESSAGE)
     if transport not in _HTTP_TRANSPORTS:
         return {}
@@ -250,7 +255,7 @@ class ClickHouseFastMCP(FastMCP):
         upstream_http_app = super().http_app
         bound_args = inspect.signature(upstream_http_app).bind_partial(*args, **kwargs)
         transport = bound_args.arguments.get("transport", TransportType.HTTP.value)
-        if transport == REMOVED_SSE_TRANSPORT:
+        if _is_removed_sse_transport(transport):
             # Reject before auth resolution so no launch path (including
             # fastmcp run --transport sse) can build an SSE app at all.
             raise ValueError(_SSE_REMOVED_MESSAGE)

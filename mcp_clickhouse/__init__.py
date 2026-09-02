@@ -44,6 +44,12 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def __dir__():
+    # Keep the deprecated names visible to dir(), help(), and inspect while they
+    # are still exported, so the deprecation is discoverable.
+    return sorted(set(globals()) | set(_DEPRECATED_INTERNALS))
+
+
 __all__ = [
     "list_databases",
     "list_tables",

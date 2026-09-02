@@ -53,6 +53,15 @@ def test_deprecated_internals_are_still_listed_in_all_this_release():
     assert set(SUPPORTED_API) <= set(mcp_clickhouse.__all__)
 
 
+def test_deprecated_internals_are_listed_by_dir_without_warning():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        listed = dir(mcp_clickhouse)
+
+    assert set(DEPRECATED_INTERNALS) <= set(listed)
+    assert set(SUPPORTED_API) <= set(listed)
+
+
 def test_unknown_attribute_still_raises_attribute_error():
     with pytest.raises(AttributeError, match="no attribute 'definitely_missing'"):
         mcp_clickhouse.definitely_missing
