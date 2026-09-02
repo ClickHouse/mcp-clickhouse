@@ -1,6 +1,7 @@
 import asyncio
 import atexit
 import concurrent.futures
+import importlib.metadata
 import inspect
 import json
 import logging
@@ -29,6 +30,7 @@ from fastmcp.prompts import Prompt
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from fastmcp.server.dependencies import get_context
 from fastmcp.tools import Tool
+from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
@@ -90,6 +92,7 @@ class _ActiveQueryState:
 
 
 MCP_SERVER_NAME = "mcp-clickhouse"
+MCP_SERVER_WEBSITE_URL = "https://github.com/ClickHouse/mcp-clickhouse"
 CLIENT_CONFIG_OVERRIDES_KEY = "clickhouse_client_config_overrides"
 _CLIENT_CONFIG_OVERRIDES_UNSET = object()
 _NESTED_CLIENT_CONFIG_KEYS = ("settings", "generic_args")
@@ -267,9 +270,11 @@ class ClickHouseFastMCP(FastMCP):
                 trusted_hosts=_proxy_header_trusted_hosts(trusted_proxies),
             )
         # FastMCP 4 ships its own host_origin_protection option. It is left at its
-        # default (off) on purpose: the middleware below covers Host and Origin
-        # validation, trusted proxies, and the /health exemption, and enabling both
-        # would double-validate with different status codes.
+        # default (off) on purpose and this project's middleware is used instead:
+        # the built-in guard is disabled by default, does not cover the SSE
+        # transport, has no /health exemption for orchestrator probes, and has no
+        # X-Forwarded-Host or trusted-proxy support. See D7 in
+        # MIGRATION_DECISIONS.md.
         for configured_middleware in transport_security_middleware(mcp_config):
             app.add_middleware(configured_middleware.cls, **configured_middleware.kwargs)
         return app
@@ -303,9 +308,19 @@ class ClickHouseFastMCP(FastMCP):
             _BUILTIN_HTTP_RAW_CLIENT.reset(token)
 
 
+def _package_version() -> Optional[str]:
+    """Return the installed mcp-clickhouse version, or None when not installed."""
+    try:
+        return importlib.metadata.version(MCP_SERVER_NAME)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
 mcp = ClickHouseFastMCP(
     name=MCP_SERVER_NAME,
     instructions=CLICKHOUSE_SERVER_INSTRUCTIONS,
+    version=_package_version(),
+    website_url=MCP_SERVER_WEBSITE_URL,
 )
 _chdb_client = None
 _chdb_error_message: Optional[str] = None
@@ -2072,6 +2087,22 @@ def _init_chdb_client():
         return None
 
 
+# Metadata and chDB tools read from an external engine without mutating it.
+_READ_ONLY_TOOL_ANNOTATIONS = ToolAnnotations(
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=True,
+)
+# run_query in the default read-only mode; see _run_query_annotations.
+_READ_ONLY_RUN_QUERY_ANNOTATIONS = ToolAnnotations(
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=False,
+    open_world_hint=True,
+)
+
+
 def _register_chdb_tools():
     """Register chDB tools when the feature is enabled and available.
 
@@ -2096,6 +2127,8 @@ def _register_chdb_tools():
                 "Run SQL in chDB, an in-process ClickHouse engine. Integers outside "
                 "[-9007199254740991, 9007199254740991] are returned as decimal strings."
             ),
+            annotations=_READ_ONLY_TOOL_ANNOTATIONS,
+            output_schema=None,
         )
     )
     chdb_prompt = Prompt.from_function(
@@ -2107,9 +2140,55 @@ def _register_chdb_tools():
     logger.info("chDB tools and prompts registered")
 
 
-if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
-    mcp.add_tool(Tool.from_function(list_databases_async, name="list_databases"))
-    mcp.add_tool(
+def _run_query_annotations(config: Any) -> ToolAnnotations:
+    """Derive run_query tool annotations from the write and drop gates.
+
+    The annotations are part of the observable tool contract and must track
+    CLICKHOUSE_ALLOW_WRITE_ACCESS and CLICKHOUSE_ALLOW_DROP: read-only mode
+    is advertised as read_only_hint=True, write access without the drop gate
+    as writable but non-destructive, and write access with the drop gate as
+    destructive. run_query is never idempotent and always reaches an external
+    database.
+    """
+    allow_write_access = bool(config.allow_write_access)
+    return ToolAnnotations(
+        read_only_hint=not allow_write_access,
+        destructive_hint=allow_write_access and bool(config.allow_drop),
+        idempotent_hint=False,
+        open_world_hint=True,
+    )
+
+
+def _register_clickhouse_tools(server: FastMCP) -> None:
+    """Register the ClickHouse tools on the given server.
+
+    Note: This function is not idempotent. It is intended to be called once at
+    module load, or on a fresh FastMCP instance in tests.
+    """
+    try:
+        run_query_annotations = _run_query_annotations(get_config())
+    except ValueError:
+        # Required connection variables are missing. Importing the module has
+        # never failed for that; the first tool call reports it. Advertise the
+        # default read-only mode so registration still succeeds.
+        logger.warning(
+            "ClickHouse configuration is incomplete; advertising run_query as "
+            "read-only until the first tool call reports the missing variables"
+        )
+        run_query_annotations = _READ_ONLY_RUN_QUERY_ANNOTATIONS
+
+    # output_schema=None on every tool: results are JSON-encoded strings by
+    # contract, and FastMCP 4 would otherwise derive a {"result": string}
+    # schema and echo the same string again as structured_content.
+    server.add_tool(
+        Tool.from_function(
+            list_databases_async,
+            name="list_databases",
+            annotations=_READ_ONLY_TOOL_ANNOTATIONS,
+            output_schema=None,
+        )
+    )
+    server.add_tool(
         Tool.from_function(
             list_tables_async,
             name="list_tables",
@@ -2122,9 +2201,13 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
                 "outside [-9007199254740991, 9007199254740991] in table metadata are "
                 "returned as decimal strings."
             ),
+            annotations=_READ_ONLY_TOOL_ANNOTATIONS,
+            output_schema=None,
         )
     )
-    mcp.add_tool(
+    # FastMCP's per-tool timeout= is deliberately not used: it would abandon the
+    # running query, whereas CLICKHOUSE_MCP_QUERY_TIMEOUT issues KILL QUERY.
+    server.add_tool(
         Tool.from_function(
             run_query_async,
             name="run_query",
@@ -2137,9 +2220,14 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
                 "accident guard, not a security boundary. Integers outside "
                 "[-9007199254740991, 9007199254740991] are returned as decimal strings."
             ),
+            annotations=run_query_annotations,
+            output_schema=None,
         )
     )
     logger.info("ClickHouse tools registered")
 
+
+if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
+    _register_clickhouse_tools(mcp)
 
 _register_chdb_tools()
