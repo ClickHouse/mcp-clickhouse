@@ -292,13 +292,12 @@ state; `http_app` does not mutate the shared `mcp` instance; explicit
 ## Remaining open items
 
 - No SSE-transport regression test for the session-state leak (F5).
-- `tests/test_mcp_server.py::test_system_database_access` fails on ClickHouse
-  26.8 because the test requests `page_size=100` and the `system` database now
-  holds 139 tables, so `tables` (alphabetical position 124) falls on the second
-  page. Ordering is unchanged. It passes on the CI image 24.10 only because that
-  image has fewer than 100 system tables, so it will break there too as the
-  image advances. Pre-existing; fix is to assert on a table inside the first
-  page or follow `next_page_token`.
+- Resolved: `tests/test_mcp_server.py::test_system_database_access` failed on
+  ClickHouse 26.8 because it requested `page_size=100` and the `system` database
+  now holds 139 tables, so `tables` (alphabetical position 124) fell on the
+  second page. The test now follows `next_page_token` until it is null, asserts
+  the collected count equals `total_tables`, and checks the expected names in
+  the union, so it is independent of the ClickHouse version.
 - A stale worktree from an earlier session sits at
   `.claude/worktrees/agent-a688a0c4ef7bbe86d` with uncommitted `pyproject.toml`
   and `uv.lock` edits. It is untracked and was left alone.
