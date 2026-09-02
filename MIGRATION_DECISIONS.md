@@ -96,83 +96,130 @@ codes. A code comment records this.
 `pyproject.toml` version and `server.json` are left for release preparation. The
 CHANGELOG gets an `Unreleased` section.
 
-## Open review findings (not yet addressed)
+## D9. Context-state overrides require `serializable=False`; the server consumes the key
 
-An adversarial review of the code diff ran after the three commits. Findings are
-recorded here so work can resume. None have been fixed yet. Repro scripts live in
-`/Users/al/.claude/jobs/f89fd35a/tmp/` (`leak_raw.py`, `opaque.py`) and are not
-committed.
+FastMCP 4 `Context.set_state` defaults to `serializable=True`, which writes to a
+session-scoped store keyed by `mcp-session-id` with a 24 hour TTL. That store is
+shared by every request in a streamable-HTTP session, so the request-scoped
+contract in AGENTS.md only holds when middleware passes `serializable=False`,
+which stores the value in FastMCP's per-request dict. This is now the documented
+and required pattern (README, CHANGELOG, test middleware).
+
+Defense in depth: `_get_client_config_overrides` deletes the key after a
+successful snapshot, so a value written with the default `set_state` is consumed
+by exactly one request instead of every later call in the session. Details:
+
+- The delete runs after `_snapshot_client_config_overrides` succeeds, so an
+  invalid value still fails the tool call with a `ToolError` and is not silently
+  discarded.
+- Concurrent requests within one session can still observe each other's
+  session-scoped value before the delete runs. That race is inherent to the
+  session store and is why `serializable=False` is required rather than advised.
+- Opaque values such as `pool_mgr` fail inside `set_state` itself when the
+  default is used; only `serializable=False` fixes that, and the boundary test
+  covers it.
+- The regression test drives two sequential tool calls over real streamable HTTP
+  through Starlette's `TestClient`, echoing `mcp-session-id`, because
+  `fastmcp.Client` never resends the header and so cannot observe the leak.
+
+## D10. `list_tables` is registered with an explicit `description=`
+
+FastMCP 4 parses docstrings with griffe and drops the `Returns:` block from the
+tool description. The `list_tables` response shape (`tables`, `next_page_token`,
+`total_tables`) is part of the public contract, so it is stated in an explicit
+`description=` as `run_query` already does. An explicit description does not
+suppress the per-parameter descriptions parsed from the docstring `Args:`
+entries (verified against fastmcp 4.0.0). `list_databases` keeps its docstring
+description because it had no `Returns:` block. The CHANGELOG records the other
+parser-driven changes: `Args:` entries now appear as per-parameter `description`
+fields and every input schema declares `additionalProperties: false`.
+
+## D11. Metadata tools keep the shared query timeout without `KILL QUERY`
+
+`list_databases` and `list_tables` previously had no MCP-side timeout. They now
+fail with a `ToolError` after `CLICKHOUSE_MCP_QUERY_TIMEOUT`, which is documented
+in the CHANGELOG with the mitigation (raise the timeout or pass
+`include_detailed_columns=false`). Registering metadata queries for server-side
+`KILL QUERY` would mean threading a `query_id` through several `system.tables`
+and `system.columns` queries; not worth it for metadata reads. The docstring now
+states the real worker-release behavior: the `send_receive_timeout` cap applies
+only when `CLICKHOUSE_SEND_RECEIVE_TIMEOUT` is unset and not overridden by
+middleware, otherwise a timed-out call can hold a worker until the HTTP read
+finishes.
+
+## D12. `http_app` auth swap is serialized; auth factory errors are wrapped
+
+- A process-wide `threading.Lock` guards the temporary `self.auth` swap in
+  `ClickHouseFastMCP.http_app`. One lock rather than per-instance because app
+  construction is startup-only and this is the simplest correct shape. The test
+  asserts the lock is held during the upstream call; a timing-based interleaving
+  test would be flaky.
+- `load_auth_provider` wraps any exception from `create_auth_provider()` in a
+  `ValueError` naming `CLICKHOUSE_MCP_AUTH_MODULE`, the module, and the factory,
+  with the original chained. `ValueError` rather than a new type so all
+  module-shape problems surface as one exception type to `_resolve_auth`. The
+  factory's own message is included verbatim, and the docstring tells operators
+  not to embed secrets in exceptions.
+
+## Review findings and resolutions
+
+An adversarial review of the code diff ran after the first three commits.
+Repro scripts live in `/Users/al/.claude/jobs/f89fd35a/tmp/` (`leak_raw.py`,
+`opaque.py`) and are not committed. Note the FastMCP 4 lockfile ships `httpx2`,
+not `httpx`, so ad hoc scripts need `import httpx2 as httpx`.
 
 ### R1 (high, confirmed). Overrides leak across requests within one HTTP session
 
-FastMCP 4 `Context.set_state` defaults to `serializable=True`, which writes to a
-session-scoped in-memory store keyed by `mcp-session-id` with a 24 hour TTL. The
-migration adopted `await ctx.set_state(...)` without `serializable=False`, so a
-middleware that sets overrides on one call leaves them active for every later
-call in the same streamable-HTTP session. Confirmed with a raw HTTP client that
-echoes `mcp-session-id`; `fastmcp.Client` does not resend the header, which is
-why the suite did not catch it. This violates the request-scoped contract in
-AGENTS.md and the README text added in this branch is wrong on this point.
-Proposed fix: document and use `serializable=False` in the README example and
-`example_middleware.py`, and have `_get_client_config_overrides` delete the key
-after capture as defense in depth. Add a boundary test that drives two sequential
-calls over real streamable HTTP with the session header.
+Resolved by D9. `leak_raw.py` before: call 1 `["db_98"]`, call 2 `["db_98"]`.
+After: call 1 `["db_98"]`, call 2 `["db_30"]`. The new HTTP session test fails on
+the unpatched capture code and passes with the fix.
 
 ### R2 (high, confirmed). Opaque override values now fail the tool call
 
-Same root cause. `_snapshot_client_config_overrides` deliberately preserves
-non-serializable objects such as `pool_mgr`, but `set_state(serializable=True)`
-raises `TypeError` for them and the client sees an internal server error.
-`serializable=False` fixes this as well.
+Resolved by D9. With `serializable=False` a `pool_mgr` object reaches
+`clickhouse_connect.get_client` by identity (boundary test added). With the
+default `set_state` the failure happens inside FastMCP before the server runs,
+which is why the pattern is required.
 
 ### R3 (medium, confirmed). `list_tables` validation errors name the wrapper
 
-Pydantic error text now reads `call[list_tables_async]` instead of
-`call[list_tables]`. Set `__name__` on both async wrappers to the tool name.
+Resolved. `__name__` and `__qualname__` on both async wrappers are set to the
+tool names; a boundary test asserts the `page_size=0` error names `list_tables`
+and not `list_tables_async`.
 
 ### R4 (medium, confirmed). Tool descriptions and schemas changed under FastMCP 4
 
-FastMCP 4 parses docstrings with griffe. The `Returns:` block of `list_tables`
-(documenting `tables`, `next_page_token`, `total_tables`) is dropped from the
-description; `Args:` entries moved into per-parameter descriptions; all input
-schemas gained `additionalProperties: false`. Not caused by repo code, but a
-public-contract change to acknowledge in the CHANGELOG. If the response shape
-matters, move it into an explicit `description=` as `run_query` already does.
+Resolved by D10 and the CHANGELOG entry.
 
 ### R5 (medium). Metadata tool timeout is new, untested, and under-documented
 
-`list_databases` and `list_tables` previously had no timeout; they are now
-capped by `CLICKHOUSE_MCP_QUERY_TIMEOUT` (default 30s). A long `list_tables`
-with detailed columns that used to succeed can now fail. The
-`_run_metadata_tool` docstring claims the send/receive cap releases the worker,
-but that cap is skipped when `CLICKHOUSE_SEND_RECEIVE_TIMEOUT` is set or
-overridden, so a timed-out metadata call can pin a worker with no `KILL QUERY`.
-No tests cover `_run_metadata_tool` timeout or error propagation. `mcp_env.py`
-still describes the variable as a SELECT tool timeout.
+Resolved by D11. `_run_metadata_tool` now has unit tests for success, timeout
+(`ToolError` text and `logger.warning`), `ToolError` and generic exception
+propagation, and caller cancellation. `mcp_env.py` describes the variable as the
+timeout for `run_query`, `list_databases`, and `list_tables`, matching the README.
 
 ### R6 (low). Session store growth under the documented middleware pattern
 
-With `serializable=True`, every tool call writes a 24 hour entry into an
-unbounded process-wide store. `serializable=False` avoids the store entirely.
+Resolved by D9. `serializable=False` never touches the session store, and the
+delete-after-capture removes any entry written by legacy middleware.
 
 ### R7 (low, pre-existing). `self.auth` swap in `http_app` is not thread-safe
 
-Two concurrent `http_app()` calls on one instance could interleave so that the
-second builds an unauthenticated app. Same shape as on `main`; startup-only in
-practice. A `threading.Lock` around the swap removes it.
+Resolved by D12.
 
 ### R8 (low). `mcp_auth_hook` docstring overstates guarantees
 
-The factory call has no exception handling, so operator errors propagate
-verbatim, and only `ImportError` is wrapped with the env var name. No secret is
-echoed by repo code; this is docstring accuracy plus error ergonomics.
+Resolved by D12.
 
 ### Test-quality notes from the review
 
-- Three `run_http_async` tests monkeypatch the upstream with a `**kwargs` fake,
-  so nothing now validates binding against the real FastMCP 4 signature.
-- `AsyncMock` usage is genuine, and the new list-tool boundary test asserts end
-  to end. Removed FastMCP 2.12/2.13 tests left no coverage gap.
+- The three `run_http_async` tests keep their `**kwargs` fakes because they
+  exercise the kwargs-merging logic. A new test binds the exact keyword sets the
+  CLI and the built-in runner forward against the real
+  `inspect.signature(FastMCP.run_http_async)`, so a signature change upstream
+  fails loudly.
+- `AsyncMock` usage is genuine, and the list-tool boundary tests assert end to
+  end. Removed FastMCP 2.12/2.13 tests left no coverage gap.
 - Categories with nothing found: `get_context()` from worker threads, `ToolError`
   typing through the executor, unauthenticated HTTP/SSE paths, `/health`,
   exported symbols, JSON response bodies.
