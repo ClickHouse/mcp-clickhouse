@@ -546,6 +546,12 @@ async def list_databases_async() -> str:
     )
 
 
+# The async wrapper is the registered MCP tool; expose the tool name so
+# validation errors and logs do not mention the wrapper.
+list_databases_async.__name__ = "list_databases"
+list_databases_async.__qualname__ = "list_databases"
+
+
 def _list_databases_with_config(config: dict) -> str:
     """List databases with an already resolved client config."""
     logger.info("Listing all databases")
@@ -768,8 +774,11 @@ async def list_tables_async(
 
 
 # The async wrapper is the registered MCP tool; share the docstring so the
-# exposed description stays identical to the sync helper.
+# exposed description stays identical to the sync helper, and expose the tool
+# name so validation errors do not mention the wrapper.
 list_tables_async.__doc__ = list_tables.__doc__
+list_tables_async.__name__ = "list_tables"
+list_tables_async.__qualname__ = "list_tables"
 
 
 def _list_tables_with_config(
@@ -1466,13 +1475,23 @@ async def _get_client_config_overrides() -> Optional[dict[str, Any]]:
 
     Context state is async in FastMCP 3+, so this runs on the event loop inside
     the async MCP-facing tool wrappers. Outside a request it returns None.
+
+    Middleware is documented to set the key with serializable=False, which is
+    request-scoped. FastMCP 4's default set_state writes to a session-scoped
+    store instead, where the value would apply to every later call in the same
+    MCP session. As defense in depth, a captured value is deleted after the
+    snapshot so each override is consumed by exactly one request.
     """
     try:
         ctx = get_context()
     except RuntimeError:
         return None
     overrides = await ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY)
-    return _snapshot_client_config_overrides(overrides)
+    if overrides is None:
+        return None
+    snapshot = _snapshot_client_config_overrides(overrides)
+    await ctx.delete_state(CLIENT_CONFIG_OVERRIDES_KEY)
+    return snapshot
 
 
 def _apply_client_config_overrides(

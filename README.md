@@ -466,7 +466,7 @@ Each hook receives a `MiddlewareContext` object containing the message and metad
 
 ### Dynamic Client Configuration via Context State
 
-Middleware can override ClickHouse client configuration on a per-request basis using the `CLIENT_CONFIG_OVERRIDES_KEY` context state key. The server merges these overrides with the base configuration from environment variables. FastMCP context state is asynchronous, so set it from an `async` middleware hook and `await` the call:
+Middleware can override ClickHouse client configuration on a per-request basis using the `CLIENT_CONFIG_OVERRIDES_KEY` context state key. The server merges these overrides with the base configuration from environment variables. FastMCP context state is asynchronous, so set it from an `async` middleware hook, `await` the call, and pass `serializable=False`:
 
 ```python
 from fastmcp.server.dependencies import get_context
@@ -477,14 +477,15 @@ from mcp_clickhouse.mcp_server import CLIENT_CONFIG_OVERRIDES_KEY
 class TimeoutOverrideMiddleware(Middleware):
     async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
         ctx = get_context()
-        await ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, {
-            "connect_timeout": 60,
-            "send_receive_timeout": 120
-        })
+        await ctx.set_state(
+            CLIENT_CONFIG_OVERRIDES_KEY,
+            {"connect_timeout": 60, "send_receive_timeout": 120},
+            serializable=False,
+        )
         return await call_next(context)
 ```
 
-Overrides are scoped to the current request. The sessionless MCP protocol used by FastMCP 4 carries no state between requests, so middleware must set overrides on every call that needs them.
+`serializable=False` is required. It stores the value in FastMCP's request-scoped state, which lives only for the current tool call. FastMCP 4's default `set_state` writes to a session-scoped store keyed by `mcp-session-id` with a 24 hour TTL, so without it overrides set on one call would apply to every later call in the same streamable HTTP session, and opaque values such as `pool_mgr` would raise `TypeError`. As defense in depth the server deletes the key after reading it, so a session-scoped value is consumed by exactly one request, but middleware should not rely on that. Set overrides on every call that needs them.
 
 This enables advanced use cases like dynamic timeout adjustments, tenant-specific routing, or per-user connection settings.
 

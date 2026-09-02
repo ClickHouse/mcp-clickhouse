@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import re
 import threading
+import warnings
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,12 +13,18 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_context
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from starlette.exceptions import StarletteDeprecationWarning
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", StarletteDeprecationWarning)
+    from starlette.testclient import TestClient
 
 from mcp_clickhouse.mcp_server import (
     CLIENT_CONFIG_OVERRIDES_KEY,
     _clear_client_cache,
     _get_client_config_overrides,
     create_clickhouse_client,
+    get_config,
     mcp,
     run_query,
     run_query_async,
@@ -47,14 +55,17 @@ def _mock_config(client_config):
 
 
 class ConfigOverrideMiddleware(Middleware):
-    """Set a fixed ClickHouse client override value for each tool call."""
+    """Set a fixed ClickHouse client override value for each tool call.
+
+    Uses the documented request-scoped pattern (serializable=False).
+    """
 
     def __init__(self, overrides):
         self.overrides = overrides
 
     async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
         ctx = get_context()
-        await ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, self.overrides)
+        await ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, self.overrides, serializable=False)
         return await call_next(context)
 
 
@@ -65,17 +76,41 @@ class QueryOverrideMiddleware(Middleware):
         query = context.message.arguments["query"]
         ctx = get_context()
         await ctx.set_state(
-            CLIENT_CONFIG_OVERRIDES_KEY, {"connect_timeout": int(query.split()[-1])}
+            CLIENT_CONFIG_OVERRIDES_KEY,
+            {"connect_timeout": int(query.split()[-1])},
+            serializable=False,
         )
         return await call_next(context)
 
 
+class FirstCallSessionStateMiddleware(Middleware):
+    """Set overrides once with FastMCP's default session-scoped set_state.
+
+    This is the undocumented pattern (serializable=True). The server must
+    still consume the value on the first tool call rather than let it apply
+    to every later call in the same MCP session.
+    """
+
+    def __init__(self, overrides):
+        self.overrides = overrides
+        self.calls = 0
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
+        self.calls += 1
+        if self.calls == 1:
+            await get_context().set_state(CLIENT_CONFIG_OVERRIDES_KEY, self.overrides)
+        return await call_next(context)
+
+
 class FakeQueryClient:
-    def __init__(self, connect_timeout, barrier=None):
+    def __init__(self, connect_timeout, barrier=None, **_kwargs):
         self.connect_timeout = connect_timeout
         self.barrier = barrier
         self.server_settings = {}
         self.server_version = "24.10"
+
+    def close(self):
+        pass
 
     def command(self, _query):
         return f"db_{self.connect_timeout}"
@@ -144,10 +179,38 @@ class TestConfigOverrideUnit:
     async def test_capture_reads_async_context_state(self, mock_get_context):
         mock_ctx = MagicMock()
         mock_ctx.get_state = AsyncMock(return_value={"connect_timeout": 7})
+        mock_ctx.delete_state = AsyncMock()
         mock_get_context.return_value = mock_ctx
 
         assert await _get_client_config_overrides() == {"connect_timeout": 7}
         mock_ctx.get_state.assert_awaited_once_with(CLIENT_CONFIG_OVERRIDES_KEY)
+        # Consume the value so session-scoped state cannot reach a later request.
+        mock_ctx.delete_state.assert_awaited_once_with(CLIENT_CONFIG_OVERRIDES_KEY)
+
+    @pytest.mark.asyncio
+    @patch("mcp_clickhouse.mcp_server.get_context")
+    async def test_capture_without_state_does_not_delete(self, mock_get_context):
+        mock_ctx = MagicMock()
+        mock_ctx.get_state = AsyncMock(return_value=None)
+        mock_ctx.delete_state = AsyncMock()
+        mock_get_context.return_value = mock_ctx
+
+        assert await _get_client_config_overrides() is None
+        mock_ctx.delete_state.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("mcp_clickhouse.mcp_server.get_context")
+    async def test_capture_invalid_state_fails_before_delete(self, mock_get_context):
+        mock_ctx = MagicMock()
+        mock_ctx.get_state = AsyncMock(return_value="do-not-expose")
+        mock_ctx.delete_state = AsyncMock()
+        mock_get_context.return_value = mock_ctx
+
+        with pytest.raises(ToolError) as exc_info:
+            await _get_client_config_overrides()
+
+        assert "do-not-expose" not in str(exc_info.value)
+        mock_ctx.delete_state.assert_not_awaited()
 
     @pytest.mark.parametrize("invalid_overrides", [[], "", 0, False])
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
@@ -269,6 +332,7 @@ class TestConfigOverrideUnit:
         }
         mock_ctx = MagicMock()
         mock_ctx.get_state = AsyncMock(return_value=state)
+        mock_ctx.delete_state = AsyncMock()
         mock_get_context.return_value = mock_ctx
 
         snapshot = await _get_client_config_overrides()
@@ -354,6 +418,39 @@ class TestConfigOverrideMcpBoundary:
             mcp_server.middleware.remove(middleware)
 
     @pytest.mark.asyncio
+    async def test_registered_list_databases_accepts_opaque_override_objects(
+        self, mcp_server
+    ):
+        """Non-serializable overrides work through the documented request-scoped pattern."""
+        pool_manager = object()
+        middleware = ConfigOverrideMiddleware({"pool_mgr": pool_manager})
+        mcp_server.add_middleware(middleware)
+        try:
+            with patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client") as get_client:
+                get_client.side_effect = lambda **kwargs: FakeQueryClient(**kwargs)
+                async with Client(mcp_server) as client:
+                    result = await client.call_tool("list_databases", {})
+
+            assert json.loads(result.content[0].text) == ["db_30"]
+            assert get_client.call_args.kwargs["pool_mgr"] is pool_manager
+        finally:
+            mcp_server.middleware.remove(middleware)
+
+    @pytest.mark.asyncio
+    async def test_list_tables_validation_error_names_the_tool(self, mcp_server):
+        """The registered async wrapper reports the public tool name, not its own."""
+        with patch("mcp_clickhouse.mcp_server._acquire_clickhouse_client") as acquire_client:
+            async with Client(mcp_server) as client:
+                with pytest.raises(ToolError) as exc_info:
+                    await client.call_tool(
+                        "list_tables", {"database": "database", "page_size": 0}
+                    )
+
+        assert "list_tables" in str(exc_info.value)
+        assert "list_tables_async" not in str(exc_info.value)
+        acquire_client.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_concurrent_run_queries_keep_overrides_isolated(self, mcp_server):
         barrier = threading.Barrier(2)
         middleware = QueryOverrideMiddleware()
@@ -390,6 +487,103 @@ class TestConfigOverrideMcpBoundary:
             get_client.assert_not_called()
         finally:
             mcp_server.middleware.remove(middleware)
+
+
+_MCP_HEADERS = {
+    "accept": "application/json, text/event-stream",
+    "content-type": "application/json",
+}
+_INITIALIZE_REQUEST = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "test-client", "version": "1"},
+    },
+}
+
+
+def _jsonrpc_body(response):
+    """Decode a JSON or single-event SSE response body from the MCP endpoint."""
+    if response.headers.get("content-type", "").startswith("application/json"):
+        return response.json()
+    match = re.search(r"^data: (.*)$", response.text, re.M)
+    assert match is not None, response.text
+    return json.loads(match.group(1))
+
+
+class TestConfigOverrideHttpSession:
+    """Drive real streamable HTTP with the mcp-session-id header echoed.
+
+    fastmcp.Client does not resend the session header, so the in-memory client
+    tests cannot observe FastMCP 4's session-scoped state store.
+    """
+
+    def setup_method(self):
+        _clear_client_cache()
+
+    def teardown_method(self):
+        _clear_client_cache()
+
+    def test_session_scoped_override_is_consumed_by_one_request(self, monkeypatch):
+        for name in (
+            "CLICKHOUSE_MCP_ALLOWED_ORIGINS",
+            "CLICKHOUSE_MCP_TRUSTED_PROXIES",
+            "CLICKHOUSE_MCP_AUTH_MODULE",
+            "CLICKHOUSE_MCP_AUTH_TOKEN",
+            "FASTMCP_SERVER_AUTH",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
+        monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
+        base_timeout = get_config().get_client_config()["connect_timeout"]
+        assert base_timeout != 98
+
+        middleware = FirstCallSessionStateMiddleware({"connect_timeout": 98})
+        mcp.add_middleware(middleware)
+        try:
+            app = mcp.http_app(transport="http")
+            with patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client") as get_client:
+                get_client.side_effect = lambda **kwargs: FakeQueryClient(**kwargs)
+                with TestClient(app) as client:
+                    init = client.post("/mcp", json=_INITIALIZE_REQUEST, headers=_MCP_HEADERS)
+                    assert init.status_code == 200
+                    session_headers = {
+                        **_MCP_HEADERS,
+                        "mcp-session-id": init.headers["mcp-session-id"],
+                    }
+                    client.post(
+                        "/mcp",
+                        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                        headers=session_headers,
+                    )
+
+                    texts = []
+                    for request_id in (2, 3):
+                        response = client.post(
+                            "/mcp",
+                            json={
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "method": "tools/call",
+                                "params": {"name": "list_databases", "arguments": {}},
+                            },
+                            headers=session_headers,
+                        )
+                        assert response.status_code == 200
+                        body = _jsonrpc_body(response)
+                        assert "error" not in body, body
+                        texts.append(json.loads(body["result"]["content"][0]["text"]))
+                        # Force the next call to build a client from its own config.
+                        _clear_client_cache()
+
+            assert middleware.calls == 2
+            assert texts[0] == ["db_98"]
+            assert texts[1] == [f"db_{base_timeout}"]
+        finally:
+            mcp.middleware.remove(middleware)
 
 
 @pytest.mark.skipif(
