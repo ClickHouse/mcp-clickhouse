@@ -1,13 +1,17 @@
+import os
 import sys
 import types
 
 import pytest
 from fastmcp.server.auth import AuthProvider
-from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+from fastmcp.server.auth.providers.jwt import JWTVerifier, StaticTokenVerifier
 
 from mcp_clickhouse.mcp_auth_hook import load_auth_provider
 from mcp_clickhouse.mcp_env import MCPServerConfig
 from mcp_clickhouse.mcp_server import _resolve_auth
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+EXAMPLE_AUTH_ENV_VARS = ("MCP_AUTH_JWKS_URI", "MCP_AUTH_ISSUER", "MCP_AUTH_AUDIENCE")
 
 
 def _install_auth_module(monkeypatch: pytest.MonkeyPatch, name: str, **attrs) -> None:
@@ -266,3 +270,52 @@ def test_load_auth_provider_accepts_any_auth_provider_subclass(monkeypatch: pyte
 
     assert loaded is provider
     assert isinstance(loaded, AuthProvider)
+
+
+@pytest.fixture
+def example_auth_module(monkeypatch: pytest.MonkeyPatch):
+    """Make the repo-root example_auth.py importable and scrub MCP_AUTH_* env vars.
+
+    Every MCP_AUTH_* variable is cleared before the test runs, and the cached
+    `example_auth` module is dropped both before and after, so this fixture
+    neither depends on nor leaks developer environment or module state.
+    """
+    for var in EXAMPLE_AUTH_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delitem(sys.modules, "example_auth", raising=False)
+    monkeypatch.syspath_prepend(REPO_ROOT)
+    yield
+    monkeypatch.delitem(sys.modules, "example_auth", raising=False)
+
+
+def test_load_auth_provider_example_auth_happy_path(
+    monkeypatch: pytest.MonkeyPatch, example_auth_module
+):
+    """example_auth.create_auth_provider() builds a real fastmcp JWTVerifier."""
+    monkeypatch.setenv("MCP_AUTH_JWKS_URI", "https://login.example.com/.well-known/jwks.json")
+    monkeypatch.setenv("MCP_AUTH_ISSUER", "https://login.example.com/")
+    monkeypatch.setenv("MCP_AUTH_AUDIENCE", "mcp-clickhouse")
+
+    loaded = load_auth_provider("example_auth")
+
+    assert isinstance(loaded, JWTVerifier)
+    assert isinstance(loaded, AuthProvider)
+
+
+@pytest.mark.parametrize("missing_var", EXAMPLE_AUTH_ENV_VARS)
+def test_load_auth_provider_example_auth_missing_var_raises(
+    monkeypatch: pytest.MonkeyPatch, example_auth_module, missing_var: str
+):
+    """Each MCP_AUTH_* variable required by example_auth.py is validated and named."""
+    for var in EXAMPLE_AUTH_ENV_VARS:
+        if var != missing_var:
+            monkeypatch.setenv(var, "https://login.example.com/")
+
+    with pytest.raises(ValueError) as exc_info:
+        load_auth_provider("example_auth")
+
+    message = str(exc_info.value)
+    assert "example_auth" in message
+    assert missing_var in message
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert missing_var in str(exc_info.value.__cause__)
