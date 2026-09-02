@@ -130,17 +130,14 @@ def test_advisory_runs_in_write_mode_without_drop(caplog):
     assert any("DROP" in r.getMessage() for r in _warnings(caplog))
 
 
-def test_advisory_skipped_for_session_override_client(caplog):
+def test_advisory_skipped_for_request_override_client(caplog):
     """An override client may connect as a different user. The advisory must
     neither inspect it nor consume the one-shot for the base user."""
     client = _client_with_grants([("GRANT DROP ON *.* TO u",)])
     config = _config(allow_write_access=True, allow_drop=False)
-    ctx = MagicMock()
-    ctx.get_state.return_value = {"username": "other"}
     with patch("mcp_clickhouse.mcp_server.get_config", return_value=config):
         with patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client", return_value=client):
-            with patch("mcp_clickhouse.mcp_server.get_context", return_value=ctx):
-                assert create_clickhouse_client() is client
+            assert create_clickhouse_client({"username": "other"}) is client
             client.query.assert_not_called()
             assert mcp_server._grants_advisory_done is False
 

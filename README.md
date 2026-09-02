@@ -8,6 +8,16 @@ An MCP server for ClickHouse.
 
 <a href="https://glama.ai/mcp/servers/yvjy4csvo1"><img width="380" height="200" src="https://glama.ai/mcp/servers/yvjy4csvo1/badge" alt="mcp-clickhouse MCP server" /></a>
 
+The server implements MCP `2026-07-28` and supports legacy initialize handshakes from
+`2024-11-05` through `2025-11-25`. Modern clients use sessionless requests and
+`server/discover`. Existing clients can continue to negotiate the legacy protocol.
+
+> [!NOTE]
+> HTTP requests without `MCP-Protocol-Version` are routed through legacy handling so
+> clients from before `2025-06-18` can continue to connect. MCP `2026-07-28` permits
+> this behavior on servers that support those clients. Modern clients should send the
+> header on every POST request.
+
 ## Features
 
 ### ClickHouse Tools
@@ -30,12 +40,12 @@ integers and booleans keep their JSON types.
   * Required input: `database` (string).
   * Optional inputs:
     * `like` / `not_like` (string): Apply `LIKE` or `NOT LIKE` filters to table names.
-    * `page_token` (string): Token returned by a previous call for fetching the next page.
+    * `page_token` (string): Single-use token returned by a previous call. It is retained for up to one hour.
     * `page_size` (int, default `50`): Number of tables returned per page; must be greater than `0`.
     * `include_detailed_columns` (bool, default `true`): When `false`, omits column metadata for lighter responses while keeping the full `create_table_query`.
   * Response shape:
     * `tables`: Array of table objects for the current page.
-    * `next_page_token`: Pass this value back to fetch the next page, or `null` when there are no more tables.
+    * `next_page_token`: Pass this single-use value back before it expires to fetch the next page, or `null` when there are no more tables.
     * `total_tables`: Total count of tables that match the supplied filters.
 
 ### chDB Tools
@@ -123,9 +133,62 @@ export FASTMCP_SERVER_AUTH=fastmcp.server.auth.providers.azure.AzureProvider
 export FASTMCP_SERVER_AUTH_AZURE_TENANT_ID="<tenant-id>"
 export FASTMCP_SERVER_AUTH_AZURE_CLIENT_ID="<client-id>"
 export FASTMCP_SERVER_AUTH_AZURE_CLIENT_SECRET="<client-secret>"
+export FASTMCP_SERVER_AUTH_AZURE_BASE_URL="https://mcp.example.com"
+export FASTMCP_SERVER_AUTH_AZURE_REQUIRED_SCOPES="read access_as_user"
 ```
 
-See the [FastMCP docs](https://gofastmcp.com/servers/auth) for the full list of providers and their required environment variables.
+mcp-clickhouse retains these FastMCP 2.14.7 environment prefixes for the FastMCP 4.0.0
+built-in providers:
+
+| Provider class path | Provider variable prefix |
+|---------------------|--------------------------|
+| `fastmcp.server.auth.providers.auth0.Auth0Provider` | `FASTMCP_SERVER_AUTH_AUTH0_` |
+| `fastmcp.server.auth.providers.aws.AWSCognitoProvider` | `FASTMCP_SERVER_AUTH_AWS_COGNITO_` |
+| `fastmcp.server.auth.providers.azure.AzureProvider` | `FASTMCP_SERVER_AUTH_AZURE_` |
+| `fastmcp.server.auth.providers.descope.DescopeProvider` | `FASTMCP_SERVER_AUTH_DESCOPEPROVIDER_` |
+| `fastmcp.server.auth.providers.discord.DiscordProvider` | `FASTMCP_SERVER_AUTH_DISCORD_` |
+| `fastmcp.server.auth.providers.github.GitHubProvider` | `FASTMCP_SERVER_AUTH_GITHUB_` |
+| `fastmcp.server.auth.providers.google.GoogleProvider` | `FASTMCP_SERVER_AUTH_GOOGLE_` |
+| `fastmcp.server.auth.providers.introspection.IntrospectionTokenVerifier` | `FASTMCP_SERVER_AUTH_INTROSPECTION_` |
+| `fastmcp.server.auth.providers.jwt.JWTVerifier` | `FASTMCP_SERVER_AUTH_JWT_` |
+| `fastmcp.server.auth.providers.oci.OCIProvider` | `FASTMCP_SERVER_AUTH_OCI_` |
+| `fastmcp.server.auth.providers.scalekit.ScalekitProvider` | `FASTMCP_SERVER_AUTH_SCALEKITPROVIDER_` |
+| `fastmcp.server.auth.providers.supabase.SupabaseProvider` | `FASTMCP_SERVER_AUTH_SUPABASE_` |
+| `fastmcp.server.auth.providers.workos.WorkOSProvider` | `FASTMCP_SERVER_AUTH_WORKOS_` |
+| `fastmcp.server.auth.providers.workos.AuthKitProvider` | `FASTMCP_SERVER_AUTH_AUTHKITPROVIDER_` |
+
+Append the uppercase provider field name to the prefix. See the
+[FastMCP docs](https://gofastmcp.com/servers/auth) for each provider's configuration
+requirements.
+
+Auth values set directly in the process environment take precedence case-insensitively.
+The default `.env` load starts at the installed `mcp_clickhouse` package directory,
+resolves symlinks first, and walks upward to the filesystem root. It loads the first
+`.env` it finds and loads nothing if there is none. It never reads the working
+directory, regardless of how the server is launched. A source checkout normally finds
+the repository root `.env`. That file may also provide `FASTMCP_SERVER_AUTH` and its
+provider fields. Its values take precedence over the explicit or compatibility auth
+file.
+For FastMCP 2 compatibility, mcp-clickhouse reads missing provider fields from `.env`
+in the working directory, but that compatibility fallback cannot select
+`FASTMCP_SERVER_AUTH`. A process-set `FASTMCP_ENV_FILE` replaces that compatibility
+fallback and may provide both the selector and provider fields. Set it before startup.
+The mcp-clickhouse compatibility loader reads only `FASTMCP_SERVER_AUTH` and
+`FASTMCP_SERVER_AUTH_*` from that file, so it cannot inject `CLICKHOUSE_*` settings.
+FastMCP 4 may use the same file for its own broader settings. A custom provider receives
+no environment-derived constructor arguments and must support no-argument construction.
+
+Treat both discovered and working-directory `.env` files as trusted authentication
+configuration. Anyone who can create or write a `.env` in any directory from the package
+directory up to the filesystem root can control which file is discovered, select the
+provider, and set its fields. Anyone who can write the working-directory file controls every provider
+field absent from the process and discovered configuration, including signing keys,
+issuers and endpoints, and client secrets. A process-set `FASTMCP_ENV_FILE` that points
+to an operator-owned file disables the working-directory fallback.
+
+FastMCP 4 changed the default OAuth proxy client store. Deployments that relied on
+FastMCP 2's default OAuth proxy storage must have clients register and authorize again.
+Compatible custom storage, static bearer tokens, and JWT verification are unaffected.
 
 #### Development Mode (Disabling Authentication)
 
@@ -454,13 +517,22 @@ Middleware can override ClickHouse client configuration on a per-request basis u
 
 ```python
 from fastmcp.server.dependencies import get_context
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from mcp_clickhouse.mcp_server import CLIENT_CONFIG_OVERRIDES_KEY
 
-ctx = get_context()
-ctx.set_state(CLIENT_CONFIG_OVERRIDES_KEY, {
-    "connect_timeout": 60,
-    "send_receive_timeout": 120
-})
+
+class ClientConfigMiddleware(Middleware):
+    async def on_call_tool(self, context: MiddlewareContext, call_next: CallNext):
+        ctx = get_context()
+        await ctx.set_state(
+            CLIENT_CONFIG_OVERRIDES_KEY,
+            {
+                "connect_timeout": 60,
+                "send_receive_timeout": 120,
+            },
+            serializable=False,
+        )
+        return await call_next(context)
 ```
 
 This enables advanced use cases like dynamic timeout adjustments, tenant-specific routing, or per-user connection settings.
@@ -472,9 +544,14 @@ supplies `settings.role`. Top-level `role` and `ch_role` keys, plus the same key
 `generic_args`, are rejected.
 
 Treat these overrides as trusted middleware input. Middleware must authenticate and authorize
-request-derived values before setting them. A per-request ClickHouse role is connection
-configuration, not a tenant authorization boundary. Enforce tenant isolation with ClickHouse
-users, roles, and grants.
+request-derived values before setting them. Use `serializable=False` so FastMCP keeps the
+value in request-local state. The default `serializable=True` stores session state and is
+rejected by the server. The server snapshots the value before dispatching blocking database
+work. Do not store tenant data in session-scoped Context state. A rejected session-scoped
+override remains attached to a legacy MCP session and causes later tool calls in that session
+to fail until the client reconnects. A per-request ClickHouse role is connection configuration,
+not a tenant authorization boundary. Enforce tenant isolation with ClickHouse users, roles,
+and grants.
 
 ## Development
 
@@ -493,7 +570,7 @@ CLICKHOUSE_PASSWORD=clickhouse
 
 3. Run `uv sync` to install the dependencies. To install `uv` follow the instructions [here](https://docs.astral.sh/uv/). Then do `source .venv/bin/activate`.
 
-4. For easy testing with the MCP Inspector, run `fastmcp dev mcp_clickhouse/mcp_server.py` to start the MCP server.
+4. For easy testing with the MCP Inspector, run `uv run fastmcp dev inspector mcp_clickhouse/mcp_server.py:mcp` to start the MCP server.
 
 5. To test with HTTP transport and the health check endpoint:
    ```bash
@@ -514,7 +591,7 @@ Configuration is split into **independent** groups. Mixing them up is a common c
 | Group | Variables | Controls |
 |-------|-----------|----------|
 | **ClickHouse database connection** | `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_SECURE`, `CLICKHOUSE_VERIFY`, … | How **this MCP server** connects to your ClickHouse cluster over the **HTTP interface** |
-| **MCP server / transport** | `CLICKHOUSE_MCP_*`, `FASTMCP_SERVER_AUTH`, `FASTMCP_SERVER_AUTH_*` | MCP transport, authentication, and query-tool execution limits |
+| **MCP server / transport** | `CLICKHOUSE_MCP_*`, `FASTMCP_SERVER_AUTH`, `FASTMCP_SERVER_AUTH_*`, `FASTMCP_ENV_FILE` | MCP transport, authentication, and query-tool execution limits |
 | **Middleware / chDB** | `MCP_MIDDLEWARE_MODULE`, `CHDB_*` | Optional extensions |
 
 > [!IMPORTANT]
@@ -592,6 +669,7 @@ These variables control the MCP process itself, including transport, authenticat
   * Default: `"stdio"`
   * Valid options: `"stdio"`, `"http"`, `"sse"`. This is useful for local development with tools like MCP Inspector.
   * `stdio` is typical for Claude Desktop; `http`/`sse` expose a network listener (bind host/port below)
+  * `"sse"` selects the deprecated standalone HTTP+SSE transport and logs a warning. Use `"http"` for Streamable HTTP in new deployments.
 * `CLICKHOUSE_MCP_BIND_HOST`: Host to bind the MCP server to when using HTTP or SSE transport
   * Default: `"127.0.0.1"`
   * Set to `"0.0.0.0"` to bind to all network interfaces (useful for Docker or remote access)
@@ -607,6 +685,7 @@ These variables control the MCP process itself, including transport, authenticat
 * `CLICKHOUSE_MCP_MAX_WORKERS`: Maximum number of concurrent query worker threads
   * Default: `"10"`
   * Increase if your workload requires many concurrent tool calls
+  * Metadata tools use a separate pool with `min(4, CLICKHOUSE_MCP_MAX_WORKERS)` threads so schema discovery cannot delay queries
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None
   * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `FASTMCP_SERVER_AUTH`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for HTTP/SSE transports
@@ -615,7 +694,16 @@ These variables control the MCP process itself, including transport, authenticat
 * `FASTMCP_SERVER_AUTH`: Delegate authentication to a [FastMCP auth provider](https://gofastmcp.com/servers/auth)
   * Default: None
   * Value is the **full class path** of an AuthProvider subclass, e.g. `fastmcp.server.auth.providers.azure.AzureProvider` or `fastmcp.server.auth.providers.google.GoogleProvider`
-  * When set, FastMCP auto-loads the provider from its own `FASTMCP_SERVER_AUTH_*` environment variables; leave `CLICKHOUSE_MCP_AUTH_TOKEN` unset in this mode
+  * When set, mcp-clickhouse loads the provider from the existing `FASTMCP_SERVER_AUTH_*` environment variables; leave `CLICKHOUSE_MCP_AUTH_TOKEN` unset in this mode
+  * Custom providers receive no environment-derived constructor arguments and must support no-argument construction
+  * FastMCP 4 no longer supports Supabase HS256 verification. Supabase deployments must use RS256 or ES256.
+* `FASTMCP_ENV_FILE`: Optional file containing `FASTMCP_SERVER_AUTH` and provider-specific environment variables
+  * Default: None. When unset, the compatibility loader reads missing provider fields from `.env` in the working directory. It does not read `FASTMCP_SERVER_AUTH` from that fallback
+  * Set it in the process environment before startup. A value loaded from the default `.env` cannot redirect the compatibility loader
+  * If process-set, this file may provide both `FASTMCP_SERVER_AUTH` and provider fields and replaces the working-directory fallback
+  * Process environment values take precedence case-insensitively
+  * The mcp-clickhouse compatibility loader reads this file only when building HTTP/SSE authentication and reads only `FASTMCP_SERVER_AUTH` and `FASTMCP_SERVER_AUTH_*` entries. FastMCP 4 may read the same file for its broader settings
+  * The default `.env` load is separate. It starts at the installed `mcp_clickhouse` package directory, resolves symlinks, walks upward to the filesystem root, and loads the first `.env` found or nothing. It never reads the working directory, regardless of launch method. That file may provide `FASTMCP_SERVER_AUTH` and provider fields along with other server settings. A source checkout normally finds the repository root `.env`
 * `CLICKHOUSE_MCP_AUTH_DISABLED`: Disable authentication for HTTP/SSE transports
   * Default: `"false"` (authentication is enabled)
   * Set to `"true"` to disable authentication for local development/testing only
@@ -629,6 +717,7 @@ These variables control the MCP process itself, including transport, authenticat
   * The `host:*` form matches only values that carry a port. A port-less Host (a standard-port deployment where the client omits `:80`/`:443`) must be listed as a bare exact entry (`example.com`) as well.
   * Requests with a non-matching or missing `Host` header get `421 Misdirected Request`. GET and HEAD requests to `/health` are exempt from Host and Origin validation so orchestrator probes keep working.
   * Behind a reverse proxy, prefer preserving the original `Host` header. You can instead list the upstream `Host` value the proxy sends. Set an explicit list when a launcher such as `fastmcp run` overrides the bind address for remote access.
+  * mcp-clickhouse forces FastMCP's separate Host and Origin guard off. `FASTMCP_HTTP_HOST_ORIGIN_PROTECTION`, `FASTMCP_HTTP_ALLOWED_HOSTS`, and `FASTMCP_HTTP_ALLOWED_ORIGINS` do not apply. `CLICKHOUSE_MCP_ALLOWED_HOSTS` and `CLICKHOUSE_MCP_ALLOWED_ORIGINS` are authoritative.
 * `CLICKHOUSE_MCP_TRUSTED_PROXIES`: Proxy IP addresses or CIDR networks whose `X-Forwarded-*` headers are trusted
   * Default: None. `X-Forwarded-Host` is ignored. Existing Uvicorn handling of `X-Forwarded-For` and `X-Forwarded-Proto` is unchanged.
   * Entries must be IP addresses or CIDR networks, such as `127.0.0.1,10.20.0.0/24,2001:db8::1`. CIDRs must use their network address, so `10.20.0.1/24` is rejected. Host names, scoped IPv6 addresses, `*`, `0.0.0.0/0`, and `::/0` are also rejected.

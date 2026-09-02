@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.6.0 - Unreleased
+
+### Added
+- MCP handling through FastMCP 4 for modern `2026-07-28` clients and legacy clients using `2024-11-05` through `2025-11-25`. The modern path includes `server/discover`, sessionless requests, response caching hints, and request metadata validation. ([#218](https://github.com/ClickHouse/mcp-clickhouse/issues/218))
+
+### Changed
+- The FastMCP dependency is now `>=4.0.0,<4.1.0`. The upper bound pins the FastMCP 4.0 request-state API used to keep ClickHouse client overrides request-scoped. A session-scoped override now fails the affected tool call. Custom middleware must await `Context.set_state()` and use `serializable=False` for these overrides.
+- The standalone HTTP+SSE transport remains available but is deprecated and logs a warning. Use `CLICKHOUSE_MCP_SERVER_TRANSPORT=http` for Streamable HTTP in new deployments.
+- OAuth/OIDC provider environment loading is now handled by mcp-clickhouse because FastMCP 4 removed its automatic `FASTMCP_SERVER_AUTH` loader. Existing built-in provider process variables keep their FastMCP 2.14.7 names and process-first precedence. The working-directory `.env` fallback for missing provider fields is preserved. Provider selection from the package-discovered `.env` and a process-set `FASTMCP_ENV_FILE` is new. Those files may also supply provider fields. Custom providers must support no-argument construction. Supabase HS256 is no longer supported by FastMCP and must move to RS256 or ES256. Clients using FastMCP 2's default OAuth proxy storage must register and authorize again. Compatible custom storage, static tokens, and JWT verification are unaffected.
+- `.env` discovery now starts at the installed `mcp_clickhouse` package directory and walks upward to the filesystem root in every launch mode. `python -m mcp_clickhouse.main`, `python -c`, debugger, and frozen launches no longer read `.env` from the working directory, so a working-directory `.env` cannot select the auth provider from those launch modes.
+- ClickHouse metadata tools now use a separate worker pool with `min(4, CLICKHOUSE_MCP_MAX_WORKERS)` threads so concurrent schema discovery cannot delay query execution.
+- Protocol responses now report the installed mcp-clickhouse package version, or `unknown` when distribution metadata is unavailable, instead of the FastMCP version.
+
+### Compatibility
+- FastMCP 4.0.0 and MCP Python SDK 2.1.1 route HTTP requests without `MCP-Protocol-Version` through legacy handling. MCP `2026-07-28` permits this for servers that support clients from before `2025-06-18`. Modern clients should send the header on every POST request.
+
 ## 0.5.0 - 2026-09-01
 
 ### Added

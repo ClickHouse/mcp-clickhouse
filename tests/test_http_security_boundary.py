@@ -2,9 +2,11 @@ import asyncio
 import warnings
 from pathlib import Path
 
+import fastmcp
 import pytest
-from fastmcp import FastMCP
+from fastmcp import FastMCP, settings as fastmcp_settings
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+from fastmcp.settings import Settings as FastMCPSettings
 from fastmcp.utilities.mcp_server_config import MCPServerConfig as FastMCPFileConfig
 from starlette.applications import Starlette
 from starlette.exceptions import StarletteDeprecationWarning
@@ -46,6 +48,9 @@ def _clear_http_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "CLICKHOUSE_MCP_BIND_HOST",
         "CLICKHOUSE_MCP_BIND_PORT",
         "FASTMCP_SERVER_AUTH",
+        "FASTMCP_HTTP_HOST_ORIGIN_PROTECTION",
+        "FASTMCP_HTTP_ALLOWED_HOSTS",
+        "FASTMCP_HTTP_ALLOWED_ORIGINS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -103,6 +108,40 @@ def test_static_auth_is_enforced_on_sse(monkeypatch: pytest.MonkeyPatch):
     response = TestClient(app).get("/sse")
 
     assert response.status_code == 401
+
+
+def test_rebuilt_sse_app_enforces_static_auth_and_host(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_http_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_TOKEN", "secret-token")
+    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
+    app = ClickHouseFastMCP("test").sse_app()
+
+    with TestClient(app) as client:
+        unauthorized = client.post(
+            "/messages/?session_id=missing",
+            json={"jsonrpc": "2.0"},
+        )
+        authorized = client.post(
+            "/messages/?session_id=missing",
+            headers={"authorization": "Bearer secret-token"},
+            json={"jsonrpc": "2.0"},
+        )
+        invalid_host = client.post(
+            "/messages/?session_id=missing",
+            headers={
+                "authorization": "Bearer secret-token",
+                "host": "attacker.example",
+            },
+            json={"jsonrpc": "2.0"},
+        )
+
+    assert unauthorized.status_code == 401
+    assert authorized.status_code == 400
+    assert authorized.text == "Invalid session ID"
+    assert invalid_host.status_code == 421
+    assert invalid_host.text == "Invalid Host header"
 
 
 def test_http_app_allows_configured_request_with_auth_disabled(
@@ -318,32 +357,87 @@ def test_legacy_app_builders_respect_the_trusted_proxy_embedding_guard(
     assert len(_proxy_headers_entries(app)) == 1
 
 
-def test_sse_app_applies_and_restores_message_path(monkeypatch: pytest.MonkeyPatch):
-    _clear_http_env(monkeypatch)
-    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
-    server = ClickHouseFastMCP("test")
-    original_message_path = server._deprecated_settings.message_path
-
-    app = server.sse_app(message_path="/custom-messages/")
-
-    assert server._deprecated_settings.message_path == original_message_path
-    assert any(getattr(route, "path", None) == "/custom-messages" for route in app.routes)
-
-
-def test_sse_app_restores_message_path_when_the_embedding_guard_raises(
+def test_sse_app_uses_custom_message_route_without_mutating_settings(
     monkeypatch: pytest.MonkeyPatch,
 ):
     _clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
-    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "mcp.example.com")
-    monkeypatch.setenv("CLICKHOUSE_MCP_TRUSTED_PROXIES", "10.0.0.0/24")
     server = ClickHouseFastMCP("test")
-    original_message_path = server._deprecated_settings.message_path
+    original_message_path = fastmcp_settings.message_path
 
-    with pytest.raises(ValueError, match="raw ASGI client address"):
-        server.sse_app(message_path="/custom-messages/")
+    app = server.sse_app(message_path="/custom-messages/")
 
-    assert server._deprecated_settings.message_path == original_message_path
+    assert fastmcp_settings.message_path == original_message_path
+    assert any(getattr(route, "path", None) == "/custom-messages" for route in app.routes)
+
+
+def test_sse_app_custom_message_route_does_not_change_later_default_app(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_http_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
+    server = ClickHouseFastMCP("test")
+    original_message_path = fastmcp_settings.message_path
+
+    custom_app = server.sse_app(message_path="/custom-messages/")
+    default_app = server.sse_app()
+
+    assert fastmcp_settings.message_path == original_message_path
+    assert any(getattr(route, "path", None) == "/custom-messages" for route in custom_app.routes)
+    assert not any(
+        getattr(route, "path", None) == "/custom-messages" for route in default_app.routes
+    )
+    assert any(
+        getattr(route, "path", None) == original_message_path.rstrip("/")
+        for route in default_app.routes
+    )
+
+
+@pytest.mark.parametrize("protection", ["true", "auto"])
+def test_repo_host_guard_overrides_fastmcp_host_origin_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    protection,
+):
+    _clear_http_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
+    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "repo.example")
+    monkeypatch.setenv("FASTMCP_HTTP_HOST_ORIGIN_PROTECTION", protection)
+    monkeypatch.setenv("FASTMCP_HTTP_ALLOWED_HOSTS", '["fastmcp.example"]')
+    monkeypatch.setenv("FASTMCP_HTTP_ALLOWED_ORIGINS", '["https://fastmcp.example"]')
+    configured_settings = FastMCPSettings()
+    monkeypatch.setattr(fastmcp, "settings", configured_settings)
+    monkeypatch.setattr(mcp_server_module, "fastmcp_settings", configured_settings)
+    app = ClickHouseFastMCP("test").http_app(transport="http")
+
+    with TestClient(app, base_url="http://repo.example") as client:
+        allowed = client.post("/mcp", json=_INITIALIZE_REQUEST, headers=_MCP_HEADERS)
+        rejected = client.post(
+            "/mcp",
+            json=_INITIALIZE_REQUEST,
+            headers={**_MCP_HEADERS, "host": "fastmcp.example"},
+        )
+
+    assert configured_settings.http_host_origin_protection in {True, "auto"}
+    assert allowed.status_code == 200
+    assert rejected.status_code == 421
+    assert rejected.text == "Invalid Host header"
+
+
+def test_sse_app_keeps_registered_health_route(monkeypatch: pytest.MonkeyPatch):
+    _clear_http_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
+
+    app = mcp_server_module.mcp.sse_app()
+
+    assert any(getattr(route, "path", None) == "/health" for route in app.routes)
+
+
+def test_sse_app_rejects_health_message_path(monkeypatch: pytest.MonkeyPatch):
+    _clear_http_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
+
+    with pytest.raises(ValueError, match="MCP transport path cannot be /health"):
+        ClickHouseFastMCP("test").sse_app(message_path="/health")
 
 
 def test_direct_http_app_requires_raw_client_address_assertion(
@@ -395,6 +489,11 @@ def test_http_app_restores_auth_between_static_and_oauth_construction(
     assert server.auth is oauth_provider
     monkeypatch.delenv("CLICKHOUSE_MCP_AUTH_TOKEN")
     monkeypatch.setenv("FASTMCP_SERVER_AUTH", "example.OAuthProvider")
+    monkeypatch.setattr(
+        mcp_server_module,
+        "_load_fastmcp_auth_provider",
+        lambda _provider_path, **_kwargs: oauth_provider,
+    )
     oauth_app = server.http_app(transport="http")
     assert server.auth is oauth_provider
 
@@ -419,7 +518,7 @@ def test_oauth_cannot_reuse_temporary_static_provider(monkeypatch: pytest.Monkey
     assert server.auth is None
     monkeypatch.delenv("CLICKHOUSE_MCP_AUTH_TOKEN")
     monkeypatch.setenv("FASTMCP_SERVER_AUTH", "example.OAuthProvider")
-    with pytest.raises(ValueError, match="did not create an authentication provider"):
+    with pytest.raises(ValueError, match="Could not import FASTMCP_SERVER_AUTH provider"):
         server.http_app(transport="http")
 
 
@@ -475,9 +574,8 @@ def test_http_app_rejects_health_transport_path_from_fastmcp_settings(
 ):
     _clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        server = ClickHouseFastMCP("test", **{setting_name: "/health"})
+    monkeypatch.setattr(fastmcp_settings, setting_name, "/health")
+    server = ClickHouseFastMCP("test")
 
     with pytest.raises(ValueError, match="MCP transport path cannot be /health"):
         server.http_app(transport=transport)
