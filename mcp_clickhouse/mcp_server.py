@@ -1039,6 +1039,19 @@ async def list_databases_async() -> str:
 table_pagination_cache: TTLCache = TTLCache(maxsize=100, ttl=3600)  # 3600 seconds = 1 hour
 _table_pagination_cache_lock = threading.Lock()
 _PAGE_TOKEN_EXPIRES_AT = "_expires_at"
+_CLAIM_PAGE_TOKEN_IN_WORKER = object()
+
+
+@dataclass(frozen=True)
+class _PendingPageToken:
+    token: str
+    state: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _PreparedListTablesResult:
+    response: str
+    pending_page_token: Optional[_PendingPageToken]
 
 
 def fetch_table_names_from_system(
@@ -1150,31 +1163,82 @@ def create_page_token(
     Returns:
         New page token
     """
-    token = str(uuid.uuid4())
-    with _table_pagination_cache_lock:
-        expires_at = table_pagination_cache.timer() + table_pagination_cache.ttl
-        table_pagination_cache[token] = {
+    pending_page_token = _prepare_page_token(
+        database,
+        like,
+        not_like,
+        table_names,
+        end_idx,
+        include_detailed_columns,
+    )
+    _commit_page_token(pending_page_token)
+    return pending_page_token.token
+
+
+def _prepare_page_token(
+    database: str,
+    like: Optional[str],
+    not_like: Optional[str],
+    table_names: List[str],
+    end_idx: int,
+    include_detailed_columns: bool,
+) -> _PendingPageToken:
+    """Prepare a page token without making it available to clients."""
+    return _PendingPageToken(
+        token=str(uuid.uuid4()),
+        state={
             "database": database,
             "like": like,
             "not_like": not_like,
             "table_names": table_names,
             "start_idx": end_idx,
             "include_detailed_columns": include_detailed_columns,
-            _PAGE_TOKEN_EXPIRES_AT: expires_at,
-        }
-    return token
+        },
+    )
 
 
-def _claim_page_token(page_token: str) -> Optional[dict[str, Any]]:
-    """Atomically claim a single-use pagination token."""
+def _commit_page_token(pending_page_token: _PendingPageToken) -> None:
+    """Make a prepared page token available for one hour."""
     with _table_pagination_cache_lock:
-        state = table_pagination_cache.pop(page_token, None)
+        expires_at = table_pagination_cache.timer() + table_pagination_cache.ttl
+        state = dict(pending_page_token.state)
+        state[_PAGE_TOKEN_EXPIRES_AT] = expires_at
+        table_pagination_cache[pending_page_token.token] = state
+
+
+def _claim_page_token_for_request(
+    page_token: str,
+    database: str,
+    like: Optional[str],
+    not_like: Optional[str],
+    include_detailed_columns: bool,
+) -> Optional[dict[str, Any]]:
+    """Claim a matching page token and leave a mismatched token untouched."""
+    mismatch = False
+    with _table_pagination_cache_lock:
+        state = table_pagination_cache.get(page_token)
         if state is None:
             return None
         expires_at = state.get(_PAGE_TOKEN_EXPIRES_AT)
         if expires_at is not None and expires_at <= table_pagination_cache.timer():
+            table_pagination_cache.pop(page_token, None)
             return None
-        return state
+        cached_include_detailed = state.get("include_detailed_columns", True)
+        mismatch = (
+            state["database"] != database
+            or state["like"] != like
+            or state["not_like"] != not_like
+            or cached_include_detailed != include_detailed_columns
+        )
+        if not mismatch:
+            return table_pagination_cache.pop(page_token)
+
+    logger.warning(
+        "Page token %s is for a different database, filter, or metadata setting. "
+        "Ignoring token and starting from beginning.",
+        page_token,
+    )
+    return None
 
 
 def _restore_page_token(page_token: str, state: dict[str, Any]) -> None:
@@ -1239,27 +1303,25 @@ def _list_tables_with_config(
     page_token: Optional[str],
     page_size: int,
     include_detailed_columns: bool,
-) -> str:
+    claimed_page_state: object = _CLAIM_PAGE_TOKEN_IN_WORKER,
+) -> str | _PreparedListTablesResult:
     """List tables with a resolved client configuration."""
     if page_size <= 0:
         raise ToolError("page_size must be greater than 0")
 
-    claimed_page_state = _claim_page_token(page_token) if page_token else None
-    if claimed_page_state is not None:
-        cached_include_detailed = claimed_page_state.get("include_detailed_columns", True)
-        if (
-            claimed_page_state["database"] != database
-            or claimed_page_state["like"] != like
-            or claimed_page_state["not_like"] != not_like
-            or cached_include_detailed != include_detailed_columns
-        ):
-            _restore_page_token(page_token, claimed_page_state)
-            claimed_page_state = None
-            logger.warning(
-                "Page token %s is for a different database, filter, or metadata setting. "
-                "Ignoring token and starting from beginning.",
+    owns_page_token_transaction = claimed_page_state is _CLAIM_PAGE_TOKEN_IN_WORKER
+    if owns_page_token_transaction:
+        claimed_page_state = (
+            _claim_page_token_for_request(
                 page_token,
+                database,
+                like,
+                not_like,
+                include_detailed_columns,
             )
+            if page_token
+            else None
+        )
 
     logger.info(
         "Listing tables in database '%s' with like=%s, not_like=%s, "
@@ -1272,28 +1334,48 @@ def _list_tables_with_config(
         include_detailed_columns,
     )
 
-    for attempt in range(2):
-        entry = None
-        try:
-            entry = _acquire_clickhouse_client(config)
-            client = entry.client
-            return _list_tables_impl(
-                client, database, like, not_like, page_token,
-                page_size, include_detailed_columns, claimed_page_state,
-            )
-        except Exception as err:
-            if attempt == 0 and _is_connection_error(err):
-                logger.warning("list_tables connection error, retrying: %s", err)
+    try:
+        for attempt in range(2):
+            entry = None
+            try:
+                entry = _acquire_clickhouse_client(config)
+                client = entry.client
+                prepared_result = _list_tables_impl(
+                    client,
+                    database,
+                    like,
+                    not_like,
+                    page_token,
+                    page_size,
+                    include_detailed_columns,
+                    claimed_page_state,
+                )
+                break
+            except Exception as err:
+                if attempt == 0 and _is_connection_error(err):
+                    logger.warning("list_tables connection error, retrying: %s", err)
+                    if entry is not None:
+                        _evict_cached_client(config, entry.client)
+                    continue
+                raise
+            finally:
                 if entry is not None:
-                    _evict_cached_client(config, entry.client)
-                continue
-            if page_token and claimed_page_state is not None:
-                _restore_page_token(page_token, claimed_page_state)
-                claimed_page_state = None
-            raise
-        finally:
-            if entry is not None:
-                _release_client_entry(entry)
+                    _release_client_entry(entry)
+    except BaseException:
+        if owns_page_token_transaction and page_token and claimed_page_state is not None:
+            _restore_page_token(page_token, claimed_page_state)
+        raise
+
+    try:
+        if not owns_page_token_transaction:
+            return prepared_result
+        if prepared_result.pending_page_token is not None:
+            _commit_page_token(prepared_result.pending_page_token)
+        return prepared_result.response
+    except BaseException:
+        if owns_page_token_transaction and page_token and claimed_page_state is not None:
+            _restore_page_token(page_token, claimed_page_state)
+        raise
 
 
 @wraps(list_tables)
@@ -1307,17 +1389,41 @@ async def list_tables_async(
 ) -> str:
     overrides = await _get_client_config_overrides_for_tool()
     config = _resolve_client_config(overrides)
-    future = METADATA_EXECUTOR.submit(
-        _list_tables_with_config,
-        config,
-        database,
-        like,
-        not_like,
-        page_token,
-        page_size,
-        include_detailed_columns,
+    claimed_page_state = (
+        _claim_page_token_for_request(
+            page_token,
+            database,
+            like,
+            not_like,
+            include_detailed_columns,
+        )
+        if page_token
+        else None
     )
-    return await asyncio.wrap_future(future)
+    completed = False
+    try:
+        future = METADATA_EXECUTOR.submit(
+            _list_tables_with_config,
+            config,
+            database,
+            like,
+            not_like,
+            page_token,
+            page_size,
+            include_detailed_columns,
+            claimed_page_state,
+        )
+        prepared_result = await asyncio.wrap_future(future)
+        if isinstance(prepared_result, str):
+            completed = True
+            return prepared_result
+        if prepared_result.pending_page_token is not None:
+            _commit_page_token(prepared_result.pending_page_token)
+        completed = True
+        return prepared_result.response
+    finally:
+        if not completed and page_token and claimed_page_state is not None:
+            _restore_page_token(page_token, claimed_page_state)
 
 
 def _list_tables_impl(
@@ -1328,8 +1434,8 @@ def _list_tables_impl(
     page_token: Optional[str],
     page_size: int,
     include_detailed_columns: bool,
-    claimed_page_state: Optional[dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    claimed_page_state: object = None,
+) -> _PreparedListTablesResult:
     """Inner implementation of list_tables, separated for retry logic."""
     if claimed_page_state is not None:
         table_names = claimed_page_state["table_names"]
@@ -1344,11 +1450,12 @@ def _list_tables_impl(
             include_detailed_columns,
         )
 
-        next_page_token = None
+        pending_page_token = None
         if has_more:
-            next_page_token = create_page_token(
+            pending_page_token = _prepare_page_token(
                 database, like, not_like, table_names, end_idx, include_detailed_columns
             )
+        next_page_token = pending_page_token.token if pending_page_token else None
 
         logger.info(
             "Returned page with %s tables (total: %s), next_page_token=%s",
@@ -1356,11 +1463,14 @@ def _list_tables_impl(
             len(table_names),
             next_page_token,
         )
-        return _serialize_tool_result({
-            "tables": [asdict(table) for table in tables],
-            "next_page_token": next_page_token,
-            "total_tables": len(table_names),
-        })
+        return _PreparedListTablesResult(
+            response=_serialize_tool_result({
+                "tables": [asdict(table) for table in tables],
+                "next_page_token": next_page_token,
+                "total_tables": len(table_names),
+            }),
+            pending_page_token=pending_page_token,
+        )
 
     table_names = fetch_table_names_from_system(client, database, like, not_like)
 
@@ -1374,11 +1484,12 @@ def _list_tables_impl(
         include_detailed_columns,
     )
 
-    next_page_token = None
+    pending_page_token = None
     if has_more:
-        next_page_token = create_page_token(
+        pending_page_token = _prepare_page_token(
             database, like, not_like, table_names, end_idx, include_detailed_columns
         )
+    next_page_token = pending_page_token.token if pending_page_token else None
 
     logger.info(
         "Found %s tables, returning %s with next_page_token=%s",
@@ -1387,11 +1498,14 @@ def _list_tables_impl(
         next_page_token,
     )
 
-    return _serialize_tool_result({
-        "tables": [asdict(table) for table in tables],
-        "next_page_token": next_page_token,
-        "total_tables": len(table_names),
-    })
+    return _PreparedListTablesResult(
+        response=_serialize_tool_result({
+            "tables": [asdict(table) for table in tables],
+            "next_page_token": next_page_token,
+            "total_tables": len(table_names),
+        }),
+        pending_page_token=pending_page_token,
+    )
 
 
 # SQL comments and quoted text, blanked out before destructive-keyword matching.

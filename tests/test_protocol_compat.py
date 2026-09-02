@@ -178,7 +178,14 @@ def test_modern_http_discover_list_and_tool_error_without_initialize(
     assert "mcp-session-id" not in tool_success.headers
 
 
-def test_legacy_http_initialize_and_list_tools(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    "protocol_version",
+    ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"],
+)
+def test_legacy_http_initialize_and_list_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    protocol_version: str,
+):
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
     app = mcp.http_app(transport="http")
@@ -187,7 +194,7 @@ def test_legacy_http_initialize_and_list_tools(monkeypatch: pytest.MonkeyPatch):
         "id": 1,
         "method": "initialize",
         "params": {
-            "protocolVersion": _LEGACY_VERSION,
+            "protocolVersion": protocol_version,
             "capabilities": {},
             "clientInfo": {"name": "raw-test-client", "version": "1"},
         },
@@ -202,9 +209,10 @@ def test_legacy_http_initialize_and_list_tools(monkeypatch: pytest.MonkeyPatch):
         session_id = initialize.headers["mcp-session-id"]
         session_headers = {
             **_CONTENT_HEADERS,
-            "MCP-Protocol-Version": _LEGACY_VERSION,
             "Mcp-Session-Id": session_id,
         }
+        if protocol_version in {"2025-06-18", "2025-11-25"}:
+            session_headers["MCP-Protocol-Version"] = protocol_version
         initialized = client.post(
             "/mcp",
             headers=session_headers,
@@ -218,7 +226,7 @@ def test_legacy_http_initialize_and_list_tools(monkeypatch: pytest.MonkeyPatch):
 
     assert initialize.status_code == 200
     initialize_result = _sse_data(initialize)["result"]
-    assert initialize_result["protocolVersion"] == _LEGACY_VERSION
+    assert initialize_result["protocolVersion"] == protocol_version
     assert initialize_result["serverInfo"]["name"] == "mcp-clickhouse"
     assert initialize_result["serverInfo"]["version"] == package_version("mcp-clickhouse")
     assert initialized.status_code == 202

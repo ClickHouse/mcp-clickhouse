@@ -1,5 +1,6 @@
 """Tests for list_tables input validation."""
 
+import asyncio
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -11,7 +12,7 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 from mcp_clickhouse.mcp_server import (
-    _claim_page_token,
+    _claim_page_token_for_request,
     _list_tables_with_config,
     _restore_page_token,
     _table_pagination_cache_lock,
@@ -112,16 +113,18 @@ def test_duplicate_page_token_has_only_one_concurrent_claim():
 
 
 @pytest.mark.parametrize(
-    ("database", "like", "include_detailed_columns"),
+    ("database", "like", "not_like", "include_detailed_columns"),
     [
-        ("other_database", None, True),
-        ("database", "other%", True),
-        ("database", None, False),
+        ("other_database", None, None, True),
+        ("database", "other%", None, True),
+        ("database", None, "other%", True),
+        ("database", None, None, False),
     ],
 )
 def test_page_token_mismatch_retains_original_token(
     database,
     like,
+    not_like,
     include_detailed_columns,
 ):
     with _table_pagination_cache_lock:
@@ -153,13 +156,17 @@ def test_page_token_mismatch_retains_original_token(
                 "mcp_clickhouse.mcp_server.get_paginated_table_data",
                 return_value=([], 0, False),
             ),
+            patch(
+                "mcp_clickhouse.mcp_server._restore_page_token",
+                wraps=_restore_page_token,
+            ) as restore_page_token,
         ):
             result = json.loads(
                 _list_tables_with_config(
                     {},
                     database,
                     like,
-                    None,
+                    not_like,
                     token,
                     1,
                     include_detailed_columns,
@@ -171,6 +178,7 @@ def test_page_token_mismatch_retains_original_token(
             "next_page_token": None,
             "total_tables": 0,
         }
+        restore_page_token.assert_not_called()
         with _table_pagination_cache_lock:
             assert table_pagination_cache[token] == original_state
     finally:
@@ -224,6 +232,10 @@ def test_mismatch_failure_cannot_restore_token_after_valid_caller_consumes_it():
                 "mcp_clickhouse.mcp_server.get_paginated_table_data",
                 side_effect=paginated_data,
             ),
+            patch(
+                "mcp_clickhouse.mcp_server._restore_page_token",
+                wraps=_restore_page_token,
+            ) as restore_page_token,
             ThreadPoolExecutor(max_workers=1) as executor,
         ):
             mismatch = executor.submit(
@@ -258,6 +270,7 @@ def test_mismatch_failure_cannot_restore_token_after_valid_caller_consumes_it():
         assert valid_result["total_tables"] == 3
         assert third_result["total_tables"] == 3
         assert saved_indexes == [2, 0]
+        restore_page_token.assert_not_called()
         with _table_pagination_cache_lock:
             assert token not in table_pagination_cache
     finally:
@@ -280,14 +293,29 @@ def test_restored_page_token_keeps_original_expiration_deadline():
             True,
         )
         current_time[0] = 109.9
-        state = _claim_page_token(token)
+        state = _claim_page_token_for_request(
+            token,
+            "database",
+            None,
+            None,
+            True,
+        )
         assert state is not None
         _restore_page_token(token, state)
         assert token in cache
 
         current_time[0] = 110.1
         assert token in cache
-        assert _claim_page_token(token) is None
+        assert (
+            _claim_page_token_for_request(
+                token,
+                "database",
+                None,
+                None,
+                True,
+            )
+            is None
+        )
         assert token not in cache
 
         _restore_page_token(token, state)
@@ -396,6 +424,84 @@ def test_page_token_is_restored_after_final_page_fetch_failure():
         with _table_pagination_cache_lock:
             assert table_pagination_cache[token] == original_state
     finally:
+        with _table_pagination_cache_lock:
+            table_pagination_cache.clear()
+
+
+@pytest.mark.parametrize("resume_from_token", [False, True])
+@pytest.mark.asyncio
+async def test_cancelled_mcp_call_does_not_commit_page_cursor(resume_from_token):
+    page_started = threading.Event()
+    release_page = threading.Event()
+    page_finished = threading.Event()
+    with _table_pagination_cache_lock:
+        table_pagination_cache.clear()
+
+    page_token = None
+    original_state = None
+    if resume_from_token:
+        page_token = create_page_token(
+            "database",
+            None,
+            None,
+            ["first", "second", "third"],
+            1,
+            True,
+        )
+        with _table_pagination_cache_lock:
+            original_state = dict(table_pagination_cache[page_token])
+
+    def blocked_page(_client, _database, _table_names, start_idx, _page_size, _details):
+        page_started.set()
+        try:
+            assert release_page.wait(timeout=2)
+            return [], start_idx + 1, True
+        finally:
+            page_finished.set()
+
+    entry = MagicMock(client=MagicMock())
+    try:
+        with (
+            patch(
+                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                return_value=entry,
+            ),
+            patch("mcp_clickhouse.mcp_server._release_client_entry"),
+            patch(
+                "mcp_clickhouse.mcp_server.fetch_table_names_from_system",
+                return_value=["first", "second", "third"],
+            ),
+            patch(
+                "mcp_clickhouse.mcp_server.get_paginated_table_data",
+                side_effect=blocked_page,
+            ),
+        ):
+            async with Client(mcp) as client:
+                call = asyncio.create_task(
+                    client.call_tool(
+                        "list_tables",
+                        {
+                            "database": "database",
+                            "page_token": page_token,
+                            "page_size": 1,
+                        },
+                    )
+                )
+                assert await asyncio.to_thread(page_started.wait, 2)
+                call.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await call
+
+            release_page.set()
+            assert await asyncio.to_thread(page_finished.wait, 2)
+
+        with _table_pagination_cache_lock:
+            if resume_from_token:
+                assert dict(table_pagination_cache) == {page_token: original_state}
+            else:
+                assert not table_pagination_cache
+    finally:
+        release_page.set()
         with _table_pagination_cache_lock:
             table_pagination_cache.clear()
 
