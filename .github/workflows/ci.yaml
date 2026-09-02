@@ -5,10 +5,22 @@ on:
     branches:
       - main
   pull_request:
+  schedule:
+    # Weekly early-warning run for the fastmcp-latest job. See that job for details.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 jobs:
   test:
+    # Regular PR/push checks only; the weekly schedule only runs fastmcp-latest.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    name: test (python ${{ matrix.python-version }})
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
 
     services:
       clickhouse:
@@ -24,11 +36,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
-      - name: Setup Python
-        run: uv python install 3.13
+      - name: Setup Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
 
-      - name: Install Project
-        run: uv sync --all-extras --dev
+      - name: Install Project (Python ${{ matrix.python-version }})
+        run: uv sync --all-extras --dev --python ${{ matrix.python-version }}
 
       - name: Run tests
         env:
@@ -44,10 +56,16 @@ jobs:
         run: |
           uv run pytest tests
 
+      # Ruff output does not depend on the interpreter version, so it only needs to
+      # run once per CI run; pinning it to the 3.13 leg (rather than every matrix
+      # leg) avoids duplicate, identical lint failures/noise across the matrix.
       - name: Lint with Ruff
+        if: matrix.python-version == '3.13'
         run: uv run ruff check .
 
   docker-build:
+    # Regular PR/push checks only; the weekly schedule only runs fastmcp-latest.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
 
     steps:
@@ -78,3 +96,56 @@ jobs:
             -e CLICKHOUSE_USER=default \
             -e CLICKHOUSE_PASSWORD="" \
             mcp-clickhouse:test || [ $? = 124 ] && echo "✅ Docker container starts successfully"
+
+  fastmcp-latest:
+    # Weekly early-warning job, not part of PR/push checks (see MIGRATION_DECISIONS.md
+    # D19). We pin an exact `fastmcp==4.0.1` release in pyproject.toml/uv.lock because
+    # FastMCP allows breaking changes in minor releases, so upstream changes are
+    # otherwise only noticed when someone deliberately bumps the pin. This job
+    # installs the latest compatible 4.x release on top of the pinned, synced
+    # environment and runs the suite against it, without touching uv.lock or
+    # pyproject.toml. A failure here is informational only: it tells maintainers
+    # something changed upstream, and it never blocks PRs or pushes to main.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    name: fastmcp-latest (python 3.13)
+
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.10
+        ports:
+          - 9000:9000
+          - 8123:8123
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Setup Python
+        run: uv python install 3.13
+
+      - name: Install Project
+        run: uv sync --all-extras --dev
+
+      - name: Install latest fastmcp 4.x
+        run: uv pip install --upgrade "fastmcp>=4,<5"
+
+      - name: Show installed fastmcp version
+        run: uv pip show fastmcp | head -3
+
+      - name: Run tests against latest fastmcp
+        env:
+          CLICKHOUSE_HOST: "localhost"
+          CLICKHOUSE_PORT: "8123"
+          CLICKHOUSE_USER: "default"
+          CLICKHOUSE_PASSWORD: ""
+          CLICKHOUSE_SECURE: "false"
+          CLICKHOUSE_VERIFY: "false"
+          CHDB_ENABLED: "true"
+          # Fail on camelCase MCP field reads; the SDK v2 bridge only warns. See MIGRATION_DECISIONS.md D6.
+          FASTMCP_MCP_CAMELCASE_COMPAT: "false"
+        run: |
+          uv run --no-sync pytest tests
