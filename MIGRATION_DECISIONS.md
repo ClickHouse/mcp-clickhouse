@@ -202,28 +202,48 @@ the test saturates the executor to prove it.
 - Follow-up: the README chDB section documents neither error contract. Add a
   line describing the payload shape.
 
-## D14. Tool annotations track the write and drop gates
+## D14. Tool annotations track the write gate
 
 - Every tool carries MCP `ToolAnnotations` (imported from `mcp.types`,
   snake_case fields). `list_databases`, `list_tables`, and
   `run_chdb_select_query` are `read_only_hint=True`, `destructive_hint=False`,
   `idempotent_hint=True`, `open_world_hint=True`.
 - `run_query` annotations are computed once at registration by
-  `_run_query_annotations(get_config())`: read-only mode -> `read_only_hint=True`,
-  `destructive_hint=False`; `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` ->
-  `read_only_hint=False`; `destructive_hint=True` only when
-  `CLICKHOUSE_ALLOW_DROP=true` is also set, matching the two-step gate.
-  `idempotent_hint` is always False and `open_world_hint` always True.
+  `_run_query_annotations(ClickHouseConfig())`: read-only mode ->
+  `read_only_hint=True`, `destructive_hint=False`;
+  `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` -> `read_only_hint=False`,
+  `destructive_hint=True`. `idempotent_hint` is always False and
+  `open_world_hint` always True.
+- The handover specified `destructive_hint=False` for write access without
+  `CLICKHOUSE_ALLOW_DROP`. Rejected after review: the MCP spec reads
+  `destructiveHint=false` as "performs only additive updates", but the drop
+  gate is `_validate_query_for_destructive_ops`, a keyword regex the server
+  itself describes as a best-effort accident guard. `ALTER TABLE ... MODIFY
+  COLUMN`, `OPTIMIZE ... DEDUPLICATE`, `ALTER TABLE ... MOVE PARTITION`,
+  `ALTER TABLE ... MODIFY TTL`, and `RENAME TABLE` all pass it. A client that
+  auto-approves non-destructive tools would auto-approve those, so write access
+  is advertised as destructive regardless of the drop gate.
+- With write access on but the server enforcing `readonly=1`, writes are
+  impossible yet `read_only_hint=False` is still advertised. That direction is
+  conservative and accepted.
 - Registration moved into `_register_clickhouse_tools(server)` so tests can
   register on a fresh `FastMCP` with a patched config and assert through
   `Client.list_tools()`.
-- `get_config()` was not previously called at import and importing with
-  `CLICKHOUSE_ENABLED=true` but no `CLICKHOUSE_HOST` succeeds today (the first
-  tool call reports it). Registration therefore catches `ValueError` from
-  `get_config()`, logs a warning, and advertises the default read-only
-  annotations rather than turning a lazy runtime error into an import failure.
-  Calling `get_config()` at import is otherwise harmless: `ClickHouseConfig`
-  holds no state and every property reads `os.environ` on access.
+- Registration reads the gates from a throwaway `ClickHouseConfig()` rather
+  than `get_config()`. The constructor runs `_validate_required_vars()` once
+  and `get_config()` caches the instance, so calling it at import would snapshot
+  the validation result: a caller that imports the package and then changes
+  `CLICKHOUSE_*` would later get a raw `KeyError` from a property instead of
+  the friendly `ValueError` the lazy first-call path produces. With the
+  throwaway instance `_CONFIG_INSTANCE` stays `None` after import and the
+  pre-existing lazy validation is untouched (asserted in
+  `tests/test_tool_contract.py`).
+- Importing with `CLICKHOUSE_ENABLED=true` but no `CLICKHOUSE_HOST` has never
+  failed (the first tool call reports it). Registration therefore catches
+  `ValueError` from the constructor, logs a WARNING, and advertises the default
+  read-only annotations rather than turning a lazy runtime error into an import
+  failure. The warning is new and will appear in import smoke tests with an
+  incomplete config.
 - AGENTS.md records annotations as part of the observable contract.
 
 ## D15. `output_schema=None` on every tool
@@ -245,7 +265,9 @@ the test saturates the executor to prove it.
   `website_url="https://github.com/ClickHouse/mcp-clickhouse"` (pyproject
   `[project.urls] Home`), so `initialize` returns the project version instead
   of FastMCP's 4.0.0. `_package_version()` returns None when the distribution is
-  not installed so a source checkout without `uv sync` still imports.
+  not installed so a source checkout without `uv sync` still imports; FastMCP
+  then substitutes its own version (`version or fastmcp.__version__`), so that
+  case behaves exactly as before this change.
 
 ## D17. `page_size` guard kept in `_list_tables_with_config`
 
@@ -256,20 +278,31 @@ the test saturates the executor to prove it.
 
 ## D18. Packaging declares what the server imports
 
-- `starlette>=1.0.1` is a direct dependency in `pyproject.toml` because
-  `mcp_server.py` and `http_security.py` import it directly; it was previously
-  only transitive through FastMCP. `uv add` regenerated the lockfile (two
-  metadata lines, no resolution change).
+- `starlette>=1.0.1`, `mcp>=2.0.0,<3.0.0`, and `pydantic>=2.0` are direct
+  dependencies in `pyproject.toml` because `mcp_server.py` (and
+  `http_security.py` for starlette) import them directly; they were previously
+  only transitive through FastMCP. The `mcp` import (`ToolAnnotations`) is new
+  in this branch. `uv add` regenerated the lockfile (metadata lines only, no
+  resolution change).
 - `fastmcp.json` `environment.dependencies` now lists `cachetools`,
-  `simplejson`, `uvicorn`, and `starlette` alongside the original three.
-  `tests/test_packaging_metadata.py` asserts the two lists match, using
-  `importlib.metadata.requires` rather than `tomllib` (3.11+).
+  `simplejson`, `uvicorn`, `starlette`, `mcp`, and `pydantic` alongside the
+  original three. `tests/test_packaging_metadata.py` asserts the two lists
+  match, using `importlib.metadata.requires` rather than `tomllib` (3.11+);
+  packages declared as optional extras (`chdb`) may appear in `fastmcp.json`
+  without failing the stale-dependency direction.
+- The dependency list alone does not make `fastmcp run fastmcp.json` work from
+  an arbitrary directory. FastMCP's filesystem source puts only the file's own
+  directory (`mcp_clickhouse/`) on `sys.path`, and `mcp_server.py` uses
+  absolute `mcp_clickhouse.` imports, so the project itself must be installed.
+  From the repository root `uv run` installs it editable, at which point every
+  pyproject dependency is already present. The CHANGELOG therefore says
+  "declares", not "fixes startup".
 - `"project": "."` was evaluated and not adopted. FastMCP's `UVEnvironment`
   composes `project` and `dependencies` (`uv run --project <path> --with ...`),
-  so it would not conflict, but it changes the execution strategy from an
-  ephemeral `--with` environment to a full project sync, and `fastmcp run
-  fastmcp.json` could not be exercised end to end here. Candidate for a
-  follow-up.
+  so it would not conflict and would resolve the import issue above, but it
+  changes the execution strategy from an ephemeral `--with` environment to a
+  full project sync, and `fastmcp run fastmcp.json` could not be exercised end
+  to end here. Candidate for a follow-up.
 - The D7 comment in `http_app` now gives the real reasons for keeping this
   project's DNS-rebinding middleware (built-in guard off by default, no SSE
   coverage, no `/health` exemption, no `X-Forwarded-Host` or trusted-proxy
@@ -383,8 +416,10 @@ state; `http_app` does not mutate the shared `mcp` instance; explicit
 - No SSE-transport regression test for the session-state leak (F5).
 - README chDB section does not document the `{"status": "error"}` payload
   shape (D13 follow-up).
-- `fastmcp.json` could use `"project": "."` instead of a hand-maintained
-  dependency list (D18); needs an end-to-end `fastmcp run` check first.
+- `fastmcp.json` could use `"project": "."` (or `"editable": ["."]`) so
+  `fastmcp run fastmcp.json` works outside the repository root; the
+  hand-maintained dependency list does not fix the `mcp_clickhouse` import
+  (D18). Needs an end-to-end `fastmcp run` check first.
 - Resolved: `tests/test_mcp_server.py::test_system_database_access` failed on
   ClickHouse 26.8 because it requested `page_size=100` and the `system` database
   now holds 139 tables, so `tables` (alphabetical position 124) fell on the
