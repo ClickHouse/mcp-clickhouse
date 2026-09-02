@@ -189,7 +189,7 @@ the test saturates the executor to prove it.
 - The lock test proves mutual exclusion: the first construction blocks inside a
   fake upstream `http_app` while a second construction is shown to wait.
 
-## D13. chDB tool errors stay a successful result
+## D13. chDB tool errors stay a successful result (superseded by D30)
 
 - `run_chdb_select_query` reports query failures, timeouts, and unexpected
   exceptions as a successful tool result whose JSON payload is
@@ -616,6 +616,103 @@ noted.
   uv command; no async fixtures exist so the fixture loop scope is inert; the
   README anchors resolve; no em dash, en dash, or smart quote was introduced.
 
+## D30. Acceptance-test round: chDB errors, mode-aware descriptions, chDB annotations
+
+A black-box acceptance test (a fresh Claude Code session driving the built wheel
+on Python 3.13 through eight MCP server configurations against ClickHouse 26.9
+and 24.10, over stdio and streamable HTTP; workspace `/tmp/mcp-clickhouse-uat`,
+report `REPORT.md` there) produced five failures and a list of confusing
+behaviors. Three items were introduced by or made cheap by this branch and are
+fixed here; the rest are pre-existing and deferred (D31).
+
+- `run_chdb_select_query` failures are MCP tool errors (user decision,
+  2026-09-02, reversing D13). Engine errors raise
+  `ToolError("chDB query failed: <message>")`, timeouts raise
+  `ToolError("chDB query timed out after N seconds")`, and unexpected exceptions
+  raise `ToolError("chDB query failed: <message>")`, in both the async wrapper
+  and the exported sync helper. The `{"status": "error"}` payload is gone. The
+  user accepted the break because the release is already breaking and the
+  tester independently found the old shape inconsistent with `run_query`.
+  Result rows keep their pre-existing list-of-objects shape.
+- The `run_query` description is computed at registration from the same gates
+  as the annotations and states the mode: read-only (including that a
+  `SETTINGS` clause is refused under `readonly=1`), writes without destructive
+  statements, or writes including them. It names the response shape and still
+  names the operator variable that changes the mode. The tester's strongest
+  usability finding was that the three configurations were indistinguishable
+  from the tool list. The incomplete-configuration fallback uses the read-only
+  text, matching the annotations fallback.
+- chDB annotations follow `CHDB_DATA_PATH`: `:memory:` keeps the read-only,
+  idempotent hints; a filesystem path advertises `read_only_hint=False`,
+  `destructive_hint=True`, `idempotent_hint=False`, because the tool runs any
+  SQL and the results persist. The description says which case applies without
+  printing the path.
+- The `query` parameter of both query tools gains a description through an
+  `Args:` block on the MCP-facing wrappers; it was the only undocumented
+  parameter, and FastMCP 4's docstring parser made the fix a docstring edit.
+- Verified clean by the tester and not changed: HTTP auth, Host, and Origin
+  gates over a real uvicorn process; the write and drop gates including the
+  string-literal and comment edge cases; `list_tables` metadata parity between
+  ClickHouse 26.9 and 24.10; large integers as strings; the 30 second timeout
+  followed by server-side cancellation; the branch versus the PyPI 0.5.0 release
+  (parameter descriptions, titles, annotations, unwrapped JSON, correct
+  `serverInfo.version`).
+
+## D31. Deferred findings from the acceptance test (deliberately not fixed here)
+
+Every item below exists on `main` today; the code paths are identical there.
+They are recorded so they can be fixed in a follow-up, or picked up now if the
+user chooses. None blocks the FastMCP 4 PR.
+
+1. `list_tables` accepts an unknown, expired, or already consumed `page_token`
+   and silently restarts at page 1 with a fresh token (`_list_tables_impl`
+   falls through when the token is not in `table_pagination_cache`, and also
+   when the cached filters differ from the request). A client that reuses a
+   token gets duplicate tables without any signal. Proposed fix: raise
+   `ToolError("Unknown or expired page_token")` in both cases; the filter
+   mismatch currently only logs.
+2. A `run_query` result with zero rows returns `{"columns": [], "rows": []}`.
+   clickhouse-connect's Native-format result carries no column names when the
+   result set is empty, so the schema is lost. Proposed fix: recover the
+   column list (for example from `result.column_names` after a
+   `WITH TOTALS`-free header, or by falling back to a `DESCRIBE` of the query)
+   and pin it with a test.
+3. Read-only refusals surface as raw ClickHouse exceptions: `INSERT` into a
+   missing table fails with `UNKNOWN_TABLE`, and `CREATE`/`DROP` with
+   `default: Cannot execute query in readonly mode. (READONLY)`, so a new user
+   blames the database account rather than the MCP setting. Proposed fix: when
+   the server itself applied `readonly=1`, wrap ClickHouse error code 164 with
+   "This MCP server runs in read-only mode; operators enable writes with
+   CLICKHOUSE_ALLOW_WRITE_ACCESS=true", and leave code 497 (ACCESS_DENIED,
+   the database user's grants) untouched. The mode-aware description (D30)
+   softens this in the meantime.
+4. `INSERT` returns `{"columns": [], "rows": []}` while DDL statements return
+   a statistics row (`read_rows`, `written_rows`, `elapsed_ns`, `query_id`,
+   mostly zeros). The one statement where `written_rows` is informative
+   reports nothing. Proposed fix: run non-SELECT statements through
+   `client.command` and return one normalized summary shape.
+5. ClickHouse error text passed to clients ends with
+   `(for url http://<host>:<port>)`, exposing the internal ClickHouse address,
+   and echoes ` FORMAT Native`, which clickhouse-connect appends. Proposed fix:
+   strip the `(for url ...)` suffix in `execute_query`'s error conversion.
+6. `Query timed out after N seconds` does not say the query was cancelled on
+   the server (it is, via `KILL QUERY`) or name `CLICKHOUSE_MCP_QUERY_TIMEOUT`.
+   Proposed fix: extend the message.
+7. Documentation gaps: Decimal values arrive as JSON strings while floats are
+   numbers, and `DateTime64` loses sub-second precision in the text form (the
+   README only warns about large integers); the `list_tables` description
+   promises a "column count" field that does not exist (`columns` is an array
+   and `total_rows`/`total_bytes` are `null` for views); the chDB prompt reads
+   as a system prompt for a specific chat product, with emoji headings and a
+   Python "analysis tool" fallback that calls the MCP tool as a function, and
+   never says that in-memory state is lost on restart.
+8. Not defects, recorded for completeness: tool annotations describe the MCP
+   configuration, not the database user's effective grants (D14, D22); the
+   HTTP 401 has an empty body but does carry `WWW-Authenticate: Bearer`; the
+   Agent Skills line in the server instructions is the 0.4.1 feature; prompts
+   and annotations are invisible in the Claude Code client, which is a client
+   limitation.
+
 ## Review findings and resolutions
 
 An adversarial review of the code diff ran after the first three commits.
@@ -725,6 +822,8 @@ state; `http_app` does not mutate the shared `mcp` instance; explicit
 - Before merging: update any branch protection rule that requires the `test`
   check to the matrix names `test (python 3.10)` and `test (python 3.13)`
   (D29).
+- Follow-up PR candidates from the acceptance test: the eight deferred items
+  in D31. The user may choose to fix some of them before release.
 - Next minor: remove the four deprecated pagination internals from
   `mcp_clickhouse.__all__` and `__getattr__` (D21, D26);
   `tests/test_public_api.py` pins the current state so the removal is a
