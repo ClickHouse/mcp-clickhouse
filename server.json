@@ -3,7 +3,7 @@
   "name": "io.github.ClickHouse/mcp-clickhouse",
   "title": "ClickHouse",
   "description": "Official ClickHouse MCP server for querying and exploring ClickHouse clusters and chDB.",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "repository": {
     "url": "https://github.com/ClickHouse/mcp-clickhouse",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "mcp-clickhouse",
-      "version": "0.4.0",
+      "version": "0.6.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -73,7 +73,7 @@
         },
         {
           "name": "CLICKHOUSE_ALLOW_DROP",
-          "description": "Allow destructive operations (DROP, TRUNCATE) when write access is also enabled",
+          "description": "Allow destructive operations (DROP, TRUNCATE, DELETE, UPDATE, REPLACE, CLEAR, and DETACH PERMANENTLY) when write access is also enabled",
           "format": "boolean",
           "default": "false",
           "isRequired": false
@@ -96,7 +96,7 @@
     },
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/clickhouse/mcp-clickhouse:0.4.0",
+      "identifier": "ghcr.io/clickhouse/mcp-clickhouse:0.6.0",
       "transport": {
         "type": "stdio"
       },
@@ -155,7 +155,7 @@
         },
         {
           "name": "CLICKHOUSE_ALLOW_DROP",
-          "description": "Allow destructive operations (DROP, TRUNCATE) when write access is also enabled",
+          "description": "Allow destructive operations (DROP, TRUNCATE, DELETE, UPDATE, REPLACE, CLEAR, and DETACH PERMANENTLY) when write access is also enabled",
           "format": "boolean",
           "default": "false",
           "isRequired": false

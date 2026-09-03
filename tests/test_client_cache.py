@@ -84,26 +84,19 @@ class TestClientCaching:
         assert mock_cc.get_client.call_count == 1
 
     @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    @patch("mcp_clickhouse.mcp_server.get_context")
-    def test_different_config_creates_new_client(self, mock_get_context, mock_cc):
-        """Different session configs should produce different cached clients."""
+    def test_different_config_creates_new_client(self, mock_cc):
+        """Different request configs should produce different cached clients."""
         mock_client_a = MagicMock(server_version="24.1")
         mock_client_b = MagicMock(server_version="24.1")
         mock_cc.get_client.side_effect = [mock_client_a, mock_client_b]
 
         # First call: no overrides
-        mock_ctx = MagicMock()
-        mock_ctx.get_state.return_value = None
-        mock_get_context.return_value = mock_ctx
         config1 = _resolve_client_config()
         entry1 = _acquire_clickhouse_client(config1)
         _release_client_entry(entry1)
 
         # Second call: with override that changes the config key
-        mock_ctx2 = MagicMock()
-        mock_ctx2.get_state.return_value = {"connect_timeout": 99}
-        mock_get_context.return_value = mock_ctx2
-        config2 = _resolve_client_config()
+        config2 = _resolve_client_config({"connect_timeout": 99})
         entry2 = _acquire_clickhouse_client(config2)
         _release_client_entry(entry2)
 
@@ -240,14 +233,9 @@ class TestResolveClientConfig:
         config = _resolve_client_config()
         assert config["send_receive_timeout"] == 200
 
-    @patch("mcp_clickhouse.mcp_server.get_context")
-    def test_session_override_timeout_not_capped(self, mock_get_context):
-        """Session override of send_receive_timeout should bypass the auto-cap."""
-        mock_ctx = MagicMock()
-        mock_ctx.get_state.return_value = {"send_receive_timeout": 300}
-        mock_get_context.return_value = mock_ctx
-
-        config = _resolve_client_config()
+    def test_request_override_timeout_not_capped(self):
+        """Request override of send_receive_timeout should bypass the auto-cap."""
+        config = _resolve_client_config({"send_receive_timeout": 300})
         assert config["send_receive_timeout"] == 300
 
 
@@ -509,13 +497,20 @@ class TestShutdownOrdering:
     @patch("mcp_clickhouse.mcp_server._clear_client_cache")
     @patch("mcp_clickhouse.mcp_server.HEALTH_EXECUTOR")
     @patch("mcp_clickhouse.mcp_server.CANCELLATION_EXECUTOR")
+    @patch("mcp_clickhouse.mcp_server.METADATA_EXECUTOR")
     @patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR")
     def test_executor_shutdown_runs_before_cache_clear(
-        self, mock_query_executor, mock_cancellation_executor, mock_health_executor, mock_clear
+        self,
+        mock_query_executor,
+        mock_metadata_executor,
+        mock_cancellation_executor,
+        mock_health_executor,
+        mock_clear,
     ):
         """Shutdown drains all executors before clearing the client cache."""
         call_order = []
         mock_query_executor.shutdown.side_effect = lambda wait: call_order.append("query")
+        mock_metadata_executor.shutdown.side_effect = lambda wait: call_order.append("metadata")
         mock_cancellation_executor.shutdown.side_effect = lambda wait: call_order.append(
             "cancel"
         )
@@ -524,8 +519,9 @@ class TestShutdownOrdering:
 
         _shutdown()
 
-        assert call_order == ["query", "cancel", "health", "cache"]
+        assert call_order == ["query", "metadata", "cancel", "health", "cache"]
         mock_query_executor.shutdown.assert_called_once_with(wait=True)
+        mock_metadata_executor.shutdown.assert_called_once_with(wait=True)
         mock_cancellation_executor.shutdown.assert_called_once_with(wait=True)
         mock_health_executor.shutdown.assert_called_once_with(wait=True)
         mock_clear.assert_called_once_with()

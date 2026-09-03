@@ -1,6 +1,7 @@
 import asyncio
 import atexit
 import concurrent.futures
+import importlib
 import inspect
 import json
 import logging
@@ -14,6 +15,8 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
+from functools import wraps
+from importlib.metadata import PackageNotFoundError, version as package_version
 from ipaddress import IPv4Network, IPv6Network
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
@@ -22,14 +25,17 @@ import simplejson
 from cachetools import TTLCache
 from clickhouse_connect.driver.binding import format_query_value
 from clickhouse_connect.driver.exceptions import OperationalError
-from dotenv import load_dotenv
-from fastmcp import FastMCP
+from dotenv import dotenv_values, load_dotenv
+from fastmcp import FastMCP, settings as fastmcp_settings
 from fastmcp.exceptions import ToolError
 from fastmcp.prompts import Prompt
+from fastmcp.server.auth import AuthProvider
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from fastmcp.server.dependencies import get_context
+from fastmcp.server.http import create_sse_app
 from fastmcp.tools import Tool
-from pydantic import Field
+from fastmcp.utilities.auth import parse_scopes
+from pydantic import Field, TypeAdapter
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -88,7 +94,58 @@ class _ActiveQueryState:
     cancelled: bool = False
 
 
+def _get_mcp_server_version() -> str:
+    """Return the installed package version or an explicit unknown marker."""
+    try:
+        return package_version("mcp-clickhouse")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _is_legacy_auth_name(name: str) -> bool:
+    return name.casefold().startswith("fastmcp_server_auth")
+
+
+def _find_default_dotenv() -> str:
+    """Find the nearest .env at or above the installed package directory."""
+    directory = os.path.dirname(os.path.realpath(__file__))
+    while True:
+        env_file = os.path.join(directory, ".env")
+        if os.path.isfile(env_file):
+            return env_file
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return ""
+        directory = parent
+
+
+def _load_default_dotenv() -> None:
+    """Load repository settings while preserving process auth precedence."""
+    auth_snapshot = {
+        name: value
+        for name, value in os.environ.items()
+        if _is_legacy_auth_name(name)
+    }
+    auth_process_names = {name.casefold() for name in auth_snapshot}
+    env_file_snapshot = {
+        name: value
+        for name, value in os.environ.items()
+        if name.casefold() == "fastmcp_env_file"
+    }
+    try:
+        load_dotenv(dotenv_path=_find_default_dotenv())
+    finally:
+        for name in tuple(os.environ):
+            if name.casefold() == "fastmcp_env_file" or (
+                _is_legacy_auth_name(name) and name.casefold() in auth_process_names
+            ):
+                del os.environ[name]
+        os.environ.update(auth_snapshot)
+        os.environ.update(env_file_snapshot)
+
+
 MCP_SERVER_NAME = "mcp-clickhouse"
+MCP_SERVER_VERSION = _get_mcp_server_version()
 CLIENT_CONFIG_OVERRIDES_KEY = "clickhouse_client_config_overrides"
 _CLIENT_CONFIG_OVERRIDES_UNSET = object()
 _NESTED_CLIENT_CONFIG_KEYS = ("settings", "generic_args")
@@ -100,10 +157,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(MCP_SERVER_NAME)
 
-load_dotenv()
+_load_default_dotenv()
 
 _max_workers = get_mcp_config().max_workers
 QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers)
+_METADATA_MAX_WORKERS = max(1, min(4, _max_workers))
+METADATA_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=_METADATA_MAX_WORKERS)
 CANCELLATION_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 HEALTH_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 _QUERY_CANCELLATION_WAIT_SECONDS = 1.0
@@ -123,23 +182,380 @@ _logged_health_probe_futures: weakref.WeakSet[concurrent.futures.Future] = weakr
 
 _HTTP_TRANSPORTS = (TransportType.HTTP.value, "streamable-http", TransportType.SSE.value)
 _BUILTIN_HTTP_RAW_CLIENT = ContextVar("builtin_http_raw_client", default=False)
+_SSE_DEPRECATION_MESSAGE = (
+    "The legacy HTTP+SSE transport is deprecated. Use "
+    "CLICKHOUSE_MCP_SERVER_TRANSPORT=http for Streamable HTTP."
+)
+
+_LEGACY_AUTH_PROVIDER_ENV: dict[str, tuple[str, tuple[str, ...]]] = {
+    "fastmcp.server.auth.providers.auth0.Auth0Provider": (
+        "AUTH0_",
+        (
+            "config_url",
+            "client_id",
+            "client_secret",
+            "audience",
+            "base_url",
+            "issuer_url",
+            "redirect_path",
+            "required_scopes",
+            "allowed_client_redirect_uris",
+            "jwt_signing_key",
+        ),
+    ),
+    "fastmcp.server.auth.providers.aws.AWSCognitoProvider": (
+        "AWS_COGNITO_",
+        (
+            "user_pool_id",
+            "aws_region",
+            "client_id",
+            "client_secret",
+            "base_url",
+            "issuer_url",
+            "redirect_path",
+            "required_scopes",
+            "allowed_client_redirect_uris",
+            "jwt_signing_key",
+        ),
+    ),
+    "fastmcp.server.auth.providers.azure.AzureProvider": (
+        "AZURE_",
+        (
+            "client_id",
+            "client_secret",
+            "tenant_id",
+            "identifier_uri",
+            "base_url",
+            "issuer_url",
+            "redirect_path",
+            "required_scopes",
+            "additional_authorize_scopes",
+            "allowed_client_redirect_uris",
+            "jwt_signing_key",
+            "base_authority",
+        ),
+    ),
+    "fastmcp.server.auth.providers.descope.DescopeProvider": (
+        "DESCOPEPROVIDER_",
+        ("config_url", "project_id", "descope_base_url", "base_url", "required_scopes"),
+    ),
+    "fastmcp.server.auth.providers.discord.DiscordProvider": (
+        "DISCORD_",
+        (
+            "client_id",
+            "client_secret",
+            "base_url",
+            "issuer_url",
+            "redirect_path",
+            "required_scopes",
+            "timeout_seconds",
+            "allowed_client_redirect_uris",
+            "jwt_signing_key",
+        ),
+    ),
+    "fastmcp.server.auth.providers.github.GitHubProvider": (
+        "GITHUB_",
+        (
+            "client_id",
+            "client_secret",
+            "base_url",
+            "issuer_url",
+            "redirect_path",
+            "required_scopes",
+            "timeout_seconds",
+            "allowed_client_redirect_uris",
+            "jwt_signing_key",
+        ),
+    ),
+    "fastmcp.server.auth.providers.google.GoogleProvider": (
+        "GOOGLE_",
+        (
+            "client_id",
+            "client_secret",
+            "base_url",
+            "issuer_url",
+            "redirect_path",
+            "required_scopes",
+            "timeout_seconds",
+            "allowed_client_redirect_uris",
+            "jwt_signing_key",
+        ),
+    ),
+    "fastmcp.server.auth.providers.introspection.IntrospectionTokenVerifier": (
+        "INTROSPECTION_",
+        (
+            "introspection_url",
+            "client_id",
+            "client_secret",
+            "timeout_seconds",
+            "required_scopes",
+            "base_url",
+        ),
+    ),
+    "fastmcp.server.auth.providers.jwt.JWTVerifier": (
+        "JWT_",
+        (
+            "public_key",
+            "jwks_uri",
+            "issuer",
+            "algorithm",
+            "audience",
+            "required_scopes",
+            "base_url",
+        ),
+    ),
+    "fastmcp.server.auth.providers.oci.OCIProvider": (
+        "OCI_",
+        (
+            "config_url",
+            "client_id",
+            "client_secret",
+            "audience",
+            "base_url",
+            "issuer_url",
+            "redirect_path",
+            "required_scopes",
+            "allowed_client_redirect_uris",
+            "jwt_signing_key",
+        ),
+    ),
+    "fastmcp.server.auth.providers.scalekit.ScalekitProvider": (
+        "SCALEKITPROVIDER_",
+        ("environment_url", "resource_id", "base_url", "mcp_url", "required_scopes"),
+    ),
+    "fastmcp.server.auth.providers.supabase.SupabaseProvider": (
+        "SUPABASE_",
+        ("project_url", "base_url", "auth_route", "algorithm", "required_scopes"),
+    ),
+    "fastmcp.server.auth.providers.workos.WorkOSProvider": (
+        "WORKOS_",
+        (
+            "client_id",
+            "client_secret",
+            "authkit_domain",
+            "base_url",
+            "issuer_url",
+            "redirect_path",
+            "required_scopes",
+            "timeout_seconds",
+            "allowed_client_redirect_uris",
+            "jwt_signing_key",
+        ),
+    ),
+    "fastmcp.server.auth.providers.workos.AuthKitProvider": (
+        "AUTHKITPROVIDER_",
+        ("authkit_domain", "base_url", "required_scopes"),
+    ),
+}
+_AUTH_SCOPE_FIELDS = frozenset({"required_scopes", "additional_authorize_scopes"})
+_AUTH_JSON_LIST_FIELDS = frozenset({"allowed_client_redirect_uris"})
+_AUTH_INT_FIELDS = frozenset({"timeout_seconds"})
+_AUTH_INT_ADAPTER = TypeAdapter(int)
+_LEGACY_AUTH_SCOPE_DEFAULTS = {
+    "fastmcp.server.auth.providers.auth0.Auth0Provider": ["openid"],
+    "fastmcp.server.auth.providers.aws.AWSCognitoProvider": ["openid"],
+    "fastmcp.server.auth.providers.discord.DiscordProvider": ["identify"],
+    "fastmcp.server.auth.providers.github.GitHubProvider": ["user"],
+    "fastmcp.server.auth.providers.google.GoogleProvider": ["openid"],
+    "fastmcp.server.auth.providers.oci.OCIProvider": ["openid"],
+}
+_LEGACY_ZERO_TIMEOUT_DEFAULTS = frozenset(
+    {
+        "fastmcp.server.auth.providers.discord.DiscordProvider",
+        "fastmcp.server.auth.providers.github.GitHubProvider",
+        "fastmcp.server.auth.providers.google.GoogleProvider",
+        "fastmcp.server.auth.providers.workos.WorkOSProvider",
+    }
+)
+
+
+def _get_case_insensitive_value(
+    values: Mapping[str, Optional[str]], env_name: str
+) -> Optional[str]:
+    normalized_name = env_name.casefold()
+    matched_value = None
+    for configured_name, value in values.items():
+        if configured_name.casefold() == normalized_name:
+            matched_value = value
+    return matched_value
+
+
+def _get_legacy_auth_file_values() -> dict[str, Optional[str]]:
+    """Read FastMCP 2 auth settings without mutating the process environment."""
+    env_file = _get_case_insensitive_value(os.environ, "FASTMCP_ENV_FILE")
+    explicit_env_file = env_file is not None
+    values = dotenv_values(env_file if explicit_env_file else ".env")
+    return {
+        name: value
+        for name, value in values.items()
+        if _is_legacy_auth_name(name)
+        and (explicit_env_file or name.casefold() != "fastmcp_server_auth")
+    }
+
+
+def _get_legacy_auth_env(
+    env_name: str,
+    auth_file_values: Optional[Mapping[str, Optional[str]]] = None,
+) -> Optional[str]:
+    """Read a FastMCP 2 auth variable with process-first precedence."""
+    process_value = _get_case_insensitive_value(os.environ, env_name)
+    if process_value is not None:
+        return process_value
+    file_values = (
+        auth_file_values
+        if auth_file_values is not None
+        else _get_legacy_auth_file_values()
+    )
+    return _get_case_insensitive_value(file_values, env_name)
+
+
+def _parse_auth_provider_env_value(
+    provider_path: str,
+    field_name: str,
+    env_name: str,
+    value: str,
+) -> Any:
+    """Parse one legacy FastMCP auth provider environment value."""
+    try:
+        if field_name in _AUTH_SCOPE_FIELDS:
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return parse_scopes(value)
+            if parsed is None:
+                return None
+            if isinstance(parsed, str) or (
+                isinstance(parsed, list)
+                and all(isinstance(item, str) for item in parsed)
+            ):
+                return parse_scopes(parsed)
+            raise ValueError
+        if field_name in _AUTH_JSON_LIST_FIELDS:
+            parsed = json.loads(value)
+            if parsed is None:
+                return None
+            if not isinstance(parsed, list) or not all(
+                isinstance(item, str) for item in parsed
+            ):
+                raise ValueError
+            return parsed
+        if (
+            provider_path == "fastmcp.server.auth.providers.jwt.JWTVerifier"
+            and field_name in {"issuer", "audience"}
+        ):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return value
+            if parsed is None:
+                return None
+            if isinstance(parsed, str):
+                return parsed
+            if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+                raise ValueError
+            return parsed
+        if field_name in _AUTH_INT_FIELDS:
+            return _AUTH_INT_ADAPTER.validate_python(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise ValueError(
+            f"Invalid {env_name} value for FastMCP auth provider {provider_path}"
+        ) from None
+    return value
+
+
+def _load_fastmcp_auth_provider(
+    provider_path: str,
+    *,
+    auth_file_values: Optional[Mapping[str, Optional[str]]] = None,
+) -> AuthProvider:
+    """Load a FastMCP 2 style auth provider configuration under FastMCP 4."""
+    if auth_file_values is None:
+        auth_file_values = _get_legacy_auth_file_values()
+
+    module_name, separator, class_name = provider_path.rpartition(".")
+    if not separator:
+        raise ValueError("FASTMCP_SERVER_AUTH must be a full AuthProvider class path")
+    try:
+        provider_class = getattr(importlib.import_module(module_name), class_name)
+    except (AttributeError, ImportError):
+        raise ValueError(f"Could not import FASTMCP_SERVER_AUTH provider {provider_path}") from None
+    if not inspect.isclass(provider_class) or not issubclass(provider_class, AuthProvider):
+        raise ValueError(f"FASTMCP_SERVER_AUTH provider {provider_path} is not an AuthProvider")
+
+    provider_config = _LEGACY_AUTH_PROVIDER_ENV.get(provider_path)
+    kwargs: dict[str, Any] = {}
+    if provider_config is not None:
+        prefix, fields = provider_config
+        for field_name in fields:
+            env_name = f"FASTMCP_SERVER_AUTH_{prefix}{field_name.upper()}"
+            value = _get_legacy_auth_env(env_name, auth_file_values)
+            if value is None:
+                continue
+            kwargs[field_name] = _parse_auth_provider_env_value(
+                provider_path,
+                field_name,
+                env_name,
+                value,
+            )
+
+    scope_default = _LEGACY_AUTH_SCOPE_DEFAULTS.get(provider_path)
+    if scope_default is not None and not kwargs.get("required_scopes"):
+        kwargs["required_scopes"] = scope_default
+    if provider_path in _LEGACY_ZERO_TIMEOUT_DEFAULTS and kwargs.get("timeout_seconds") == 0:
+        kwargs["timeout_seconds"] = 10
+    if (
+        provider_path == "fastmcp.server.auth.providers.aws.AWSCognitoProvider"
+        and kwargs.get("aws_region") == ""
+    ):
+        kwargs["aws_region"] = "eu-central-1"
+    if provider_path == (
+        "fastmcp.server.auth.providers.introspection.IntrospectionTokenVerifier"
+    ):
+        prefix = _LEGACY_AUTH_PROVIDER_ENV[provider_path][0]
+        for required_field in ("introspection_url", "client_id", "client_secret"):
+            if not kwargs.get(required_field):
+                env_name = f"FASTMCP_SERVER_AUTH_{prefix}{required_field.upper()}"
+                raise ValueError(
+                    f"{env_name} is required for FastMCP auth provider {provider_path}"
+                )
+
+    if (
+        provider_path == "fastmcp.server.auth.providers.supabase.SupabaseProvider"
+        and str(kwargs.get("algorithm", "")).upper() == "HS256"
+    ):
+        raise ValueError(
+            "FASTMCP_SERVER_AUTH_SUPABASE_ALGORITHM=HS256 is not supported by FastMCP 4. "
+            "Configure RS256 or ES256."
+        )
+
+    try:
+        provider = provider_class(**kwargs)
+    except Exception as exc:
+        raise ValueError(
+            f"Invalid FASTMCP_SERVER_AUTH configuration for provider {provider_path} "
+            f"({type(exc).__name__})"
+        ) from None
+    return provider
 
 
 def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]:
     """Resolve FastMCP auth kwargs for the requested transport.
 
-    An empty return dict omits the `auth` kwarg so FastMCP auto-detects its
-    provider from FASTMCP_SERVER_AUTH / FASTMCP_SERVER_AUTH_* env vars.
-    Returning {"auth": None} instead explicitly disables auth.
+    Returning {"auth": None} explicitly disables auth. FastMCP 4 removed
+    environment provider loading, so this server retains the documented
+    FastMCP 2 environment contract through a compatibility loader.
     """
     transport = transport or mcp_config.server_transport
     if transport not in _HTTP_TRANSPORTS:
         return {}
 
+    auth_file_values = _get_legacy_auth_file_values()
+    provider_path = _get_legacy_auth_env("FASTMCP_SERVER_AUTH", auth_file_values)
+
     configured = {
         "CLICKHOUSE_MCP_AUTH_DISABLED": mcp_config.auth_disabled,
         "CLICKHOUSE_MCP_AUTH_TOKEN": bool(mcp_config.auth_token),
-        "FASTMCP_SERVER_AUTH": bool(os.getenv("FASTMCP_SERVER_AUTH")),
+        "FASTMCP_SERVER_AUTH": bool(provider_path),
     }
     active = [name for name, is_set in configured.items() if is_set]
 
@@ -172,11 +588,14 @@ def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]
         logger.info("Authentication enabled for HTTP/SSE transport (static bearer token)")
         return {"auth": verifier}
 
-    logger.info(
-        "Authentication delegated to FastMCP provider: %s", os.getenv("FASTMCP_SERVER_AUTH")
-    )
-    # Return empty kwargs so FastMCP auto-loads from FASTMCP_SERVER_AUTH_* env vars.
-    return {}
+    assert provider_path is not None
+    logger.info("Authentication delegated to FastMCP provider: %s", provider_path)
+    return {
+        "auth": _load_fastmcp_auth_provider(
+            provider_path,
+            auth_file_values=auth_file_values,
+        )
+    }
 
 
 def _proxy_header_trusted_hosts(
@@ -208,6 +627,8 @@ class ClickHouseFastMCP(FastMCP):
         upstream_http_app = super().http_app
         bound_args = inspect.signature(upstream_http_app).bind_partial(*args, **kwargs)
         transport = bound_args.arguments.get("transport", TransportType.HTTP.value)
+        if transport == TransportType.SSE.value:
+            logger.warning(_SSE_DEPRECATION_MESSAGE)
         mcp_config = get_mcp_config()
         trusted_proxies = mcp_config.trusted_proxies
         if _BUILTIN_HTTP_RAW_CLIENT.get():
@@ -231,9 +652,10 @@ class ClickHouseFastMCP(FastMCP):
         else:
             app_auth = original_auth
 
+        bound_args.arguments["host_origin_protection"] = False
         self.auth = app_auth
         try:
-            app = upstream_http_app(*args, **kwargs)
+            app = upstream_http_app(*bound_args.args, **bound_args.kwargs)
         finally:
             self.auth = original_auth
         if getattr(app.state, "path", None) == "/health":
@@ -258,26 +680,45 @@ class ClickHouseFastMCP(FastMCP):
         *,
         raw_client_address_preserved: bool = False,
     ) -> Any:
-        """Create a secured SSE app.
-
-        FastMCP 2.12 and 2.13 build this app without going through http_app,
-        skipping auth and transport validation. Deprecated upstream; prefer
-        http_app(transport="sse"). Intended for startup-time construction: the
-        temporary message_path settings mutation is not concurrency-safe.
-        """
-        settings = self._deprecated_settings
-        original_message_path = settings.message_path
-        if message_path is not None:
-            settings.message_path = message_path
-        try:
-            return self.http_app(
-                path=path,
-                middleware=middleware,
-                transport=TransportType.SSE.value,
-                raw_client_address_preserved=raw_client_address_preserved,
+        """Create a secured legacy SSE app."""
+        logger.warning(_SSE_DEPRECATION_MESSAGE)
+        mcp_config = get_mcp_config()
+        trusted_proxies = mcp_config.trusted_proxies
+        if trusted_proxies and not raw_client_address_preserved:
+            raise ValueError(
+                "CLICKHOUSE_MCP_TRUSTED_PROXIES requires a raw ASGI client address. "
+                "Disable proxy-header processing in the outer ASGI server and pass "
+                "raw_client_address_preserved=True."
             )
-        finally:
-            settings.message_path = original_message_path
+
+        sse_path = path or fastmcp_settings.sse_path
+        resolved_message_path = message_path or fastmcp_settings.message_path
+        if sse_path == "/health" or resolved_message_path == "/health":
+            raise ValueError(
+                "MCP transport path cannot be /health because that path is reserved "
+                "for the public health endpoint"
+            )
+        auth_kwargs = _resolve_auth(mcp_config, transport=TransportType.SSE.value)
+        app_auth = auth_kwargs.get("auth", self.auth)
+        if app_auth is None and "auth" not in auth_kwargs:
+            raise ValueError("FASTMCP_SERVER_AUTH did not create an authentication provider")
+
+        app = create_sse_app(
+            server=self,
+            message_path=resolved_message_path,
+            sse_path=sse_path,
+            auth=app_auth,
+            debug=fastmcp_settings.debug,
+            middleware=middleware,
+        )
+        if trusted_proxies:
+            app.add_middleware(
+                ProxyHeadersMiddleware,
+                trusted_hosts=_proxy_header_trusted_hosts(trusted_proxies),
+            )
+        for configured_middleware in transport_security_middleware(mcp_config):
+            app.add_middleware(configured_middleware.cls, **configured_middleware.kwargs)
+        return app
 
     def streamable_http_app(
         self,
@@ -333,6 +774,7 @@ class ClickHouseFastMCP(FastMCP):
 
 mcp = ClickHouseFastMCP(
     name=MCP_SERVER_NAME,
+    version=MCP_SERVER_VERSION,
     instructions=CLICKHOUSE_SERVER_INSTRUCTIONS,
 )
 _chdb_client = None
@@ -550,8 +992,12 @@ else:
 
 def list_databases() -> str:
     """List available ClickHouse databases"""
+    return _list_databases_with_config(_resolve_client_config())
+
+
+def _list_databases_with_config(config: dict[str, Any]) -> str:
+    """List databases with a resolved client configuration."""
     logger.info("Listing all databases")
-    config = _resolve_client_config()
 
     for attempt in range(2):
         entry = None
@@ -581,9 +1027,31 @@ def list_databases() -> str:
     return _serialize_tool_result(databases)
 
 
-# Store pagination state for list_tables with 1-hour expiry
-# Using TTLCache from cachetools to automatically expire entries after 1 hour
+@wraps(list_databases)
+async def list_databases_async() -> str:
+    overrides = await _get_client_config_overrides_for_tool()
+    config = _resolve_client_config(overrides)
+    future = METADATA_EXECUTOR.submit(_list_databases_with_config, config)
+    return await asyncio.wrap_future(future)
+
+
+# Store pagination state for list_tables with an absolute 1-hour expiry.
 table_pagination_cache: TTLCache = TTLCache(maxsize=100, ttl=3600)  # 3600 seconds = 1 hour
+_table_pagination_cache_lock = threading.Lock()
+_PAGE_TOKEN_EXPIRES_AT = "_expires_at"
+_CLAIM_PAGE_TOKEN_IN_WORKER = object()
+
+
+@dataclass(frozen=True)
+class _PendingPageToken:
+    token: str
+    state: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _PreparedListTablesResult:
+    response: str
+    pending_page_token: Optional[_PendingPageToken]
 
 
 def fetch_table_names_from_system(
@@ -695,16 +1163,91 @@ def create_page_token(
     Returns:
         New page token
     """
-    token = str(uuid.uuid4())
-    table_pagination_cache[token] = {
-        "database": database,
-        "like": like,
-        "not_like": not_like,
-        "table_names": table_names,
-        "start_idx": end_idx,
-        "include_detailed_columns": include_detailed_columns,
-    }
-    return token
+    pending_page_token = _prepare_page_token(
+        database,
+        like,
+        not_like,
+        table_names,
+        end_idx,
+        include_detailed_columns,
+    )
+    _commit_page_token(pending_page_token)
+    return pending_page_token.token
+
+
+def _prepare_page_token(
+    database: str,
+    like: Optional[str],
+    not_like: Optional[str],
+    table_names: List[str],
+    end_idx: int,
+    include_detailed_columns: bool,
+) -> _PendingPageToken:
+    """Prepare a page token without making it available to clients."""
+    return _PendingPageToken(
+        token=str(uuid.uuid4()),
+        state={
+            "database": database,
+            "like": like,
+            "not_like": not_like,
+            "table_names": table_names,
+            "start_idx": end_idx,
+            "include_detailed_columns": include_detailed_columns,
+        },
+    )
+
+
+def _commit_page_token(pending_page_token: _PendingPageToken) -> None:
+    """Make a prepared page token available for one hour."""
+    with _table_pagination_cache_lock:
+        expires_at = table_pagination_cache.timer() + table_pagination_cache.ttl
+        state = dict(pending_page_token.state)
+        state[_PAGE_TOKEN_EXPIRES_AT] = expires_at
+        table_pagination_cache[pending_page_token.token] = state
+
+
+def _claim_page_token_for_request(
+    page_token: str,
+    database: str,
+    like: Optional[str],
+    not_like: Optional[str],
+    include_detailed_columns: bool,
+) -> Optional[dict[str, Any]]:
+    """Claim a matching page token and leave a mismatched token untouched."""
+    mismatch = False
+    with _table_pagination_cache_lock:
+        state = table_pagination_cache.get(page_token)
+        if state is None:
+            return None
+        expires_at = state.get(_PAGE_TOKEN_EXPIRES_AT)
+        if expires_at is not None and expires_at <= table_pagination_cache.timer():
+            table_pagination_cache.pop(page_token, None)
+            return None
+        cached_include_detailed = state.get("include_detailed_columns", True)
+        mismatch = (
+            state["database"] != database
+            or state["like"] != like
+            or state["not_like"] != not_like
+            or cached_include_detailed != include_detailed_columns
+        )
+        if not mismatch:
+            return table_pagination_cache.pop(page_token)
+
+    logger.warning(
+        "Page token %s is for a different database, filter, or metadata setting. "
+        "Ignoring token and starting from beginning.",
+        page_token,
+    )
+    return None
+
+
+def _restore_page_token(page_token: str, state: dict[str, Any]) -> None:
+    """Restore a claimed pagination token unless another value already exists."""
+    with _table_pagination_cache_lock:
+        expires_at = state.get(_PAGE_TOKEN_EXPIRES_AT)
+        if expires_at is not None and expires_at <= table_pagination_cache.timer():
+            return
+        table_pagination_cache.setdefault(page_token, state)
 
 
 def list_tables(
@@ -720,12 +1263,13 @@ def list_tables(
 
     Integers outside [-9007199254740991, 9007199254740991] in table metadata are
     returned as decimal strings.
+    Pagination tokens are single-use and retained for up to one hour.
 
     Args:
         database: The database to list tables from
         like: Optional LIKE pattern to filter table names
         not_like: Optional NOT LIKE pattern to exclude table names
-        page_token: Token for pagination, obtained from a previous call
+        page_token: Single-use token from a previous call, retained for up to one hour
         page_size: Number of tables to return per page (default: 50, must be greater than 0)
         include_detailed_columns: Whether to include detailed column metadata (default: True).
             When False, the columns array will be empty but create_table_query still contains
@@ -740,6 +1284,45 @@ def list_tables(
     if page_size <= 0:
         raise ToolError("page_size must be greater than 0")
 
+    return _list_tables_with_config(
+        _resolve_client_config(),
+        database,
+        like,
+        not_like,
+        page_token,
+        page_size,
+        include_detailed_columns,
+    )
+
+
+def _list_tables_with_config(
+    config: dict[str, Any],
+    database: str,
+    like: Optional[str],
+    not_like: Optional[str],
+    page_token: Optional[str],
+    page_size: int,
+    include_detailed_columns: bool,
+    claimed_page_state: object = _CLAIM_PAGE_TOKEN_IN_WORKER,
+) -> str | _PreparedListTablesResult:
+    """List tables with a resolved client configuration."""
+    if page_size <= 0:
+        raise ToolError("page_size must be greater than 0")
+
+    owns_page_token_transaction = claimed_page_state is _CLAIM_PAGE_TOKEN_IN_WORKER
+    if owns_page_token_transaction:
+        claimed_page_state = (
+            _claim_page_token_for_request(
+                page_token,
+                database,
+                like,
+                not_like,
+                include_detailed_columns,
+            )
+            if page_token
+            else None
+        )
+
     logger.info(
         "Listing tables in database '%s' with like=%s, not_like=%s, "
         "page_token=%s, page_size=%s, include_detailed_columns=%s",
@@ -750,27 +1333,97 @@ def list_tables(
         page_size,
         include_detailed_columns,
     )
-    config = _resolve_client_config()
 
-    for attempt in range(2):
-        entry = None
-        try:
-            entry = _acquire_clickhouse_client(config)
-            client = entry.client
-            return _list_tables_impl(
-                client, database, like, not_like, page_token,
-                page_size, include_detailed_columns,
-            )
-        except Exception as err:
-            if attempt == 0 and _is_connection_error(err):
-                logger.warning("list_tables connection error, retrying: %s", err)
+    try:
+        for attempt in range(2):
+            entry = None
+            try:
+                entry = _acquire_clickhouse_client(config)
+                client = entry.client
+                prepared_result = _list_tables_impl(
+                    client,
+                    database,
+                    like,
+                    not_like,
+                    page_token,
+                    page_size,
+                    include_detailed_columns,
+                    claimed_page_state,
+                )
+                break
+            except Exception as err:
+                if attempt == 0 and _is_connection_error(err):
+                    logger.warning("list_tables connection error, retrying: %s", err)
+                    if entry is not None:
+                        _evict_cached_client(config, entry.client)
+                    continue
+                raise
+            finally:
                 if entry is not None:
-                    _evict_cached_client(config, entry.client)
-                continue
-            raise
-        finally:
-            if entry is not None:
-                _release_client_entry(entry)
+                    _release_client_entry(entry)
+    except BaseException:
+        if owns_page_token_transaction and page_token and claimed_page_state is not None:
+            _restore_page_token(page_token, claimed_page_state)
+        raise
+
+    try:
+        if not owns_page_token_transaction:
+            return prepared_result
+        if prepared_result.pending_page_token is not None:
+            _commit_page_token(prepared_result.pending_page_token)
+        return prepared_result.response
+    except BaseException:
+        if owns_page_token_transaction and page_token and claimed_page_state is not None:
+            _restore_page_token(page_token, claimed_page_state)
+        raise
+
+
+@wraps(list_tables)
+async def list_tables_async(
+    database: str,
+    like: Optional[str] = None,
+    not_like: Optional[str] = None,
+    page_token: Optional[str] = None,
+    page_size: Annotated[int, Field(gt=0)] = 50,
+    include_detailed_columns: bool = True,
+) -> str:
+    overrides = await _get_client_config_overrides_for_tool()
+    config = _resolve_client_config(overrides)
+    claimed_page_state = (
+        _claim_page_token_for_request(
+            page_token,
+            database,
+            like,
+            not_like,
+            include_detailed_columns,
+        )
+        if page_token
+        else None
+    )
+    completed = False
+    try:
+        future = METADATA_EXECUTOR.submit(
+            _list_tables_with_config,
+            config,
+            database,
+            like,
+            not_like,
+            page_token,
+            page_size,
+            include_detailed_columns,
+            claimed_page_state,
+        )
+        prepared_result = await asyncio.wrap_future(future)
+        if isinstance(prepared_result, str):
+            completed = True
+            return prepared_result
+        if prepared_result.pending_page_token is not None:
+            _commit_page_token(prepared_result.pending_page_token)
+        completed = True
+        return prepared_result.response
+    finally:
+        if not completed and page_token and claimed_page_state is not None:
+            _restore_page_token(page_token, claimed_page_state)
 
 
 def _list_tables_impl(
@@ -781,56 +1434,43 @@ def _list_tables_impl(
     page_token: Optional[str],
     page_size: int,
     include_detailed_columns: bool,
-) -> Dict[str, Any]:
+    claimed_page_state: object = None,
+) -> _PreparedListTablesResult:
     """Inner implementation of list_tables, separated for retry logic."""
-    if page_token and page_token in table_pagination_cache:
-        cached_state = table_pagination_cache[page_token]
-        cached_include_detailed = cached_state.get("include_detailed_columns", True)
+    if claimed_page_state is not None:
+        table_names = claimed_page_state["table_names"]
+        start_idx = claimed_page_state["start_idx"]
 
-        if (
-            cached_state["database"] != database
-            or cached_state["like"] != like
-            or cached_state["not_like"] != not_like
-            or cached_include_detailed != include_detailed_columns
-        ):
-            logger.warning(
-                "Page token %s is for a different database, filter, or metadata setting. "
-                "Ignoring token and starting from beginning.",
-                page_token,
+        tables, end_idx, has_more = get_paginated_table_data(
+            client,
+            database,
+            table_names,
+            start_idx,
+            page_size,
+            include_detailed_columns,
+        )
+
+        pending_page_token = None
+        if has_more:
+            pending_page_token = _prepare_page_token(
+                database, like, not_like, table_names, end_idx, include_detailed_columns
             )
-            page_token = None
-        else:
-            table_names = cached_state["table_names"]
-            start_idx = cached_state["start_idx"]
+        next_page_token = pending_page_token.token if pending_page_token else None
 
-            tables, end_idx, has_more = get_paginated_table_data(
-                client,
-                database,
-                table_names,
-                start_idx,
-                page_size,
-                include_detailed_columns,
-            )
-
-            next_page_token = None
-            if has_more:
-                next_page_token = create_page_token(
-                    database, like, not_like, table_names, end_idx, include_detailed_columns
-                )
-
-            del table_pagination_cache[page_token]
-
-            logger.info(
-                "Returned page with %s tables (total: %s), next_page_token=%s",
-                len(tables),
-                len(table_names),
-                next_page_token,
-            )
-            return _serialize_tool_result({
+        logger.info(
+            "Returned page with %s tables (total: %s), next_page_token=%s",
+            len(tables),
+            len(table_names),
+            next_page_token,
+        )
+        return _PreparedListTablesResult(
+            response=_serialize_tool_result({
                 "tables": [asdict(table) for table in tables],
                 "next_page_token": next_page_token,
                 "total_tables": len(table_names),
-            })
+            }),
+            pending_page_token=pending_page_token,
+        )
 
     table_names = fetch_table_names_from_system(client, database, like, not_like)
 
@@ -844,11 +1484,12 @@ def _list_tables_impl(
         include_detailed_columns,
     )
 
-    next_page_token = None
+    pending_page_token = None
     if has_more:
-        next_page_token = create_page_token(
+        pending_page_token = _prepare_page_token(
             database, like, not_like, table_names, end_idx, include_detailed_columns
         )
+    next_page_token = pending_page_token.token if pending_page_token else None
 
     logger.info(
         "Found %s tables, returning %s with next_page_token=%s",
@@ -857,11 +1498,14 @@ def _list_tables_impl(
         next_page_token,
     )
 
-    return _serialize_tool_result({
-        "tables": [asdict(table) for table in tables],
-        "next_page_token": next_page_token,
-        "total_tables": len(table_names),
-    })
+    return _PreparedListTablesResult(
+        response=_serialize_tool_result({
+            "tables": [asdict(table) for table in tables],
+            "next_page_token": next_page_token,
+            "total_tables": len(table_names),
+        }),
+        pending_page_token=pending_page_token,
+    )
 
 
 # SQL comments and quoted text, blanked out before destructive-keyword matching.
@@ -1198,7 +1842,8 @@ async def run_query_async(query: str) -> str:
     """
     logger.info(f"Executing query: {query}")
 
-    client_config = _resolve_client_config()
+    overrides = await _get_client_config_overrides_for_tool()
+    client_config = _resolve_client_config(overrides)
     query_id = str(uuid.uuid4())
     state = _register_active_query(query_id, query)
 
@@ -1417,13 +2062,45 @@ def _snapshot_client_config_overrides(overrides: Any) -> Optional[dict[str, Any]
     return snapshot
 
 
+def _request_client_config_overrides(ctx: Any) -> Optional[dict[str, Any]]:
+    """Read request-local ClickHouse overrides from a FastMCP context."""
+    request_state = getattr(ctx, "_request_state", None)
+    make_state_key = getattr(ctx, "_make_state_key", None)
+    if not isinstance(request_state, Mapping) or not callable(make_state_key):
+        raise RuntimeError(
+            "FastMCP request-local state API is unavailable; validate the FastMCP version"
+        )
+    overrides = request_state.get(make_state_key(CLIENT_CONFIG_OVERRIDES_KEY))
+    return _snapshot_client_config_overrides(overrides)
+
+
 def _get_client_config_overrides() -> Optional[dict[str, Any]]:
     """Capture ClickHouse client overrides from the active FastMCP request."""
     try:
         ctx = get_context()
     except RuntimeError:
         return None
-    return _snapshot_client_config_overrides(ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY))
+    # FastMCP 4.0 get_state() falls back to session state. There is no public
+    # request-only accessor. Validate this private adapter before a minor upgrade.
+    return _request_client_config_overrides(ctx)
+
+
+async def _get_client_config_overrides_for_tool() -> Optional[dict[str, Any]]:
+    """Reject session-scoped overrides before an MCP-facing tool dispatch."""
+    try:
+        ctx = get_context()
+    except RuntimeError:
+        return None
+    overrides = _request_client_config_overrides(ctx)
+    if overrides is not None:
+        return overrides
+    session_value = await ctx.get_state(CLIENT_CONFIG_OVERRIDES_KEY)
+    if session_value is not None:
+        raise ToolError(
+            f"{CLIENT_CONFIG_OVERRIDES_KEY} must be request-scoped; middleware must call "
+            "Context.set_state(..., serializable=False)"
+        )
+    return None
 
 
 def _apply_client_config_overrides(
@@ -1461,7 +2138,7 @@ class _ResolvedClientConfig(dict):
 def _resolve_client_config(
     client_config_overrides: Any = _CLIENT_CONFIG_OVERRIDES_UNSET,
 ) -> _ResolvedClientConfig:
-    """Resolve the client config on the active request thread."""
+    """Resolve a client config from environment settings and explicit overrides."""
     if client_config_overrides is _CLIENT_CONFIG_OVERRIDES_UNSET:
         overrides = _get_client_config_overrides()
     else:
@@ -1735,6 +2412,7 @@ def _clear_client_cache():
 def _shutdown():
     # Drain every worker before closing the clients they may hold.
     QUERY_EXECUTOR.shutdown(wait=True)
+    METADATA_EXECUTOR.shutdown(wait=True)
     CANCELLATION_EXECUTOR.shutdown(wait=True)
     HEALTH_EXECUTOR.shutdown(wait=True)
     _clear_client_cache()
@@ -1993,8 +2671,8 @@ def _register_chdb_tools():
 
 
 if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
-    mcp.add_tool(Tool.from_function(list_databases))
-    mcp.add_tool(Tool.from_function(list_tables))
+    mcp.add_tool(Tool.from_function(list_databases_async, name="list_databases"))
+    mcp.add_tool(Tool.from_function(list_tables_async, name="list_tables"))
     mcp.add_tool(
         Tool.from_function(
             run_query_async,
