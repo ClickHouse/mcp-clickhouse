@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.6.0 - Unreleased
+## 0.6.0 - 2026-09-03
 
 ### Added
 - MCP handling through FastMCP 4 for modern `2026-07-28` clients and legacy clients using `2024-11-05` through `2025-11-25`. The modern path includes `server/discover`, sessionless requests, response caching hints, and request metadata validation. ([#218](https://github.com/ClickHouse/mcp-clickhouse/issues/218))

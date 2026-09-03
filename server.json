@@ -73,7 +73,7 @@
         },
         {
           "name": "CLICKHOUSE_ALLOW_DROP",
-          "description": "Allow destructive operations (DROP, TRUNCATE) when write access is also enabled",
+          "description": "Allow destructive operations (DROP, TRUNCATE, DELETE, UPDATE, REPLACE, CLEAR, and DETACH PERMANENTLY) when write access is also enabled",
           "format": "boolean",
           "default": "false",
           "isRequired": false
@@ -155,7 +155,7 @@
         },
         {
           "name": "CLICKHOUSE_ALLOW_DROP",
-          "description": "Allow destructive operations (DROP, TRUNCATE) when write access is also enabled",
+          "description": "Allow destructive operations (DROP, TRUNCATE, DELETE, UPDATE, REPLACE, CLEAR, and DETACH PERMANENTLY) when write access is also enabled",
           "format": "boolean",
           "default": "false",
           "isRequired": false
