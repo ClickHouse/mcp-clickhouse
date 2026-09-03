@@ -332,19 +332,38 @@ async def test_table_metadata_details(mcp_server, setup_test_database):
 async def test_system_database_access(mcp_server):
     """Test that we can access system databases."""
     async with Client(mcp_server) as client:
-        # List tables in system database with larger page size
-        result = await client.call_tool("list_tables", {"database": "system", "page_size": 100})
-        response = json.loads(result.content[0].text)
+        arguments = {
+            "database": "system",
+            "page_size": 100,
+            "include_detailed_columns": False,
+        }
+        table_names = []
+        total_tables = None
 
-        assert isinstance(response, dict)
-        assert "tables" in response
-        assert "total_tables" in response
-        tables = response["tables"]
+        while True:
+            result = await client.call_tool("list_tables", arguments)
+            response = json.loads(result.content[0].text)
 
-        assert response["total_tables"] > 10
+            assert isinstance(response, dict)
+            assert "tables" in response
+            assert "next_page_token" in response
+            assert "total_tables" in response
+
+            if total_tables is None:
+                total_tables = response["total_tables"]
+            else:
+                assert response["total_tables"] == total_tables
+            table_names.extend(table["name"] for table in response["tables"])
+
+            page_token = response["next_page_token"]
+            if page_token is None:
+                break
+            arguments["page_token"] = page_token
+
+        assert total_tables > 10
+        assert len(table_names) == total_tables
 
         # Check for some common system tables
-        table_names = [t["name"] for t in tables]
         assert "tables" in table_names
         assert "columns" in table_names
         assert "databases" in table_names

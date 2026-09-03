@@ -12,7 +12,10 @@ jobs:
 
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:24.10
+        image: clickhouse/clickhouse-server:26.3
+        env:
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: clickhouse
         ports:
           - 9000:9000
           - 8123:8123
@@ -35,7 +38,7 @@ jobs:
           CLICKHOUSE_HOST: "localhost"
           CLICKHOUSE_PORT: "8123"
           CLICKHOUSE_USER: "default"
-          CLICKHOUSE_PASSWORD: ""
+          CLICKHOUSE_PASSWORD: "clickhouse"
           CLICKHOUSE_SECURE: "false"
           CLICKHOUSE_VERIFY: "false"
           CHDB_ENABLED: "true"
