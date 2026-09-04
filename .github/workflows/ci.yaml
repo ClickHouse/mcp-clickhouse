@@ -6,9 +6,38 @@ on:
       - main
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
+    name: ${{ matrix.test_name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - test_name: Python 3.10 / minimum clickhouse-connect 1.0.0
+            python_version: "3.10"
+            clickhouse_connect: "1.0.0"
+            dependency_mode: minimum
+            lint: false
+          - test_name: Python 3.11 / locked dependencies
+            python_version: "3.11"
+            dependency_mode: locked
+            lint: false
+          - test_name: Python 3.12 / locked dependencies and lint
+            python_version: "3.12"
+            dependency_mode: locked
+            lint: true
+          - test_name: Python 3.13 / locked dependencies
+            python_version: "3.13"
+            dependency_mode: locked
+            lint: false
+          - test_name: Python 3.14 / locked dependencies
+            python_version: "3.14"
+            dependency_mode: locked
+            lint: false
 
     services:
       clickhouse:
@@ -28,10 +57,18 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Setup Python
-        run: uv python install 3.13
+        run: uv python install "${{ matrix.python_version }}"
 
       - name: Install Project
-        run: uv sync --all-extras --dev
+        run: uv sync --python "${{ matrix.python_version }}" --locked --all-extras --dev
+
+      - name: Build package
+        if: matrix.lint
+        run: uv build
+
+      - name: Install minimum clickhouse-connect
+        if: matrix.dependency_mode == 'minimum'
+        run: uv pip install "clickhouse-connect==${{ matrix.clickhouse_connect }}"
 
       - name: Run tests
         env:
@@ -43,10 +80,11 @@ jobs:
           CLICKHOUSE_VERIFY: "false"
           CHDB_ENABLED: "true"
         run: |
-          uv run pytest tests
+          uv run --python "${{ matrix.python_version }}" --no-sync pytest tests
 
       - name: Lint with Ruff
-        run: uv run ruff check .
+        if: matrix.lint
+        run: uv run --python "${{ matrix.python_version }}" --no-sync ruff check .
 
   docker-build:
     runs-on: ubuntu-latest

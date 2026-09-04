@@ -203,6 +203,7 @@ export CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000
 ## Configuration
 
 This MCP server supports both ClickHouse and chDB. You can enable either or both depending on your needs.
+Python 3.10 through 3.14 are supported. Python 3.12 is recommended for local launches.
 
 1. Open the Claude Desktop configuration file located at:
    * On macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -220,7 +221,7 @@ This MCP server supports both ClickHouse and chDB. You can enable either or both
         "--with",
         "mcp-clickhouse",
         "--python",
-        "3.10",
+        "3.12",
         "mcp-clickhouse"
       ],
       "env": {
@@ -252,7 +253,7 @@ Or, if you'd like to try it out with the [ClickHouse SQL Playground](https://sql
         "--with",
         "mcp-clickhouse",
         "--python",
-        "3.10",
+        "3.12",
         "mcp-clickhouse"
       ],
       "env": {
@@ -281,7 +282,7 @@ For chDB (embedded ClickHouse engine), add the following configuration:
         "--with",
         "mcp-clickhouse[chdb]",
         "--python",
-        "3.10",
+        "3.12",
         "mcp-clickhouse"
       ],
       "env": {
@@ -306,7 +307,7 @@ You can also enable both ClickHouse and chDB simultaneously:
         "--with",
         "mcp-clickhouse[chdb]",
         "--python",
-        "3.10",
+        "3.12",
         "mcp-clickhouse"
       ],
       "env": {
@@ -466,7 +467,7 @@ def setup_middleware(mcp):
   "mcpServers": {
     "mcp-clickhouse": {
       "command": "uv",
-      "args": ["run", "--with", "mcp-clickhouse", "--python", "3.10", "mcp-clickhouse"],
+      "args": ["run", "--with", "mcp-clickhouse", "--python", "3.12", "mcp-clickhouse"],
       "env": {
         "CLICKHOUSE_HOST": "<clickhouse-host>",
         "CLICKHOUSE_USER": "<clickhouse-user>",
@@ -602,6 +603,7 @@ Configuration is split into **independent** groups. Mixing them up is a common c
 #### ClickHouse database connection
 
 These variables configure the [clickhouse-connect](https://clickhouse.com/docs/en/integrations/python) HTTP client and the behavior of ClickHouse-backed tools such as `run_query`, `list_databases`, and `list_tables`.
+mcp-clickhouse requires clickhouse-connect 1.0.0 or newer.
 
 ##### Required Variables
 
@@ -891,7 +893,7 @@ You can set these variables in your environment, in a `.env` file, or in the Cla
         "--with",
         "mcp-clickhouse",
         "--python",
-        "3.10",
+        "3.12",
         "mcp-clickhouse"
       ],
       "env": {
