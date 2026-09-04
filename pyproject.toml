@@ -6,10 +6,18 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = [
      "fastmcp>=4.0.0,<4.1.0",
      "python-dotenv>=1.0.1",
-     "clickhouse-connect>=0.8.16",
+     "clickhouse-connect>=1.0.0",
      "truststore>=0.10",
      "cachetools>=5.5.0",
      "uvicorn>=0.31.0",

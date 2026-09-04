@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Changed
+- The minimum clickhouse-connect version is now 1.0.0. Locked development and container environments now use clickhouse-connect 1.8.0 and cryptography 50.0.1.
+- Local development and README launcher examples now use Python 3.12. CI covers Python 3.10 through 3.14, with Python 3.10 retained as the supported minimum.
+
 ## 0.6.0 - 2026-09-03
 
 ### Added

@@ -76,7 +76,7 @@ Security defaults are part of the product contract, not incidental implementatio
 
 When behavior depends on ClickHouse rather than this wrapper, verify it against a real server and, when necessary, official ClickHouse documentation or source. Do not infer server semantics from client code alone.
 
-- State the ClickHouse version used when a result may be version-dependent. CI currently uses `clickhouse/clickhouse-server:24.10`.
+- State the ClickHouse version used when a result may be version-dependent. CI currently uses `clickhouse/clickhouse-server:26.3`.
 - Preserve server-enforced settings even when local configuration asks for a less restrictive mode.
 - Use `clickhouse-connect` binding helpers such as `format_query_value` for generated SQL values.
 - Cover relevant server states, including absent settings and setting objects with a `.value` attribute, when changing readonly handling.
