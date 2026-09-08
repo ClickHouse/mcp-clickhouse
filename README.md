@@ -547,9 +547,12 @@ supplies `settings.role`. Top-level `role` and `ch_role` keys, plus the same key
 Set `verify`, `ca_cert`, `client_cert`, `client_cert_key`, `tls_mode`, `server_host_name`,
 and `pool_mgr` only as top-level overrides. They cannot be nested under `generic_args`. A
 custom `pool_mgr` cannot be combined with managed CA or client certificate settings. DSN query
-parameters cannot set these keys, and a DSN cannot select the chdb backend. Ordinary DSN
-routing and query settings remain supported. `secure` and `verify` overrides accept booleans
-or the strings `true` and `false`. `verify` also accepts `proxy`, which behaves as
+parameters cannot set these keys, and a DSN cannot select the chdb backend. Use explicit
+top-level `host`, `port`, `username`, `password`, `database`, and `secure` overrides to change
+the connection. A forwarded DSN does not replace populated base connection fields or select
+TLS. It can fill empty fields and supply supported query parameters such as `query_limit`.
+`secure` and `verify` overrides accept booleans or the strings `true` and `false`.
+`verify` also accepts `proxy`, which behaves as
 `tls_mode: proxy` when `tls_mode` is unset and therefore uses Basic authentication with the
 environment password. A `secure` override selects the matching `https` or `http` interface and
 does not change the port. An explicit `interface` override must be `http` or `https` and agree

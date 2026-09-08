@@ -1,6 +1,7 @@
 """Tests for request-scoped ClickHouse client configuration overrides."""
 
 import asyncio
+import base64
 import json
 import threading
 import time
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from clickhouse_connect.driver.httpclient import HttpClient
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_context
@@ -314,16 +316,75 @@ class TestConfigOverrideUnit:
         assert "svc_user" not in str(exc_info.value)
         mock_cc.get_client.assert_not_called()
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    def test_ordinary_dsn_query_is_preserved(self, mock_cc, mock_get_config):
-        dsn = "http://route.example:8123/default?query_limit=10"
-        mock_get_config.return_value = _mock_config(_base_client_config())
-        mock_cc.get_client.return_value = MagicMock(server_version="24.1")
+    @pytest.mark.parametrize(
+        ("base_password", "overrides", "expected_url", "expected_database", "expected_auth"),
+        [
+            pytest.param(
+                "base_password",
+                {},
+                "http://base.example:8123",
+                "base_db",
+                "base_user:base_password",
+                id="populated-base-fields-win",
+            ),
+            pytest.param(
+                "",
+                {},
+                "http://base.example:8123",
+                "base_db",
+                "base_user:dsn_password",
+                id="dsn-fills-empty-password",
+            ),
+            pytest.param(
+                "base_password",
+                {
+                    "host": "request.example",
+                    "port": 9443,
+                    "username": "request_user",
+                    "password": "request_password",
+                    "database": "request_db",
+                    "secure": True,
+                },
+                "https://request.example:9443",
+                "request_db",
+                "request_user:request_password",
+                id="explicit-request-fields-win",
+            ),
+        ],
+    )
+    def test_dsn_driver_connection_precedence(
+        self, monkeypatch, base_password, overrides, expected_url, expected_database, expected_auth
+    ):
+        def skip_server_discovery(client, *_args, **_kwargs):
+            client.server_version = "26.3.20.7"
 
-        create_clickhouse_client({"dsn": dsn})
+        monkeypatch.setattr(HttpClient, "_init_common_settings", skip_server_discovery)
+        dsn = "https://dsn_user:dsn_password@dsn.example:8443/dsn_db?query_limit=10"
 
-        assert mock_cc.get_client.call_args.kwargs["dsn"] == dsn
+        with patch.dict(
+            "os.environ",
+            {
+                "CLICKHOUSE_HOST": "base.example",
+                "CLICKHOUSE_PORT": "8123",
+                "CLICKHOUSE_USER": "base_user",
+                "CLICKHOUSE_PASSWORD": base_password,
+                "CLICKHOUSE_DATABASE": "base_db",
+                "CLICKHOUSE_SECURE": "false",
+                "CLICKHOUSE_VERIFY": "true",
+            },
+            clear=True,
+        ):
+            client = create_clickhouse_client({"dsn": dsn, **overrides})
+        try:
+            assert isinstance(client, HttpClient)
+            assert client.url == expected_url
+            assert client.database == expected_database
+            assert client.headers["Authorization"] == (
+                "Basic " + base64.b64encode(expected_auth.encode()).decode()
+            )
+            assert client.query_limit == 10
+        finally:
+            client.close()
 
     @pytest.mark.parametrize(
         ("secure", "expected_interface"),
