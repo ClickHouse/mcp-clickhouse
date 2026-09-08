@@ -42,7 +42,16 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 from mcp_clickhouse.http_security import transport_security_middleware
-from mcp_clickhouse.mcp_env import TransportType, get_chdb_config, get_config, get_mcp_config
+from mcp_clickhouse.mcp_env import (
+    TLS_TOP_LEVEL_ONLY_KEYS,
+    TransportType,
+    get_chdb_config,
+    get_config,
+    get_mcp_config,
+    normalize_secure_flag,
+    uses_mutual_tls_auth,
+    validate_client_tls_config,
+)
 from mcp_clickhouse.skills_advisor import CLICKHOUSE_SERVER_INSTRUCTIONS
 
 
@@ -2051,6 +2060,12 @@ def _snapshot_client_config_overrides(overrides: Any) -> Optional[dict[str, Any]
         if not isinstance(value, Mapping):
             raise ToolError(f"{CLIENT_CONFIG_OVERRIDES_KEY}.{key} must be a mapping")
         if key == "generic_args":
+            rejected_tls_keys = sorted(TLS_TOP_LEVEL_ONLY_KEYS.intersection(value))
+            if rejected_tls_keys:
+                raise ToolError(
+                    f"{CLIENT_CONFIG_OVERRIDES_KEY}.generic_args cannot set TLS client keys: "
+                    f"{', '.join(rejected_tls_keys)}"
+                )
             for role_key in _REJECTED_ROLE_OVERRIDE_KEYS:
                 if role_key in value:
                     raise ToolError(
@@ -2144,8 +2159,34 @@ def _resolve_client_config(
     else:
         overrides = _snapshot_client_config_overrides(client_config_overrides)
 
-    client_config = get_config().get_client_config()
-    _apply_client_config_overrides(client_config, overrides)
+    try:
+        client_config = get_config().get_client_config()
+        _apply_client_config_overrides(client_config, overrides)
+
+        if overrides is not None:
+            secure = normalize_secure_flag(client_config.get("secure"))
+            client_config["secure"] = secure
+            expected_interface = "https" if secure else "http"
+            if "interface" in overrides:
+                if client_config.get("interface") != expected_interface:
+                    raise ValueError(
+                        "ClickHouse client interface override must be http or https "
+                        "and match the secure setting"
+                    )
+            elif "secure" in overrides:
+                client_config["interface"] = expected_interface
+
+        password_overridden = bool(overrides is not None and "password" in overrides)
+        if (
+            not uses_mutual_tls_auth(client_config)
+            and not password_overridden
+            and client_config.get("password") in (None, "")
+            and "CLICKHOUSE_PASSWORD" in os.environ
+        ):
+            client_config["password"] = os.environ["CLICKHOUSE_PASSWORD"]
+        validate_client_tls_config(client_config)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
 
     timeout_overridden = bool(overrides and "send_receive_timeout" in overrides)
     if "CLICKHOUSE_SEND_RECEIVE_TIMEOUT" not in os.environ and not timeout_overridden:

@@ -9,9 +9,151 @@ from ipaddress import IPv4Network, IPv6Network, ip_network
 import os
 from typing import List, Optional
 from enum import Enum
+from urllib.parse import parse_qs, urlparse
 
 
 _IPV4_MAPPED_IPV6 = ip_network("::ffff:0:0/96")
+_TLS_MODES = frozenset({"mutual", "proxy", "strict"})
+TLS_TOP_LEVEL_ONLY_KEYS = frozenset(
+    {
+        "verify",
+        "ca_cert",
+        "client_cert",
+        "client_cert_key",
+        "tls_mode",
+        "server_host_name",
+        "pool_mgr",
+    }
+)
+
+
+def _normalize_tls_mode(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("CLICKHOUSE_TLS_MODE must be one of: mutual, proxy, strict")
+    value = value.strip().lower()
+    if not value:
+        return None
+    if value not in _TLS_MODES:
+        raise ValueError("CLICKHOUSE_TLS_MODE must be one of: mutual, proxy, strict")
+    return value
+
+
+def normalize_secure_flag(value: object) -> bool:
+    """Return the ClickHouse secure flag as a bool."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    raise ValueError("CLICKHOUSE_SECURE must be true or false")
+
+
+def _normalize_verify_flag(value: object) -> bool | str:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+        if normalized == "proxy":
+            return normalized
+    raise ValueError("CLICKHOUSE_VERIFY must be true, false, or proxy")
+
+
+def _effective_tls_mode(client_config: dict) -> Optional[str]:
+    tls_mode = _normalize_tls_mode(client_config.get("tls_mode"))
+    if tls_mode is not None:
+        return tls_mode
+    verify = client_config.get("verify")
+    if verify is not None and _normalize_verify_flag(verify) == "proxy":
+        return "proxy"
+    return None
+
+
+def _effective_interface(client_config: dict, secure: bool) -> str:
+    interface = client_config.get("interface")
+    if interface:
+        return interface
+    if secure or str(client_config.get("port")) in {"443", "8443"}:
+        return "https"
+    return "http"
+
+
+def _dsn_tls_query_keys(dsn: object) -> list[str]:
+    if not isinstance(dsn, str) or not dsn:
+        return []
+    try:
+        query = urlparse(dsn).query
+    except ValueError as exc:
+        raise ValueError("ClickHouse DSN override is not a valid URL") from exc
+    return sorted(TLS_TOP_LEVEL_ONLY_KEYS.intersection(parse_qs(query)))
+
+
+def uses_mutual_tls_auth(client_config: dict) -> bool:
+    """Return whether a client config selects ClickHouse certificate authentication."""
+    return bool(
+        client_config.get("client_cert") and _effective_tls_mode(client_config) in (None, "mutual")
+    )
+
+
+def validate_client_tls_config(client_config: dict) -> None:
+    """Validate and normalize ClickHouse TLS client settings."""
+    tls_mode = _normalize_tls_mode(client_config.get("tls_mode"))
+    if tls_mode is None:
+        client_config.pop("tls_mode", None)
+    else:
+        client_config["tls_mode"] = tls_mode
+
+    secure = False
+    if "secure" in client_config:
+        secure = normalize_secure_flag(client_config["secure"])
+        client_config["secure"] = secure
+
+    verify = None
+    if "verify" in client_config:
+        verify = _normalize_verify_flag(client_config["verify"])
+        client_config["verify"] = verify
+
+    dsn = client_config.get("dsn")
+    if isinstance(dsn, str) and dsn.startswith("chdb:"):
+        raise ValueError("ClickHouse DSN overrides cannot select the chdb backend")
+    dsn_tls_keys = _dsn_tls_query_keys(dsn)
+    if dsn_tls_keys:
+        raise ValueError(
+            "ClickHouse DSN query parameters cannot set managed TLS keys: "
+            f"{', '.join(dsn_tls_keys)}"
+        )
+
+    tls_options = {
+        "CLICKHOUSE_CA_CERT": client_config.get("ca_cert"),
+        "CLICKHOUSE_CLIENT_CERT": client_config.get("client_cert"),
+        "CLICKHOUSE_CLIENT_CERT_KEY": client_config.get("client_cert_key"),
+        "CLICKHOUSE_TLS_MODE": tls_mode,
+    }
+    configured_tls_options = ", ".join(name for name, value in tls_options.items() if value)
+    if configured_tls_options and not secure:
+        raise ValueError(f"{configured_tls_options} can only be used with CLICKHOUSE_SECURE=true")
+    if configured_tls_options and _effective_interface(client_config, secure) != "https":
+        raise ValueError(f"{configured_tls_options} can only be used with interface=https")
+    if configured_tls_options and client_config.get("pool_mgr") is not None:
+        raise ValueError(f"pool_mgr cannot be combined with {configured_tls_options}")
+
+    if client_config.get("client_cert_key") and not client_config.get("client_cert"):
+        raise ValueError("CLICKHOUSE_CLIENT_CERT_KEY requires CLICKHOUSE_CLIENT_CERT")
+    if tls_mode and not client_config.get("client_cert"):
+        raise ValueError("CLICKHOUSE_TLS_MODE requires CLICKHOUSE_CLIENT_CERT")
+    if client_config.get("ca_cert") and verify not in (True, "proxy"):
+        raise ValueError("CLICKHOUSE_CA_CERT requires CLICKHOUSE_VERIFY=true")
+
+    if uses_mutual_tls_auth(client_config):
+        client_config["password"] = ""
 
 
 class TransportType(str, Enum):
@@ -37,7 +179,7 @@ class ClickHouseConfig:
     Required environment variables (only when CLICKHOUSE_ENABLED=true):
         CLICKHOUSE_HOST: The hostname of the ClickHouse server
         CLICKHOUSE_USER: The username for authentication
-        CLICKHOUSE_PASSWORD: The password for authentication
+        CLICKHOUSE_PASSWORD: The password for authentication, except with mutual TLS
 
     Optional environment variables (with defaults):
         CLICKHOUSE_ROLE: The role to use for authentication (default: None)
@@ -52,6 +194,10 @@ class ClickHouseConfig:
         CLICKHOUSE_ENABLED: Enable ClickHouse server (default: true)
         CLICKHOUSE_ALLOW_WRITE_ACCESS: Allow write operations (DDL and DML) (default: false)
         CLICKHOUSE_ALLOW_DROP: Allow destructive operations (DROP, TRUNCATE) when writes are also enabled (default: false)
+        CLICKHOUSE_CA_CERT: Path to CA certificate file for SSL verification (default: None)
+        CLICKHOUSE_CLIENT_CERT: Path to client certificate file for mTLS authentication (default: None)
+        CLICKHOUSE_CLIENT_CERT_KEY: Path to client private key file for mTLS authentication (default: None)
+        CLICKHOUSE_TLS_MODE: TLS mode for client certificate usage - "mutual", "proxy", or "strict" (default: None)
     """
 
     def __init__(self):
@@ -91,7 +237,7 @@ class ClickHouseConfig:
     @property
     def password(self) -> str:
         """Get the ClickHouse password."""
-        return os.environ["CLICKHOUSE_PASSWORD"]
+        return os.getenv("CLICKHOUSE_PASSWORD", "")
 
     @property
     def role(self) -> Optional[str]:
@@ -163,6 +309,46 @@ class ClickHouseConfig:
         """
         return os.getenv("CLICKHOUSE_ALLOW_DROP", "false").lower() == "true"
 
+    @property
+    def ca_cert(self) -> Optional[str]:
+        """Get the path to CA certificate file for SSL verification.
+
+        Default: None
+        """
+        return os.getenv("CLICKHOUSE_CA_CERT")
+
+    @property
+    def client_cert(self) -> Optional[str]:
+        """Get the path to client certificate file for mTLS authentication.
+
+        Default: None
+        """
+        return os.getenv("CLICKHOUSE_CLIENT_CERT")
+
+    @property
+    def client_cert_key(self) -> Optional[str]:
+        """Get the path to client private key file for mTLS authentication.
+
+        This is optional if the client_cert file contains both the certificate
+        and the private key (e.g., a combined .pem file).
+
+        Default: None
+        """
+        return os.getenv("CLICKHOUSE_CLIENT_CERT_KEY")
+
+    @property
+    def tls_mode(self) -> Optional[str]:
+        """Get the TLS mode for client certificate usage.
+
+        Valid values:
+        - "mutual": Use client certificate authentication
+        - "proxy": Present a client certificate to a TLS proxy and use Basic authentication
+        - "strict": Present a client certificate and use Basic authentication
+
+        Default: None (clickhouse-connect uses mutual when client_cert is set)
+        """
+        return _normalize_tls_mode(os.getenv("CLICKHOUSE_TLS_MODE"))
+
     def get_client_config(self) -> dict:
         """Get the configuration dictionary for clickhouse_connect client.
 
@@ -196,6 +382,21 @@ class ClickHouseConfig:
         if self.server_host_name:
             config["server_host_name"] = self.server_host_name
 
+        # Add mTLS configuration if set
+        if self.ca_cert:
+            config["ca_cert"] = self.ca_cert
+
+        if self.client_cert:
+            config["client_cert"] = self.client_cert
+
+        if self.client_cert_key:
+            config["client_cert_key"] = self.client_cert_key
+
+        if self.tls_mode:
+            config["tls_mode"] = self.tls_mode
+
+        validate_client_tls_config(config)
+
         return config
 
     def _validate_required_vars(self) -> None:
@@ -204,8 +405,21 @@ class ClickHouseConfig:
         Raises:
             ValueError: If any required environment variable is missing.
         """
+        tls_config = {
+            "secure": self.secure,
+            "verify": self.verify,
+            "ca_cert": self.ca_cert,
+            "client_cert": self.client_cert,
+            "client_cert_key": self.client_cert_key,
+            "tls_mode": self.tls_mode,
+        }
+        validate_client_tls_config(tls_config)
+
         missing_vars = []
-        for var in ["CLICKHOUSE_HOST", "CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD"]:
+        required_vars = ["CLICKHOUSE_HOST", "CLICKHOUSE_USER"]
+        if not uses_mutual_tls_auth(tls_config):
+            required_vars.append("CLICKHOUSE_PASSWORD")
+        for var in required_vars:
             if var not in os.environ:
                 missing_vars.append(var)
 

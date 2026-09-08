@@ -4,9 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+- Outbound ClickHouse HTTPS support for private CA bundles and client certificates through `CLICKHOUSE_CA_CERT`, `CLICKHOUSE_CLIENT_CERT`, `CLICKHOUSE_CLIENT_CERT_KEY`, and `CLICKHOUSE_TLS_MODE`. Mutual mode uses the certificate for ClickHouse user authentication without sending a password. Strict and proxy modes present the certificate while retaining Basic authentication. A custom `pool_mgr` override cannot be combined with these certificate settings. ([#116](https://github.com/ClickHouse/mcp-clickhouse/pull/116))
+
 ### Changed
 - The minimum clickhouse-connect version is now 1.0.0. Locked development and container environments now use clickhouse-connect 1.8.0 and cryptography 50.0.1.
 - Local development and README launcher examples now use Python 3.12. CI covers Python 3.10 through 3.14, with Python 3.10 retained as the supported minimum.
+- Request-scoped client overrides are now validated for TLS consistency before client creation. `verify`, `ca_cert`, `client_cert`, `client_cert_key`, `tls_mode`, `server_host_name`, and `pool_mgr` must be top-level overrides and are rejected under `generic_args` and as DSN query parameters. Previously `generic_args.verify` and a DSN `verify` parameter reached clickhouse-connect. DSN overrides cannot select the chdb backend.
+- A `secure` override now switches the client interface between `https` and `http`, and an explicit `interface` override must be `http` or `https` and agree with `secure`. Previously a `secure` override alone left the base interface in place. `secure` and `verify` override values must be booleans or the strings `true` or `false`. `verify` also accepts `proxy`.
 
 ## 0.6.0 - 2026-09-03
 

@@ -544,6 +544,22 @@ a ClickHouse client is created. `CLICKHOUSE_ROLE` remains active unless the over
 supplies `settings.role`. Top-level `role` and `ch_role` keys, plus the same keys under
 `generic_args`, are rejected.
 
+Set `verify`, `ca_cert`, `client_cert`, `client_cert_key`, `tls_mode`, `server_host_name`,
+and `pool_mgr` only as top-level overrides. They cannot be nested under `generic_args`. A
+custom `pool_mgr` cannot be combined with managed CA or client certificate settings. DSN query
+parameters cannot set these keys, and a DSN cannot select the chdb backend. Use explicit
+top-level `host`, `port`, `username`, `password`, `database`, and `secure` overrides to change
+the connection. A forwarded DSN does not replace populated base connection fields or select
+TLS. It can fill empty fields and supply supported query parameters such as `query_limit`.
+`secure` and `verify` overrides accept booleans or the strings `true` and `false`.
+`verify` also accepts `proxy`, which behaves as
+`tls_mode: proxy` when `tls_mode` is unset and therefore uses Basic authentication with the
+environment password. A `secure` override selects the matching `https` or `http` interface and
+does not change the port. An explicit `interface` override must be `http` or `https` and agree
+with `secure`. After merging overrides, default and `mutual` client certificate modes omit the
+password. `proxy` and `strict` modes use Basic authentication with the environment password
+unless the override supplies its own credentials.
+
 Treat these overrides as trusted middleware input. Middleware must authenticate and authorize
 request-derived values before setting them. Use `serializable=False` so FastMCP keeps the
 value in request-local state. The default `serializable=True` stores session state and is
@@ -591,12 +607,12 @@ Configuration is split into **independent** groups. Mixing them up is a common c
 
 | Group | Variables | Controls |
 |-------|-----------|----------|
-| **ClickHouse database connection** | `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_SECURE`, `CLICKHOUSE_VERIFY`, … | How **this MCP server** connects to your ClickHouse cluster over the **HTTP interface** |
+| **ClickHouse database connection** | `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_SECURE`, `CLICKHOUSE_VERIFY`, certificate variables | How **this MCP server** connects to your ClickHouse cluster over the **HTTP interface** |
 | **MCP server / transport** | `CLICKHOUSE_MCP_*`, `FASTMCP_SERVER_AUTH`, `FASTMCP_SERVER_AUTH_*`, `FASTMCP_ENV_FILE` | MCP transport, authentication, and query-tool execution limits |
 | **Middleware / chDB** | `MCP_MIDDLEWARE_MODULE`, `CHDB_*` | Optional extensions |
 
 > [!IMPORTANT]
-> Variables such as `CLICKHOUSE_SECURE`, `CLICKHOUSE_VERIFY`, and `CLICKHOUSE_PORT` apply to the **ClickHouse database** connection only. They do **not** configure TLS, ports, or auth for the MCP protocol endpoint.
+> `CLICKHOUSE_SECURE`, `CLICKHOUSE_VERIFY`, `CLICKHOUSE_CA_CERT`, `CLICKHOUSE_CLIENT_CERT`, `CLICKHOUSE_CLIENT_CERT_KEY`, `CLICKHOUSE_TLS_MODE`, and `CLICKHOUSE_PORT` apply to the outbound **ClickHouse database** connection only. They do **not** configure TLS, client certificates, ports, or authentication for the inbound MCP HTTP/SSE endpoint.
 >
 > Example: if the MCP server runs in Kubernetes behind an ingress that terminates TLS, that is an **MCP transport** concern. Keep `CLICKHOUSE_SECURE` aligned with how the pod reaches ClickHouse itself (HTTPS → `true`, plain HTTP → `false`). Setting `CLICKHOUSE_SECURE=false` because the MCP server is behind an ingress will make the server dial ClickHouse over HTTP—often against an HTTPS-only port—and produce opaque HTTP/TLS errors in the server logs.
 
@@ -610,6 +626,8 @@ mcp-clickhouse requires clickhouse-connect 1.0.0 or newer.
 * `CLICKHOUSE_HOST`: The hostname of your ClickHouse server (database endpoint, not the MCP server bind address)
 * `CLICKHOUSE_USER`: The username for **ClickHouse** authentication
 * `CLICKHOUSE_PASSWORD`: The password for **ClickHouse** authentication
+  * Required unless `CLICKHOUSE_CLIENT_CERT` uses the default or `"mutual"` TLS mode
+  * In default or `"mutual"` mode, certificate authentication is used and the password is not sent
 
 > [!CAUTION]
 > It is important to treat your MCP database user as you would any external client connecting to your database, granting only the minimum necessary privileges required for its operation. The use of default or administrative users should be strictly avoided at all times.
@@ -636,6 +654,26 @@ mcp-clickhouse requires clickhouse-connect 1.0.0 or newer.
   * Default: `"true"`
   * Set to `"false"` to disable certificate verification (not recommended for production)
   * TLS certificates: The package uses your operating system trust store for TLS certificate verification via `truststore`. We call `truststore.inject_into_ssl()` at startup to ensure proper certificate handling. Python’s default SSL behavior is used as a fallback only if an unexpected error occurs.
+* `CLICKHOUSE_CA_CERT`: Path to a PEM CA certificate bundle for the **ClickHouse** HTTPS connection
+  * Default: None (uses the operating system trust store)
+  * Use this by itself when a ClickHouse server or private proxy presents a certificate signed by a private CA. This changes server certificate verification and does not enable client certificate authentication.
+  * Requires `CLICKHOUSE_SECURE=true` and `CLICKHOUSE_VERIFY=true`
+* `CLICKHOUSE_CLIENT_CERT`: Path to a PEM client certificate for the **ClickHouse** HTTPS connection
+  * Default: None
+  * The file may also contain the private key. Otherwise set `CLICKHOUSE_CLIENT_CERT_KEY`.
+  * The ClickHouse user still comes from `CLICKHOUSE_USER`.
+* `CLICKHOUSE_CLIENT_CERT_KEY`: Path to the PEM private key for `CLICKHOUSE_CLIENT_CERT`
+  * Default: None
+  * Optional when the private key is included in the client certificate file
+  * Cannot be used without `CLICKHOUSE_CLIENT_CERT`
+* `CLICKHOUSE_TLS_MODE`: How clickhouse-connect uses `CLICKHOUSE_CLIENT_CERT`
+  * Default: None, which behaves as `"mutual"` when a client certificate is set
+  * `"mutual"`: Use the client certificate for ClickHouse X.509 user authentication. `CLICKHOUSE_PASSWORD` is optional and is not sent.
+  * `"proxy"`: Present the client certificate to a TLS-terminating proxy, then use ClickHouse Basic authentication. `CLICKHOUSE_PASSWORD` is required.
+  * `"strict"`: Present the client certificate because the ClickHouse server requires one at the TLS layer, then use ClickHouse Basic authentication. `CLICKHOUSE_PASSWORD` is required. This mode does not strengthen server certificate verification. `CLICKHOUSE_VERIFY` controls that verification.
+  * clickhouse-connect treats `"proxy"` and `"strict"` identically. The two names document intent.
+  * Values are trimmed and case-insensitive. A blank value is treated as unset. Other values are rejected before a ClickHouse client is created, on the first ClickHouse tool call or `/health` probe.
+  * Requires `CLICKHOUSE_CLIENT_CERT`. All client certificate options require `CLICKHOUSE_SECURE=true`.
 * `CLICKHOUSE_SERVER_HOST_NAME`: Server hostname for SNI override and certificate validation on the **ClickHouse** connection
   * Default: None (uses the connection hostname)
   * This is useful when connecting through proxies or load balancers where the certificate hostname differs from the connection hostname. When set, this hostname will be used for both SNI (Server Name Indication) during the TLS handshake and for certificate hostname validation.
@@ -662,6 +700,26 @@ mcp-clickhouse requires clickhouse-connect 1.0.0 or newer.
   * Default: `"false"`
   * Only takes effect when `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` is also set
   * This gate is a best-effort accident guard in the MCP server, not a security boundary. Restrict the ClickHouse user's grants for real enforcement (see [Destructive Operation Protection](#destructive-operation-protection))
+
+##### ClickHouse TLS certificate files
+
+The certificate variables contain file paths, not PEM contents. mcp-clickhouse passes these
+paths to clickhouse-connect. For Docker or Kubernetes, mount the certificate and private key
+as read-only files and use their paths inside the container. Do not bake a private key into an
+image, commit it to source control, or put its contents in an environment variable.
+
+In `mutual` mode, the configured client certificate identifies this mcp-clickhouse process as
+`CLICKHOUSE_USER`. It does not authenticate inbound MCP clients or pass their identities to
+ClickHouse. Configure MCP transport authentication separately.
+
+Restart mcp-clickhouse after replacing a certificate or key at the same path when immediate
+rotation or revocation is required. Cached clients can retain existing TLS connections, and
+the cache does not track file contents or modification times.
+
+ClickHouse Cloud does not support X.509 client certificate authentication for database users.
+Use `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` for ClickHouse Cloud. A CA certificate can
+still be useful when a private proxy in front of an endpoint presents a certificate signed by
+a private CA.
 
 #### MCP server and transport
 
@@ -834,6 +892,45 @@ CLICKHOUSE_USER=demo
 CLICKHOUSE_PASSWORD=
 # Uses secure defaults (HTTPS on port 8443)
 ```
+
+For a private server CA without client certificate authentication:
+
+```env
+CLICKHOUSE_HOST=your-secure-clickhouse.example.com
+CLICKHOUSE_USER=your-user
+CLICKHOUSE_PASSWORD=your-password
+CLICKHOUSE_SECURE=true
+CLICKHOUSE_VERIFY=true
+CLICKHOUSE_CA_CERT=/run/secrets/clickhouse-ca.pem
+```
+
+For ClickHouse X.509 client certificate authentication:
+
+```env
+CLICKHOUSE_HOST=your-secure-clickhouse.example.com
+CLICKHOUSE_USER=your-certificate-user
+CLICKHOUSE_SECURE=true
+CLICKHOUSE_CLIENT_CERT=/run/secrets/clickhouse-client.pem
+CLICKHOUSE_CLIENT_CERT_KEY=/run/secrets/clickhouse-client-key.pem
+# CLICKHOUSE_CA_CERT=/run/secrets/clickhouse-ca.pem  # Only for a private server CA
+# CLICKHOUSE_TLS_MODE=mutual  # Optional. This is the default with a client certificate.
+```
+
+For a client certificate required by a strict TLS server while ClickHouse uses Basic
+authentication:
+
+```env
+CLICKHOUSE_HOST=your-secure-clickhouse.example.com
+CLICKHOUSE_USER=your-user
+CLICKHOUSE_PASSWORD=your-password
+CLICKHOUSE_SECURE=true
+CLICKHOUSE_CLIENT_CERT=/run/secrets/clickhouse-client.pem
+CLICKHOUSE_CLIENT_CERT_KEY=/run/secrets/clickhouse-client-key.pem
+CLICKHOUSE_TLS_MODE=strict
+```
+
+Use `CLICKHOUSE_TLS_MODE=proxy` instead when a TLS-terminating proxy requires the client
+certificate and ClickHouse still uses Basic authentication.
 
 For chDB only (in-memory):
 
