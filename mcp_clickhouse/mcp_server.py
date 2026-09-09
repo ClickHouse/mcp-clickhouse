@@ -176,6 +176,10 @@ CANCELLATION_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 HEALTH_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 _QUERY_CANCELLATION_WAIT_SECONDS = 1.0
 _HEALTH_CHECK_TIMEOUT_SECONDS = 2.0
+_HEALTH_RESULT_CACHE_SECONDS = 1.0
+_CLICKHOUSE_HEALTH_ERROR_BODY = (
+    "ERROR. ClickHouse connection failed. Check server logs for details."
+)
 
 _CLIENT_CACHE_MAXSIZE = 64
 _client_cache: OrderedDict[Tuple, _ClientCacheEntry] = OrderedDict()
@@ -188,6 +192,7 @@ _active_queries_lock = threading.Lock()
 _health_probe_future: Optional[concurrent.futures.Future] = None
 _health_probe_lock = threading.Lock()
 _logged_health_probe_futures: weakref.WeakSet[concurrent.futures.Future] = weakref.WeakSet()
+_health_result_cache: Optional[Tuple[float, bool]] = None
 
 _HTTP_TRANSPORTS = (TransportType.HTTP.value, "streamable-http", TransportType.SSE.value)
 _BUILTIN_HTTP_RAW_CLIENT = ContextVar("builtin_http_raw_client", default=False)
@@ -820,6 +825,39 @@ def _clear_completed_health_probe(future: concurrent.futures.Future) -> None:
             _health_probe_future = None
 
 
+def _cache_health_probe_result(future: concurrent.futures.Future) -> None:
+    """Cache a completed probe outcome for the reuse window."""
+    global _health_result_cache
+    if future.cancelled():
+        return
+    healthy = future.exception() is None
+    with _health_probe_lock:
+        _health_result_cache = (
+            time.monotonic() + _HEALTH_RESULT_CACHE_SECONDS,
+            healthy,
+        )
+
+
+def _cached_health_result() -> Optional[bool]:
+    """Return a cached probe outcome, or None when none is still valid."""
+    global _health_result_cache
+    with _health_probe_lock:
+        if _health_result_cache is None:
+            return None
+        expires_at, healthy = _health_result_cache
+        if time.monotonic() >= expires_at:
+            _health_result_cache = None
+            return None
+        return healthy
+
+
+def _clear_health_result_cache() -> None:
+    """Drop any cached probe outcome so the next check probes ClickHouse."""
+    global _health_result_cache
+    with _health_probe_lock:
+        _health_result_cache = None
+
+
 def _get_health_probe_future(config: dict) -> concurrent.futures.Future:
     """Return the single in-flight ClickHouse health probe."""
     global _health_probe_future
@@ -831,6 +869,7 @@ def _get_health_probe_future(config: dict) -> concurrent.futures.Future:
             _bounded_health_config(config),
         )
         _health_probe_future = future
+    future.add_done_callback(_cache_health_probe_result)
     future.add_done_callback(_clear_completed_health_probe)
     return future
 
@@ -860,6 +899,9 @@ def _retrieve_health_probe_wrapper_result(future: asyncio.Future) -> None:
 async def health_check(request: Request) -> PlainTextResponse:
     """Liveness probe. Intentionally unauthenticated and minimal.
 
+    A completed ClickHouse probe result is reused for one second, so a failure
+    or a recovery can be reported up to a second late.
+
     Debug via server logs.
     """
     future = None
@@ -887,6 +929,12 @@ async def health_check(request: Request) -> PlainTextResponse:
                     status_code=503,
                 )
 
+        cached_result = _cached_health_result()
+        if cached_result is not None:
+            if cached_result:
+                return PlainTextResponse("OK")
+            return PlainTextResponse(_CLICKHOUSE_HEALTH_ERROR_BODY, status_code=503)
+
         future = _get_health_probe_future(_resolve_client_config())
         wrapped_future = asyncio.wrap_future(future)
         wrapped_future.add_done_callback(_retrieve_health_probe_wrapper_result)
@@ -901,18 +949,12 @@ async def health_check(request: Request) -> PlainTextResponse:
                 "Health check timed out after %.1f seconds",
                 _HEALTH_CHECK_TIMEOUT_SECONDS,
             )
-        return PlainTextResponse(
-            "ERROR. ClickHouse connection failed. Check server logs for details.",
-            status_code=503,
-        )
+        return PlainTextResponse(_CLICKHOUSE_HEALTH_ERROR_BODY, status_code=503)
     except Exception:
         # Log the underlying error server-side, but don't leak details over the wire.
         if _claim_health_probe_log(future):
             logger.exception("Health check failed: ClickHouse connection error")
-        return PlainTextResponse(
-            "ERROR. ClickHouse connection failed. Check server logs for details.",
-            status_code=503,
-        )
+        return PlainTextResponse(_CLICKHOUSE_HEALTH_ERROR_BODY, status_code=503)
 
 
 def result_to_table(query_columns, result) -> List[Table]:
