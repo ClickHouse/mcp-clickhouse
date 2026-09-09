@@ -31,6 +31,7 @@ integers and booleans keep their JSON types.
   * Execute SQL queries on your ClickHouse cluster.
   * Input: `query` (string): The SQL query to execute.
   * Queries run in read-only mode by default (`CLICKHOUSE_ALLOW_WRITE_ACCESS=false`), but writes can be enabled explicitly if needed.
+  * `DESCRIBE (<query>)` and `EXPLAIN ESTIMATE <query>` run here too and are optional ways to inspect a query's result schema or its estimated reads. See [Checking a query before running it](#checking-a-query-before-running-it).
 
 * `list_databases`
   * List all databases on your ClickHouse cluster.
@@ -47,6 +48,45 @@ integers and booleans keep their JSON types.
     * `tables`: Array of table objects for the current page.
     * `next_page_token`: Pass this single-use value back before it expires to fetch the next page, or `null` when there are no more tables.
     * `total_tables`: Total count of tables that match the supplied filters.
+
+#### Checking a query before running it
+
+`run_query` also runs `DESCRIBE` and `EXPLAIN ESTIMATE`. Both are optional checks: reach for `DESCRIBE` when you need a query's output columns and types, and for `EXPLAIN ESTIMATE` before a `SELECT` that could be expensive.
+
+`DESCRIBE (<query>)` inspects the result schema and returns the same output-column metadata as `DESCRIBE TABLE`:
+
+```sql
+DESCRIBE (SELECT user, sum(amt) FROM events WHERE ts > now() - INTERVAL 30 DAY GROUP BY user)
+```
+
+```text
+user      String
+sum(amt)  Decimal(38, 2)
+```
+
+ClickHouse has to analyze the query to answer, so analysis errors surface here, with ClickHouse's own message, instead of part way through execution:
+
+```text
+DESCRIBE (SELECT usr FROM events)  -> Code: 47. Unknown expression identifier `usr` ... Maybe you meant: ['user']
+DESCRIBE (SELECT * FROM nosuch)    -> Code: 60. Unknown table expression identifier 'nosuch'
+```
+
+A query that describes cleanly can still fail when it runs, on a memory limit or a remote server error, and it says nothing about cost.
+
+`EXPLAIN ESTIMATE <query>` returns the parts, rows and marks the query would read, one row per table, which is what separates a primary key lookup from a full scan:
+
+```sql
+EXPLAIN ESTIMATE SELECT count() FROM events WHERE id = 42
+```
+
+```text
+database  table   parts  rows   marks
+default   events  1      8192   1
+```
+
+Those are estimated reads from [MergeTree](https://clickhouse.com/docs/engines/table-engines/mergetree-family/mergetree) family tables, after primary key and partition pruning. They are not run time and not result size, and other table engines are not covered.
+
+Neither statement runs the query body, but analysis is not always free: `DESCRIBE (SELECT (SELECT sleep(1)))` executes the scalar subquery while analyzing. Both are read-only and work under the default `CLICKHOUSE_ALLOW_WRITE_ACCESS=false`. See the ClickHouse documentation for [EXPLAIN ESTIMATE](https://clickhouse.com/docs/sql-reference/statements/explain#explain-estimate) and [DESCRIBE](https://clickhouse.com/docs/sql-reference/statements/describe-table).
 
 ### chDB Tools
 
