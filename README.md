@@ -653,12 +653,13 @@ mcp-clickhouse requires clickhouse-connect 1.0.0 or newer.
 * `CLICKHOUSE_VERIFY`: Enable/disable SSL certificate verification for the **ClickHouse** HTTPS connection
   * Default: `"true"`
   * Set to `"false"` to disable certificate verification (not recommended for production)
-  * TLS certificates: The package uses your operating system trust store for TLS certificate verification via `truststore`. We call `truststore.inject_into_ssl()` at startup to ensure proper certificate handling. Python’s default SSL behavior is used as a fallback only if an unexpected error occurs.
-* `MCP_CLICKHOUSE_TRUSTSTORE_DISABLE`: Disable the operating-system trust store integration for TLS
+  * TLS certificates: The package uses your operating system trust store via `truststore.inject_into_ssl()` at startup. Python's default SSL handling is used if injection is disabled with `MCP_CLICKHOUSE_TRUSTSTORE_DISABLE=1` or fails.
+* `MCP_CLICKHOUSE_TRUSTSTORE_DISABLE`: Disable the process-wide operating system trust store integration for TLS
   * Default: unset (trust store integration is enabled)
-  * Set to `"1"` to skip `truststore.inject_into_ssl()` and use Python's default SSL certificate handling
+  * Set to exactly `"1"` before startup to skip `truststore.inject_into_ssl()` and use Python's default SSL certificate handling. Other values do not disable the integration.
+  * This does not disable certificate verification. `CLICKHOUSE_VERIFY` still controls verification for the ClickHouse HTTPS connection.
 * `CLICKHOUSE_CA_CERT`: Path to a PEM CA certificate bundle for the **ClickHouse** HTTPS connection
-  * Default: None (uses the operating system trust store)
+  * Default: None (uses the operating system trust store unless truststore injection is disabled or fails)
   * Use this by itself when a ClickHouse server or private proxy presents a certificate signed by a private CA. This changes server certificate verification and does not enable client certificate authentication.
   * Requires `CLICKHOUSE_SECURE=true` and `CLICKHOUSE_VERIFY=true`
 * `CLICKHOUSE_CLIENT_CERT`: Path to a PEM client certificate for the **ClickHouse** HTTPS connection
