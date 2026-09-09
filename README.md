@@ -63,6 +63,7 @@ When running with HTTP or SSE transport, a health check endpoint is available at
 - Returns `200 OK` (body: `OK`) if the server is healthy and can connect to ClickHouse
 - Returns `503 Service Unavailable` with a generic error message if the server cannot connect to ClickHouse
 - Returns `503` if a ClickHouse probe does not finish within two seconds. Concurrent requests share one in-flight probe
+- Reuses a completed probe result for one second, so probes that arrive in quick succession do not each connect to ClickHouse. A failure or a recovery can therefore be reported up to a second late
 
 GET and HEAD requests to the endpoint are intentionally unauthenticated and exempt from Host and Origin validation so orchestrator probes (e.g. Kubernetes liveness/readiness, load balancers) can use runtime-assigned pod or target IPs without extra configuration. `/health` is reserved and cannot be used as the MCP transport path. The response body is deliberately minimal to avoid leaking backend version strings or error details; debug failures via the server logs.
 
