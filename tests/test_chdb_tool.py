@@ -74,6 +74,28 @@ class TestChDBTools(unittest.TestCase):
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 0)
 
+    def test_run_chdb_select_query_wide_nested_integers(self):
+        query = """
+            SELECT
+                CAST('340282366920938463463374607431768211455', 'UInt128') AS wide,
+                [
+                    CAST('170141183460469231731687303715884105727', 'Int128'),
+                    CAST(7, 'Int128')
+                ] AS nested
+        """
+
+        result = json.loads(mcp_server.run_chdb_select_query(query))
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "wide": "340282366920938463463374607431768211455",
+                    "nested": ["170141183460469231731687303715884105727", 7],
+                }
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

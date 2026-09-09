@@ -1,0 +1,59 @@
+name: Publish to MCP Registry
+
+# Publishes server.json to the official MCP Registry (registry.modelcontextprotocol.io),
+# which the GitHub MCP Registry (github.com/mcp) syncs from.
+#
+# Run this AFTER the PyPI package and GHCR image for the release exist — the registry
+# validates both artifacts at publish time:
+#   1. Tag + GitHub release        -> Docker image published to GHCR (release-docker.yml)
+#   2. Run "publish" workflow      -> package published to PyPI (publish.yml)
+#   3. Run this workflow           -> server published to the MCP Registry
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag to publish (e.g. v0.4.1)"
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Required for OIDC authentication to the MCP Registry
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Set version in server.json from pyproject.toml
+        run: |
+          VERSION=$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)"/\1/')
+          echo "Publishing version $VERSION"
+          jq --arg v "$VERSION" '
+            .version = $v
+            | .packages |= map(
+                if .registryType == "pypi" then .version = $v
+                elif .registryType == "oci" then .identifier = (.identifier | sub(":[^:]*$"; ":" + $v))
+                else . end)
+          ' server.json > server.json.tmp && mv server.json.tmp server.json
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Verify PyPI package exists
+        run: curl -fsS "https://pypi.org/pypi/mcp-clickhouse/${VERSION}/json" > /dev/null
+
+      - name: Verify GHCR image exists
+        run: docker manifest inspect "ghcr.io/clickhouse/mcp-clickhouse:${VERSION}" > /dev/null
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server to MCP Registry
+        run: ./mcp-publisher publish
