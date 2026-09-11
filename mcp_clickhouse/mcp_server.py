@@ -2767,7 +2767,15 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
                 "(DROP, TRUNCATE, DELETE, UPDATE, REPLACE TABLE/PARTITION, CREATE OR REPLACE, "
                 "CLEAR COLUMN/INDEX/PROJECTION, DETACH PERMANENTLY). That gate is a best-effort "
                 "accident guard, not a security boundary. Integers outside "
-                "[-9007199254740991, 9007199254740991] are returned as decimal strings."
+                "[-9007199254740991, 9007199254740991] are returned as decimal strings. "
+                "Two optional checks also run through this tool. Use DESCRIBE (<query>) when "
+                "you need a query's output columns and types; it inspects the result schema "
+                "and surfaces analysis errors such as an unknown column, but a query that "
+                "describes cleanly can still fail at runtime. Consider EXPLAIN ESTIMATE "
+                "<query> before a SELECT that could be expensive; it returns the estimated "
+                "parts, rows and marks read from MergeTree family tables, which is not run "
+                "time and not result size. Neither runs the query body, though analysis can "
+                "execute scalar subqueries."
             ),
         )
     )
