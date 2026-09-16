@@ -23,7 +23,7 @@ from typing import Annotated, Any, Dict, List, Optional, Tuple
 import clickhouse_connect
 import simplejson
 from cachetools import TTLCache
-from clickhouse_connect.driver.binding import format_query_value
+from clickhouse_connect.driver.binding import external_bind_re, format_query_value
 from clickhouse_connect.driver.exceptions import OperationalError
 from dotenv import dotenv_values, load_dotenv
 from fastmcp import FastMCP, settings as fastmcp_settings
@@ -1600,6 +1600,29 @@ _DESTRUCTIVE_KEYWORDS = re.compile(
 # Plain DETACH is reversible via ATTACH and stays allowed.
 _DETACH_KEYWORD = re.compile(r"\bDETACH\b", re.IGNORECASE)
 _PERMANENTLY_KEYWORD = re.compile(r"\bPERMANENTLY\b", re.IGNORECASE)
+# Only mask the parameter name. Types and surrounding SQL remain visible.
+_SQL_PARAMETER_NAME = re.compile(r"\{\s*[A-Za-z_$][A-Za-z0-9_$]*\s*:")
+_SQL_PARAMETER_PREFIX = re.compile(r"\{[\w$]+:")
+
+
+def _has_unclosed_placeholder(query: str, max_scan: int = 1_000_000) -> bool:
+    """True if unterminated {name: placeholder starts would backtrack too far.
+
+    external_bind_re's [^}]+ scans to the end of the string for every driver-valid
+    {name: that has no closing } after it, which is only possible after the last }.
+    A few such starts (placeholder-like text in a trailing comment or literal) are one
+    linear scan each and harmless; a flood is quadratic here and in the driver's own
+    bind path. Bounding the total scanned length keeps both linear. Only meaningful
+    when params are supplied.
+    """
+    length = len(query)
+    scanned = 0
+    for prefix in _SQL_PARAMETER_PREFIX.finditer(query, query.rfind("}") + 1):
+        if external_bind_re.fullmatch(prefix.group() + "String}") is not None:
+            scanned += length - prefix.start()
+            if scanned > max_scan:
+                return True
+    return False
 
 
 def _strip_comments_and_quoted_text(query: str) -> str:
@@ -1632,6 +1655,7 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         return
 
     statement = _strip_comments_and_quoted_text(query)
+    statement = _SQL_PARAMETER_NAME.sub(" ", statement)
     if _DESTRUCTIVE_KEYWORDS.search(statement) or (
         _DETACH_KEYWORD.search(statement) and _PERMANENTLY_KEYWORD.search(statement)
     ):
@@ -1676,7 +1700,12 @@ def _mark_active_query_cancelled(query_id: str) -> Optional[_ActiveQueryState]:
         return state
 
 
-def execute_query(query: str, query_id: str, client_config: dict) -> str:
+def execute_query(
+    query: str,
+    query_id: str,
+    client_config: dict,
+    params: Optional[Dict[str, Any]] = None,
+) -> str:
     """Execute a query in a worker thread with a pre-resolved client config."""
     with _active_queries_lock:
         state = _active_queries.get(query_id)
@@ -1686,6 +1715,27 @@ def execute_query(query: str, query_id: str, client_config: dict) -> str:
 
     entry = None
     try:
+        if params is not None and (
+            not isinstance(params, dict) or any(not isinstance(key, str) for key in params)
+        ):
+            raise ToolError("params must be an object with string keys")
+        if params and _has_unclosed_placeholder(query):
+            raise ToolError(
+                "Too many unterminated ClickHouse {name:Type} placeholder starts. "
+                "Close the braces. Placeholder-like text in a comment or string "
+                "literal counts toward this when params is set."
+            )
+        # Keep parameters out of the driver's client-side formatting and raw binary paths.
+        if params and (
+            external_bind_re.search(query) is None
+            or any(len(key) > 1 and key.startswith("$") and key.endswith("$") for key in params)
+        ):
+            raise ToolError(
+                "params requires ClickHouse {name:Type} placeholders with the opening brace, "
+                "name, and colon adjacent, for example {id:UInt32}. Spaces within the type "
+                "are allowed. Python percent "
+                "formatting and $name$ raw binary parameters are not supported."
+            )
         entry = _acquire_clickhouse_client(client_config)
         client = entry.client
         with _active_queries_lock:
@@ -1700,7 +1750,7 @@ def execute_query(query: str, query_id: str, client_config: dict) -> str:
         with _active_queries_lock:
             if state.cancelled:
                 raise ToolError("Query cancelled before execution")
-        res = client.query(query, settings=query_settings)
+        res = client.query(query, parameters=params, settings=query_settings)
         logger.info(f"Query {query_id} returned {len(res.result_rows)} rows")
         return _serialize_tool_result({"columns": res.column_names, "rows": res.result_rows})
     except ToolError:
@@ -1792,11 +1842,18 @@ async def _cancel_query_async(query_id: str) -> None:
         )
 
 
-def run_query(query: str) -> str:
+def run_query(query: str, params: Optional[Dict[str, Any]] = None) -> str:
     """Execute a SQL query against ClickHouse.
 
     Queries run in read-only mode by default. Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true
     to allow DDL and DML statements when your ClickHouse server permits them.
+
+    Bind params by name with ClickHouse placeholders such as {name:String} or
+    {vector:Array(Float32)}. Values may be JSON scalars, nulls, or arrays. Pass exact
+    large integers as decimal strings. JSON lists and objects cannot bind to Tuple
+    and Map types. Python percent formatting and $name$ raw binary parameters are
+    not supported. Parameter values stay out of the MCP server's normal SQL log lines,
+    but may appear in errors and backend logs.
     """
     logger.info(f"Executing query: {query}")
 
@@ -1814,7 +1871,7 @@ def run_query(query: str) -> str:
             )
 
         try:
-            future = QUERY_EXECUTOR.submit(execute_query, query, query_id, client_config)
+            future = QUERY_EXECUTOR.submit(execute_query, query, query_id, client_config, params)
         except Exception:
             _remove_active_query(query_id, state)
             raise
@@ -1885,11 +1942,14 @@ def _config_to_cache_key(config: dict) -> Optional[tuple]:
     return tuple(frozen_config)
 
 
-async def run_query_async(query: str) -> str:
+async def run_query_async(query: str, params: Optional[Dict[str, Any]] = None) -> str:
     """Async MCP-facing wrapper for ClickHouse queries.
 
     Awaits the worker-pool future asynchronously so concurrent tool calls are
-    served while a slow query is in flight.
+    served while a slow query is in flight. Bind params by name with {name:Type}
+    placeholders. Values may be JSON scalars, nulls, or arrays. JSON lists and
+    objects cannot bind to Tuple and Map types. Python percent
+    formatting and $name$ raw binary parameters are not supported.
     """
     logger.info(f"Executing query: {query}")
 
@@ -1908,7 +1968,7 @@ async def run_query_async(query: str) -> str:
             )
 
         try:
-            future = QUERY_EXECUTOR.submit(execute_query, query, query_id, client_config)
+            future = QUERY_EXECUTOR.submit(execute_query, query, query_id, client_config, params)
         except Exception:
             _remove_active_query(query_id, state)
             raise
@@ -2762,6 +2822,13 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
             name="run_query",
             description=(
                 "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
+                "Bind optional params by name with {name:Type} placeholders, such as "
+                "{name:String} or {vector:Array(Float32)}. Values may be JSON scalars, nulls, "
+                "or arrays. Pass exact large integers as decimal strings. JSON lists and "
+                "objects cannot bind to Tuple and Map types. Python percent "
+                "formatting and $name$ raw binary parameters are not supported. Parameter values "
+                "stay out of the MCP server's normal SQL log lines, but may appear in errors "
+                "and backend logs. "
                 "Set CLICKHOUSE_ALLOW_WRITE_ACCESS=true to allow DDL and DML operations. "
                 "Set CLICKHOUSE_ALLOW_DROP=true to additionally allow destructive operations "
                 "(DROP, TRUNCATE, DELETE, UPDATE, REPLACE TABLE/PARTITION, CREATE OR REPLACE, "

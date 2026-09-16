@@ -175,7 +175,7 @@ async def test_registered_run_query_returns_exact_integer_boundary_text():
     class FakeClient:
         server_settings = {}
 
-        def query(self, _query, settings):
+        def query(self, _query, settings, parameters=None):
             assert settings["query_id"]
             return SimpleNamespace(
                 column_names=["safe_min", "unsafe_min", "safe_max", "unsafe_max"],

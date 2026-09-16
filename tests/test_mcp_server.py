@@ -399,16 +399,20 @@ async def test_concurrent_queries(mcp_server, setup_test_database):
 
 
 @pytest.mark.asyncio
-async def test_run_query_does_not_block_other_mcp_requests(mcp_server):
+@pytest.mark.parametrize("params", [None, {"value": 1}])
+async def test_run_query_does_not_block_other_mcp_requests(mcp_server, params):
     """list_tools should complete while a query is in flight."""
 
-    def slow_execute_query(_query: str, _query_id: str, _client_config: dict):
+    def slow_execute_query(_query: str, _query_id: str, _client_config: dict, _params=None):
+        assert _params == params
         time.sleep(0.75)
         return json.dumps({"columns": ["value"], "rows": [[1]]})
 
     async with Client(mcp_server) as client:
         with patch("mcp_clickhouse.mcp_server.execute_query", side_effect=slow_execute_query):
-            slow_task = asyncio.create_task(client.call_tool("run_query", {"query": "SELECT 1"}))
+            slow_task = asyncio.create_task(
+                client.call_tool("run_query", {"query": "SELECT {value:UInt32}", "params": params})
+            )
             await asyncio.sleep(0.05)
 
             start = time.perf_counter()

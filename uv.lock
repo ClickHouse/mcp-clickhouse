@@ -1041,7 +1041,7 @@ dev = [
 requires-dist = [
     { name = "cachetools", specifier = ">=5.5.0" },
     { name = "chdb", marker = "extra == 'chdb'", specifier = ">=3.3.0" },
-    { name = "clickhouse-connect", specifier = ">=1.0.0" },
+    { name = "clickhouse-connect", specifier = ">=1.0.0,<2" },
     { name = "fastmcp", specifier = ">=4.0.0,<4.1.0" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
