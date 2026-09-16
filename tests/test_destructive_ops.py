@@ -29,7 +29,7 @@ def write_mode_without_drop():
         yield
 
 
-# Every statement here deletes data or objects. All of them parse on ClickHouse.
+# Destructive statements and malformed input that must remain blocked.
 DESTRUCTIVE_QUERIES = [
     "DROP TABLE d.t",
     "DROP TEMPORARY TABLE t",
@@ -79,6 +79,12 @@ DESTRUCTIVE_QUERIES = [
     "/* harmless comment */ DROP TABLE d.t",
     "# harmless comment\nTRUNCATE d.t",
     "DROP /* sneaky */ TABLE d.t",
+    "DROP TABLE {table:Identifier}",
+    "ALTER TABLE d.t UPDATE c = {update:UInt32} WHERE 1",
+    "DELETE FROM d.t WHERE c = {delete:UInt32}",
+    "SELECT {update:UInt32}; DROP TABLE d.t",
+    "SELECT {value:UInt32; DROP TABLE d.t}",
+    "SELECT {value:UInt32} /* {drop: */; DROP TABLE d.t",
 ]
 
 # None of these delete anything, so write mode must still run them.
@@ -119,6 +125,10 @@ ALLOWED_QUERIES = [
     # New keywords inside literals and comments stay data.
     "SELECT * FROM d.t WHERE note = 'please delete this'",
     "SELECT 1 -- update d.t later",
+    # Parameter names are data, while their types and surrounding SQL stay visible.
+    "SELECT {update:UInt32}, {drop:String}, {delete:Nullable(UInt32)}",
+    "SELECT {truncate:Float64}, {detach:String}, {permanently:String}",
+    "SELECT {$update:UInt32}, {drop$:String}, {foo$delete:UInt32}",
 ]
 
 

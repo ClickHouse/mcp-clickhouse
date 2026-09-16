@@ -100,13 +100,15 @@ class OneShotSessionOverrideMiddleware(Middleware):
 
 
 class FakeQueryClient:
-    def __init__(self, connect_timeout, barrier=None):
+    def __init__(self, connect_timeout, barrier=None, expected_params=None):
         self.connect_timeout = connect_timeout
         self.barrier = barrier
+        self.expected_params = expected_params
         self.server_settings = {}
         self.server_version = "24.10"
 
-    def query(self, _query, settings):
+    def query(self, _query, settings, parameters=None):
+        assert parameters == self.expected_params
         assert settings["readonly"] == "1"
         assert settings["query_id"]
         if self.barrier is not None:
@@ -768,34 +770,38 @@ class TestConfigOverrideUnit:
         with pytest.raises(RuntimeError, match="request-local state API is unavailable"):
             _get_client_config_overrides()
 
+    @pytest.mark.parametrize("params", [None, {"value": 13}])
     @patch("mcp_clickhouse.mcp_server.execute_query", return_value="result")
     @patch(
         "mcp_clickhouse.mcp_server._get_client_config_overrides",
         return_value={"connect_timeout": 41},
     )
-    def test_sync_run_query_passes_resolved_config(self, _mock_get_overrides, mock_execute):
-        assert run_query("SELECT 1") == "result"
+    def test_sync_run_query_passes_resolved_config(self, _mock_get_overrides, mock_execute, params):
+        assert run_query("SELECT {value:UInt32}", params) == "result"
 
-        query, query_id, config = mock_execute.call_args.args
-        assert query == "SELECT 1"
+        query, query_id, config, forwarded_params = mock_execute.call_args.args
+        assert query == "SELECT {value:UInt32}"
         assert query_id
         assert config["connect_timeout"] == 41
+        assert forwarded_params == params
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("params", [None, {"value": 13}])
     @patch("mcp_clickhouse.mcp_server.execute_query", return_value="result")
     @patch("mcp_clickhouse.mcp_server._get_client_config_overrides_for_tool")
     async def test_async_run_query_passes_resolved_config(
-        self, mock_get_overrides, mock_execute
+        self, mock_get_overrides, mock_execute, params
     ):
         overrides = {"connect_timeout": 42}
         mock_get_overrides.return_value = overrides
 
-        assert await run_query_async("SELECT 1") == "result"
+        assert await run_query_async("SELECT {value:UInt32}", params) == "result"
 
-        query, query_id, config = mock_execute.call_args.args
-        assert query == "SELECT 1"
+        query, query_id, config, forwarded_params = mock_execute.call_args.args
+        assert query == "SELECT {value:UInt32}"
         assert query_id
         assert config["connect_timeout"] == 42
+        assert forwarded_params == params
 
 
 @pytest.fixture
@@ -811,16 +817,19 @@ class TestConfigOverrideMcpBoundary:
         _clear_client_cache()
 
     @pytest.mark.asyncio
-    async def test_registered_run_query_receives_context_overrides(self, mcp_server):
+    @pytest.mark.parametrize("params", [None, {"value": 13}])
+    async def test_registered_run_query_receives_context_overrides(self, mcp_server, params):
         middleware = ConfigOverrideMiddleware({"connect_timeout": 99})
         mcp_server.add_middleware(middleware)
         try:
             with patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client") as get_client:
                 get_client.side_effect = lambda **kwargs: FakeQueryClient(
-                    kwargs["connect_timeout"]
+                    kwargs["connect_timeout"], expected_params=params
                 )
                 async with Client(mcp_server) as client:
-                    result = await client.call_tool("run_query", {"query": "SELECT 1"})
+                    result = await client.call_tool(
+                        "run_query", {"query": "SELECT {value:UInt32}", "params": params}
+                    )
 
             assert json.loads(result.content[0].text)["rows"] == [[99]]
             assert get_client.call_args.kwargs["connect_timeout"] == 99
@@ -909,7 +918,7 @@ class TestConfigOverrideMcpBoundary:
             assert release_metadata.wait(timeout=2)
             return json.dumps({"status": "ok"})
 
-        def completed_query(_query, query_id, _config):
+        def completed_query(_query, query_id, _config, _params=None):
             with _active_queries_lock:
                 state = _active_queries[query_id]
             _remove_active_query(query_id, state)
@@ -943,19 +952,29 @@ class TestConfigOverrideMcpBoundary:
             query_executor.shutdown(wait=True)
 
     @pytest.mark.asyncio
-    async def test_concurrent_run_queries_keep_overrides_isolated(self, mcp_server):
+    @pytest.mark.parametrize("with_params", [False, True])
+    async def test_concurrent_run_queries_keep_overrides_isolated(self, mcp_server, with_params):
         barrier = threading.Barrier(2)
         middleware = QueryOverrideMiddleware()
         mcp_server.add_middleware(middleware)
         try:
             with patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client") as get_client:
                 get_client.side_effect = lambda **kwargs: FakeQueryClient(
-                    kwargs["connect_timeout"], barrier
+                    kwargs["connect_timeout"], barrier,
+                    expected_params={"value": kwargs["connect_timeout"]} if with_params else None,
                 )
                 async with Client(mcp_server) as client:
                     first, second = await asyncio.gather(
-                        client.call_tool("run_query", {"query": "SELECT 11"}),
-                        client.call_tool("run_query", {"query": "SELECT 22"}),
+                        *[
+                            client.call_tool(
+                                "run_query",
+                                {
+                                    "query": f"SELECT {{value:UInt32}} -- {value}",
+                                    "params": {"value": value} if with_params else None,
+                                },
+                            )
+                            for value in (11, 22)
+                        ]
                     )
 
             assert json.loads(first.content[0].text)["rows"] == [[11]]

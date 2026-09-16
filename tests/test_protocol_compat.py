@@ -67,7 +67,7 @@ def _sse_data(response) -> dict:
     return json.loads(data_line.removeprefix("data: "))
 
 
-def _completed_query(_query, query_id, _config):
+def _completed_query(_query, query_id, _config, _params=None):
     with _active_queries_lock:
         state = _active_queries[query_id]
     _remove_active_query(query_id, state)
@@ -92,8 +92,16 @@ async def test_in_memory_client_supports_modern_and_legacy_eras(mode, expected_v
     _assert_registered_tool_names([tool.name for tool in tools])
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"query": "SELECT 1"},
+        {"query": "SELECT {value:UInt32}", "params": {"value": 1}},
+    ],
+)
 def test_modern_http_discover_list_and_tool_error_without_initialize(
     monkeypatch: pytest.MonkeyPatch,
+    arguments,
 ):
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     monkeypatch.delenv("CLICKHOUSE_MCP_AUTH_TOKEN", raising=False)
@@ -126,17 +134,19 @@ def test_modern_http_discover_list_and_tool_error_without_initialize(
         with patch(
             "mcp_clickhouse.mcp_server.execute_query",
             side_effect=_completed_query,
-        ):
+        ) as execute:
             tool_success = client.post(
                 "/mcp",
                 headers=_modern_headers("tools/call", name="run_query"),
                 json=_modern_request(
                     "tools/call",
-                    params={"name": "run_query", "arguments": {"query": "SELECT 1"}},
+                    params={"name": "run_query", "arguments": arguments},
                     request_id=4,
                 ),
             )
 
+    assert execute.call_args.args[0] == arguments["query"]
+    assert execute.call_args.args[3] == arguments.get("params")
     assert discover.status_code == 200
     discover_result = discover.json()["result"]
     assert _MODERN_VERSION in discover_result["supportedVersions"]

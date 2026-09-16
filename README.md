@@ -30,6 +30,7 @@ integers and booleans keep their JSON types.
 * `run_query`
   * Execute SQL queries on your ClickHouse cluster.
   * Input: `query` (string): The SQL query to execute.
+  * Optional input: `params` (object): Named values for ClickHouse `{name:Type}` placeholders. See [Query parameters](#query-parameters).
   * Queries run in read-only mode by default (`CLICKHOUSE_ALLOW_WRITE_ACCESS=false`), but writes can be enabled explicitly if needed.
   * `DESCRIBE (<query>)` and `EXPLAIN ESTIMATE <query>` run here too and are optional ways to inspect a query's result schema or its estimated reads. See [Checking a query before running it](#checking-a-query-before-running-it).
 
@@ -48,6 +49,51 @@ integers and booleans keep their JSON types.
     * `tables`: Array of table objects for the current page.
     * `next_page_token`: Pass this single-use value back before it expires to fetch the next page, or `null` when there are no more tables.
     * `total_tables`: Total count of tables that match the supplied filters.
+
+#### Query parameters
+
+Pass values separately from SQL through the optional `params` object:
+
+```json
+{
+  "query": "SELECT {id:UInt32} AS id, {name:String} AS name",
+  "params": {"id": 13, "name": "O'Reilly"}
+}
+```
+
+Use ClickHouse's `{name:Type}` placeholders without quoting them. Keep the opening
+brace, name, and colon adjacent, as in `{id:UInt32}`. Spaces after the colon and
+within the type are supported, as in `{id: UInt32}` and `{amount:Decimal(18, 4)}`.
+For compatibility across supported driver versions, start names with a letter or
+underscore and use only letters, digits, and underscores.
+Python-style `%s` or `%(name)s` formatting and the driver's `$name$` raw binary
+parameters are not supported. Calls with only `query` still work. Omitting `params`,
+passing `null`, or passing an empty object leaves the query unbound.
+
+Parameter values can be JSON strings, numbers, booleans, `null`, or arrays, provided
+they match the declared ClickHouse type:
+
+- Use `null` with a `Nullable(...)` type.
+- Pass exact integers outside JavaScript's safe range as decimal strings, for
+  example `"18446744073709551615"` with `{id:UInt64}`. Dates, timestamps, and exact
+  decimals can also be passed as strings with the corresponding ClickHouse type.
+- Bind vectors as one array, for example `{vector:Array(Float32)}` with
+  `"params": {"vector": [0.25, 0.5, 0.75]}`.
+- Nulls inside arrays depend on the installed driver. They work with
+  clickhouse-connect 1.8.0 but fail with the supported minimum 1.0.0.
+- JSON lists and objects cannot bind to ClickHouse `Tuple` and `Map` types.
+
+Missing values and incompatible types return query errors. With non-empty `params`,
+a query carrying many unterminated `{name:` placeholder starts is rejected, including
+placeholder-like text in comments or string literals.
+Parameterized queries use the same write protection, timeouts, cancellation, and
+JSON result encoding as other queries.
+
+Parameter values stay out of the MCP server's normal SQL log messages, but remain
+in MCP tool arguments and may appear in backend errors. ClickHouse 26.3.20.7
+substitutes values into the query text in `system.query_log`, `system.processes`,
+and `system.text_log`. Parameter binding is not a privacy feature and does not
+reduce the number of vector values sent in a tool call.
 
 #### Checking a query before running it
 
@@ -377,7 +423,7 @@ By default, this MCP enforces read-only queries so that accidental mutations can
 
 ### Destructive Operation Protection
 
-Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), destructive operations require an additional opt-in flag for safety. The check covers any `DROP` statement (including the `ALTER TABLE ... DROP PARTITION` / `DROP PART` / `DROP COLUMN` clauses), any `TRUNCATE`, `DELETE` and `UPDATE` (both the lightweight statements and the `ALTER TABLE ... DELETE` / `ALTER TABLE ... UPDATE` mutations), `REPLACE TABLE`, `CREATE OR REPLACE`, `ALTER TABLE ... REPLACE PARTITION`, `ALTER TABLE ... CLEAR COLUMN` / `CLEAR INDEX` / `CLEAR PROJECTION`, and `DETACH ... PERMANENTLY`. Keywords inside string literals, quoted identifiers, and SQL comments are ignored, so they neither trigger the check nor hide a statement from it.
+Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), destructive operations require an additional opt-in flag for safety. The check covers any `DROP` statement (including the `ALTER TABLE ... DROP PARTITION` / `DROP PART` / `DROP COLUMN` clauses), any `TRUNCATE`, `DELETE` and `UPDATE` (both the lightweight statements and the `ALTER TABLE ... DELETE` / `ALTER TABLE ... UPDATE` mutations), `REPLACE TABLE`, `CREATE OR REPLACE`, `ALTER TABLE ... REPLACE PARTITION`, `ALTER TABLE ... CLEAR COLUMN` / `CLEAR INDEX` / `CLEAR PROJECTION`, and `DETACH ... PERMANENTLY`. Keywords inside string literals, quoted identifiers, SQL comments, and `{name:Type}` parameter names are ignored, so they neither trigger the check nor hide a statement from it.
 
 This check runs in the MCP server and is a best-effort guard against accidents. It is not a security boundary. The security boundary is the ClickHouse user's grants. Read-only mode (the default) is enforced server-side via `readonly=1`. The destructive-operation gate is not server-enforced.
 
@@ -660,7 +706,7 @@ Configuration is split into **independent** groups. Mixing them up is a common c
 #### ClickHouse database connection
 
 These variables configure the [clickhouse-connect](https://clickhouse.com/docs/en/integrations/python) HTTP client and the behavior of ClickHouse-backed tools such as `run_query`, `list_databases`, and `list_tables`.
-mcp-clickhouse requires clickhouse-connect 1.0.0 or newer.
+mcp-clickhouse requires clickhouse-connect 1.x, starting with 1.0.0.
 
 ##### Required Variables
 

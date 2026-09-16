@@ -215,10 +215,11 @@ class TestRunQueryTimeout:
         with _active_queries_lock:
             _active_queries.clear()
 
+    @pytest.mark.parametrize("params", [None, {"seconds": 999}])
     @patch("mcp_clickhouse.mcp_server._cancel_query")
     @patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR")
     @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
-    def test_timeout_triggers_cancel(self, _mock_ctx, mock_executor, mock_cancel):
+    def test_timeout_triggers_cancel(self, _mock_ctx, mock_executor, mock_cancel, params):
         """When run_query times out, it should call _cancel_query with the query_id."""
         mock_future = MagicMock()
         mock_future.result.side_effect = concurrent.futures.TimeoutError()
@@ -226,7 +227,9 @@ class TestRunQueryTimeout:
         mock_executor.submit.return_value = mock_future
 
         with pytest.raises(ToolError, match="timed out"):
-            run_query("SELECT sleep(999)")
+            run_query("SELECT sleep({seconds:UInt32})", params)
+
+        assert mock_executor.submit.call_args.args[-1] == params
 
         # _cancel_query should have been called with the generated query_id
         mock_cancel.assert_called_once()
@@ -418,7 +421,8 @@ class TestRunQueryTimeout:
             assert not _active_queries
 
     @pytest.mark.asyncio
-    async def test_async_queued_caller_cancellation_removes_state(self):
+    @pytest.mark.parametrize("params", [None, {"value": 1}])
+    async def test_async_queued_caller_cancellation_removes_state(self, params):
         queued_future = concurrent.futures.Future()
         with (
             patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR") as query_executor,
@@ -430,7 +434,7 @@ class TestRunQueryTimeout:
             patch("mcp_clickhouse.mcp_server._cancel_query_async") as cancel_query,
         ):
             query_executor.submit.return_value = queued_future
-            task = asyncio.create_task(run_query_async("SELECT 1"))
+            task = asyncio.create_task(run_query_async("SELECT {value:UInt32}", params))
             for _ in range(10):
                 with _active_queries_lock:
                     if _active_queries:
@@ -465,7 +469,8 @@ class TestRunQueryTimeout:
             assert not _active_queries
 
     @pytest.mark.asyncio
-    async def test_async_timeout_cancellation_is_off_loop_and_bounded(self):
+    @pytest.mark.parametrize("params", [None, {"seconds": 999}])
+    async def test_async_timeout_cancellation_is_off_loop_and_bounded(self, params):
         pending_query = concurrent.futures.Future()
         pending_query.set_running_or_notify_cancel()
         started = threading.Event()
@@ -489,7 +494,7 @@ class TestRunQueryTimeout:
         ):
             query_executor.submit.return_value = pending_query
             started_at = time.monotonic()
-            task = asyncio.create_task(run_query_async("SELECT sleep(999)"))
+            task = asyncio.create_task(run_query_async("SELECT sleep({seconds:UInt32})", params))
             try:
                 await asyncio.sleep(0.04)
                 assert time.monotonic() - started_at < 0.15
