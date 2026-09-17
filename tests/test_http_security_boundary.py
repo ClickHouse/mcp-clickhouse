@@ -18,6 +18,7 @@ with warnings.catch_warnings():
 
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
+import mcp_clickhouse.auth as auth_module
 import mcp_clickhouse.mcp_server as mcp_server_module
 import mcp_clickhouse.main as main_module
 from mcp_clickhouse.mcp_server import ClickHouseFastMCP
@@ -490,7 +491,7 @@ def test_http_app_restores_auth_between_static_and_oauth_construction(
     monkeypatch.delenv("CLICKHOUSE_MCP_AUTH_TOKEN")
     monkeypatch.setenv("FASTMCP_SERVER_AUTH", "example.OAuthProvider")
     monkeypatch.setattr(
-        mcp_server_module,
+        auth_module,
         "_load_fastmcp_auth_provider",
         lambda _provider_path, **_kwargs: oauth_provider,
     )

@@ -10,15 +10,17 @@ import pytest
 from fastmcp.server.auth import AuthProvider
 from fastmcp.server.auth.providers.azure import AzureProvider
 
+import mcp_clickhouse.auth as auth_module
 import mcp_clickhouse.mcp_server as mcp_server_module
-from mcp_clickhouse.mcp_env import MCPServerConfig
-from mcp_clickhouse.mcp_server import _load_fastmcp_auth_provider, _resolve_auth
-from mcp_clickhouse.mcp_server import (
+from mcp_clickhouse.auth import (
     _LEGACY_AUTH_PROVIDER_ENV,
     _get_case_insensitive_value,
-    _load_default_dotenv,
+    _load_fastmcp_auth_provider,
     _parse_auth_provider_env_value,
+    _resolve_auth,
 )
+from mcp_clickhouse.mcp_env import MCPServerConfig
+from mcp_clickhouse.mcp_server import _load_default_dotenv
 
 
 class RecordingAuthProvider(AuthProvider):
@@ -151,7 +153,7 @@ def test_resolve_auth_loads_oauth_provider(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("FASTMCP_SERVER_AUTH", "fastmcp.server.auth.providers.jwt.JWTVerifier")
     provider = RecordingAuthProvider()
     monkeypatch.setattr(
-        mcp_server_module,
+        auth_module,
         "_load_fastmcp_auth_provider",
         lambda _provider_path, **_kwargs: provider,
     )
@@ -187,7 +189,7 @@ def test_resolve_auth_loads_provider_selector_from_explicit_env_file(
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
     monkeypatch.setenv(env_file_name, str(env_file))
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(JWTVerifier=RecordingAuthProvider),
     )
@@ -204,7 +206,7 @@ def test_resolve_auth_loads_lowercase_provider_selector(monkeypatch: pytest.Monk
     monkeypatch.setenv("fastmcp_server_auth", provider_path)
     provider = RecordingAuthProvider()
     load_provider = MagicMock(return_value=provider)
-    monkeypatch.setattr(mcp_server_module, "_load_fastmcp_auth_provider", load_provider)
+    monkeypatch.setattr(auth_module, "_load_fastmcp_auth_provider", load_provider)
 
     assert _resolve_auth(MCPServerConfig()) == {"auth": provider}
     assert load_provider.call_args.args == (provider_path,)
@@ -224,7 +226,7 @@ def test_explicit_auth_file_does_not_pollute_clickhouse_environment(
     monkeypatch.setenv("FASTMCP_ENV_FILE", str(env_file))
     provider = RecordingAuthProvider()
     monkeypatch.setattr(
-        mcp_server_module,
+        auth_module,
         "_load_fastmcp_auth_provider",
         MagicMock(return_value=provider),
     )
@@ -461,7 +463,7 @@ def test_module_dotenv_auth_loads_from_foreign_working_directory_without_redirec
         lambda: str(module_file),
     )
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(JWTVerifier=RecordingAuthProvider),
     )
@@ -503,7 +505,7 @@ def test_lowercase_process_auth_value_wins_over_uppercase_file_value(
         "https://process.example/jwks.json",
     )
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(JWTVerifier=RecordingAuthProvider),
     )
@@ -566,7 +568,7 @@ def test_trusted_selector_uses_cwd_dotenv_provider_fields(
             )
             _load_default_dotenv()
         monkeypatch.setattr(
-            mcp_server_module.importlib,
+            auth_module.importlib,
             "import_module",
             lambda _module_name: SimpleNamespace(JWTVerifier=RecordingAuthProvider),
         )
@@ -594,7 +596,7 @@ def test_load_auth_provider_preserves_legacy_azure_environment(
 ):
     provider_path = "fastmcp.server.auth.providers.azure.AzureProvider"
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(AzureProvider=RecordingAuthProvider),
     )
@@ -777,7 +779,7 @@ def test_legacy_auth_provider_map_matches_fastmcp4_signatures():
 
     for provider_path, (_, fields) in _LEGACY_AUTH_PROVIDER_ENV.items():
         module_name, _, class_name = provider_path.rpartition(".")
-        provider_class = getattr(mcp_server_module.importlib.import_module(module_name), class_name)
+        provider_class = getattr(auth_module.importlib.import_module(module_name), class_name)
         assert issubclass(provider_class, AuthProvider)
         assert set(fields) <= set(inspect.signature(provider_class).parameters)
 
@@ -785,7 +787,7 @@ def test_legacy_auth_provider_map_matches_fastmcp4_signatures():
 def test_legacy_auth_environment_is_case_insensitive(monkeypatch: pytest.MonkeyPatch):
     provider_path = "fastmcp.server.auth.providers.jwt.JWTVerifier"
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(JWTVerifier=RecordingAuthProvider),
     )
@@ -805,7 +807,7 @@ def test_process_auth_environment_uses_last_matching_case_variant(
     _clear_auth_env(monkeypatch)
     provider_path = "fastmcp.server.auth.providers.jwt.JWTVerifier"
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(JWTVerifier=RecordingAuthProvider),
     )
@@ -834,7 +836,7 @@ def test_legacy_auth_provider_loads_explicit_fastmcp_env_file(
     monkeypatch.delenv(env_name, raising=False)
     monkeypatch.setenv("FASTMCP_ENV_FILE", str(env_file))
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(JWTVerifier=RecordingAuthProvider),
     )
@@ -858,7 +860,7 @@ def test_auth_provider_constructor_error_reports_type_without_secret(
     secret = "constructor-secret-value"
     monkeypatch.setenv("FASTMCP_SERVER_AUTH_GITHUB_CLIENT_SECRET", secret)
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(GitHubProvider=RejectingProvider),
     )
@@ -922,7 +924,7 @@ def test_legacy_empty_scopes_restore_provider_defaults(
     configured_scopes,
 ):
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(**{class_name: RecordingAuthProvider}),
     )
@@ -968,7 +970,7 @@ def test_legacy_zero_timeout_restores_provider_default(
     env_prefix,
 ):
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(**{class_name: RecordingAuthProvider}),
     )
@@ -982,7 +984,7 @@ def test_legacy_zero_timeout_restores_provider_default(
 def test_legacy_introspection_keeps_zero_timeout(monkeypatch):
     provider_path = "fastmcp.server.auth.providers.introspection.IntrospectionTokenVerifier"
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(
             IntrospectionTokenVerifier=RecordingAuthProvider
@@ -1001,7 +1003,7 @@ def test_legacy_introspection_keeps_zero_timeout(monkeypatch):
 def test_legacy_empty_aws_region_restores_default(monkeypatch):
     provider_path = "fastmcp.server.auth.providers.aws.AWSCognitoProvider"
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(AWSCognitoProvider=RecordingAuthProvider),
     )
@@ -1025,7 +1027,7 @@ def test_legacy_introspection_rejects_empty_required_fields_without_values(
     }
     values[required_field] = ""
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(
             IntrospectionTokenVerifier=RecordingAuthProvider
@@ -1045,7 +1047,7 @@ def test_load_auth_provider_supports_no_arg_custom_provider(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(CustomProvider=RecordingAuthProvider),
     )
@@ -1061,7 +1063,7 @@ def test_load_auth_provider_rejects_invalid_json_without_secret_value(
     provider_path = "fastmcp.server.auth.providers.github.GitHubProvider"
     invalid_value = "secret-invalid-value"
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(GitHubProvider=RecordingAuthProvider),
     )
@@ -1082,7 +1084,7 @@ def test_load_auth_provider_rejects_removed_supabase_hs256(
 ):
     provider_path = "fastmcp.server.auth.providers.supabase.SupabaseProvider"
     monkeypatch.setattr(
-        mcp_server_module.importlib,
+        auth_module.importlib,
         "import_module",
         lambda _module_name: SimpleNamespace(SupabaseProvider=RecordingAuthProvider),
     )

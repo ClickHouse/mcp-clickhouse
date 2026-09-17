@@ -187,19 +187,33 @@ def test_selected_dotenv_configures_initial_executors_and_http_auth(isolated_pac
         """
         import concurrent.futures
         import importlib
+        import os
         import sys
         from unittest.mock import call, patch
 
-        # Keep dependency startup outside the executor spy.
+        # Keep dependency startup outside the startup spies.
         import clickhouse_connect
         import fastmcp
+        from pydantic import TypeAdapter
         from starlette.testclient import TestClient
+
+        parser_startup_state = []
+        init_adapter = TypeAdapter.__init__
+        def record_adapter(adapter, adapted_type, *args, _parent_depth=2, **kwargs):
+            if adapted_type is int:
+                parser_startup_state.append((
+                    os.environ.get("CLICKHOUSE_MCP_MAX_WORKERS"), executor.call_count
+                ))
+            init_adapter(
+                adapter, adapted_type, *args, _parent_depth=_parent_depth + 1, **kwargs
+            )
 
         assert "mcp_clickhouse" not in sys.modules
         with patch(
             "concurrent.futures.ThreadPoolExecutor", wraps=concurrent.futures.ThreadPoolExecutor
-        ) as executor:
+        ) as executor, patch.object(TypeAdapter, "__init__", record_adapter):
             server = importlib.import_module("mcp_clickhouse.mcp_server")
+        assert parser_startup_state == [("3", 4)], parser_startup_state
         # Preserve pool count and order during the structural refactor.
         # This can be relaxed after the refactor is complete.
         assert executor.call_args_list == [
@@ -231,6 +245,44 @@ def test_selected_dotenv_configures_initial_executors_and_http_auth(isolated_pac
             assert response.status_code == 200, response.text
             assert '"serverInfo"' in response.text
         """,
+    )
+
+
+@pytest.mark.parametrize("app_method", ["http_app", "sse_app"])
+def test_auth_provider_resolves_when_transport_app_is_constructed(isolated_package, app_method):
+    source_root, _ = isolated_package
+    (source_root / "startup_auth_provider.py").write_text(
+        "from fastmcp.server.auth.providers.jwt import StaticTokenVerifier\n"
+        "constructions = []\n"
+        "class Provider(StaticTokenVerifier):\n"
+        "    def __init__(self):\n"
+        "        constructions.append(self)\n"
+        "        super().__init__(tokens={}, required_scopes=[])\n"
+    )
+    _run_python(
+        isolated_package,
+        """
+        import importlib
+        import os
+        import sys
+
+        importlib.import_module("mcp_clickhouse.auth")
+        server = sys.modules["mcp_clickhouse.mcp_server"]
+        assert "startup_auth_provider" not in sys.modules
+        assert server.mcp.auth is None
+
+        os.environ["FASTMCP_SERVER_AUTH"] = "startup_auth_provider.Provider"
+        getattr(server.mcp, os.environ["STARTUP_APP_METHOD"])()
+
+        provider = sys.modules["startup_auth_provider"]
+        assert len(provider.constructions) == 1
+        assert server.mcp.auth is None
+        """,
+        {
+            "STARTUP_APP_METHOD": app_method,
+            "CLICKHOUSE_MCP_SERVER_TRANSPORT": "http" if app_method == "http_app" else "sse",
+            "FASTMCP_SERVER_AUTH": "startup_auth_provider.UnavailableDuringImport",
+        },
     )
 
 

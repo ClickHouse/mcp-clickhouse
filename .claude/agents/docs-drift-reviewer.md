@@ -1,6 +1,6 @@
 ---
 name: docs-drift-reviewer
-description: Checks whether README.md, server.json, fastmcp.json, and CHANGELOG.md still match the code on the current branch, and updates them where they do not. Use once implementation work is done, right before opening a PR, to catch drift in the environment variable tables, tool descriptions, response shapes, security guidance, or registry metadata.
+description: "Checks whether README.md, server.json, fastmcp.json, and CHANGELOG.md still match the code on the current branch, and updates them where they do not. Use once implementation work is done, right before opening a PR, to catch drift in the environment variable tables, tool descriptions, response shapes, security guidance, or registry metadata."
 tools: Read, Write, Edit, Bash, Grep, Glob
 model: inherit
 ---
@@ -41,19 +41,19 @@ Do not report these. They look like drift and are not.
 
 ## Workflow
 
-1. Determine the diff. Default to `git diff main...HEAD`, plus `git status` and `git diff` for anything uncommitted. Use whatever range the caller specified instead, if they gave one.
+1. Determine the diff. Default to `git diff main...HEAD`, plus `git status --short`, `git diff`, and `git diff --cached` for anything uncommitted. Read relevant untracked files separately. Use whatever range the caller specified instead, if they gave one.
 2. Read the actual diff, not the commit messages. Commit messages and changelog entries can be incomplete or wrong; the diff is ground truth.
 3. Filter it down to user-visible surface:
    - New, renamed, or removed environment variables, and any change to a default, to parsing, or to validation.
    - New, renamed, or removed tools and prompts. Changed tool arguments, argument defaults, or result shapes.
    - Changed error behavior a user would see.
-   - Changed security behavior: auth mode handling, the write and DROP gates, what `/health` returns, bind host defaults.
+   - Changed security behavior: auth selection at HTTP/SSE app construction, Host/Origin validation, trusted-proxy handling, the write and DROP gates, what `/health` returns, and bind defaults.
    - Changed startup or transport behavior, which can also touch the Dockerfile and the CLI entry point.
    - Ignore internal refactors, private helpers, and test-only changes. They have nothing for docs to reflect.
 4. For each user-visible change, find every place the docs describe it. Environment variables in particular appear in several places in the README: a configuration table, one or more example blocks, and sometimes the security or development sections. Fixing one occurrence and missing the others is the most common way this job gets done badly. Grep for the variable name and check every hit.
-5. Verify the registered reality rather than trusting the README. Tool names, argument names, and docstrings become the exposed MCP schema through FastMCP introspection, so read the decorated functions in `mcp_server.py` and confirm the README describes what is actually registered. When it matters, list the tools through an in-memory `fastmcp.Client` and compare.
+5. Verify the registered reality rather than trusting the README. Tool names, argument names, and docstrings become the exposed MCP schema through FastMCP introspection, so trace registration from the server assembly to the owning modules and confirm the README describes what is actually registered. Do not assume every tool, serializer, or auth helper still lives in `mcp_server.py`. When it matters, list the tools through an in-memory `fastmcp.Client` and compare.
 6. Edit the affected sections directly. Keep edits minimal and consistent with the surrounding page: same heading depth, same code fence style, same tone. A doc page describes current behavior, so do not add "recently changed" framing.
-7. When you touch a code sample, confirm it would actually run against the current API rather than assuming the old version still works.
+7. When you touch a code sample, confirm it would actually run against the current API rather than assuming the old version still works. Read dependency bounds from `pyproject.toml`, pins from `uv.lock`, and CI versions from `.github/workflows/ci.yaml`. Use `importlib.metadata` through `uv run --no-sync python` when installed versions matter. Do not infer them from a hardcoded site-packages path. Use `rg --hidden --no-ignore` for dependency source inside an ignored environment.
 8. If a change is genuinely internal, leave the docs alone. Do not invent documentation for something a user cannot observe.
 9. If you cannot tell whether something is user-visible, or where it belongs, say so in your report rather than editing speculatively.
 
