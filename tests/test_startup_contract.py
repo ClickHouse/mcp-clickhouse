@@ -255,6 +255,113 @@ def test_selected_dotenv_configures_initial_executors_and_http_auth(isolated_pac
     )
 
 
+@pytest.mark.parametrize("entrypoint", ["package", "file"])
+def test_entrypoint_keeps_independent_executor_ownership(isolated_package, entrypoint):
+    source_root, _ = isolated_package
+    shutil.copyfile(
+        Path(__file__).resolve().parents[1] / "fastmcp.json", source_root / "fastmcp.json"
+    )
+    _run_python(
+        isolated_package,
+        """
+        import asyncio
+        import atexit
+        import concurrent.futures
+        import importlib
+        import os
+        import sys
+        import types
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import clickhouse_connect
+        from fastmcp.utilities.mcp_server_config import MCPServerConfig
+
+        pools, sessions, callbacks, events = [], [], [], []
+        original_register = atexit.register
+
+        class Pool(concurrent.futures.ThreadPoolExecutor):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                if args or "max_workers" in kwargs:
+                    pools.append(self)
+
+            def shutdown(self, wait=True, **kwargs):
+                if self in pools:
+                    events.append(("pool", pools.index(self), wait))
+                super().shutdown(wait=wait, **kwargs)
+
+        class Session:
+            def __init__(self, path):
+                sessions.append(self)
+
+            def close(self):
+                events.append(("chdb", sessions.index(self)))
+
+        def record_register(callback, *args, **kwargs):
+            if callback.__name__ == "_shutdown" or isinstance(
+                getattr(callback, "__self__", None), Session
+            ):
+                callbacks.append(callback)
+                assert not args and not kwargs
+                return callback
+            return original_register(callback, *args, **kwargs)
+
+        chdb = types.ModuleType("chdb")
+        chdb.__path__ = []
+        chdb.session = types.ModuleType("chdb.session")
+        chdb.session.Session = Session
+        sys.modules.update({"chdb": chdb, "chdb.session": chdb.session})
+
+        with patch("concurrent.futures.ThreadPoolExecutor", Pool), patch(
+            "atexit.register", record_register
+        ), patch.object(
+            clickhouse_connect, "get_client", side_effect=AssertionError("Unexpected DB connection")
+        ) as get_client:
+            assert asyncio.run(asyncio.to_thread(lambda: "default executor")) == "default executor"
+            assert not pools and not events
+            if os.environ["STARTUP_ENTRYPOINT"] == "package":
+                loaded = importlib.import_module("mcp_clickhouse.mcp_server").mcp
+                count = 1
+            else:
+                os.chdir(os.environ["PYTHONPATH"])
+                config = MCPServerConfig.from_file(Path(os.environ["PYTHONPATH"]) / "fastmcp.json")
+                loaded = asyncio.run(config.source.load_server())
+                count = 2
+            get_client.assert_not_called()
+
+        shutdowns = callbacks[::2]
+        namespaces = [callback.__globals__ for callback in shutdowns]
+        assert [callback.__name__ for callback in callbacks] == ["_shutdown", "close"] * count
+        assert namespaces[0] is sys.modules["mcp_clickhouse.mcp_server"].__dict__
+        assert namespaces[-1]["mcp"] is loaded
+        assert len({id(namespace["mcp"]) for namespace in namespaces}) == count
+        assert len({id(pool) for pool in pools}) == 4 * count
+        assert len(sessions) == count
+        assert [pool._max_workers for pool in pools] == [6, 4, 2, 1] * count
+        for index, namespace in enumerate(namespaces):
+            executors = namespace["_executors"]
+            assert executors.max_workers == 6
+            assert [executors.query, executors.metadata, executors.cancellation, executors.health] == (
+                pools[index * 4:(index + 1) * 4]
+            )
+            assert namespace["_chdb_client"] is sessions[index]
+            namespace["_clear_client_cache"] = lambda index=index: events.append(("cache", index))
+
+        # Preserve the existing atexit order during the structural refactor.
+        expected = []
+        for index in reversed(range(count)):
+            expected.append(("chdb", index))
+            expected.extend(("pool", pool, True) for pool in range(index * 4, (index + 1) * 4))
+            expected.append(("cache", index))
+        for callback in reversed(callbacks):
+            callback()
+        assert events == expected, events
+        """,
+        {"STARTUP_ENTRYPOINT": entrypoint, "CHDB_ENABLED": "true", "CLICKHOUSE_MCP_MAX_WORKERS": "6"},
+    )
+
+
 @pytest.mark.parametrize("app_method", ["http_app", "sse_app"])
 def test_auth_provider_resolves_when_transport_app_is_constructed(isolated_package, app_method):
     source_root, _ = isolated_package

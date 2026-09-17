@@ -927,8 +927,8 @@ class TestConfigOverrideMcpBoundary:
         metadata_task = None
         try:
             with (
-                patch("mcp_clickhouse.mcp_server.METADATA_EXECUTOR", metadata_executor),
-                patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR", query_executor),
+                patch("mcp_clickhouse.mcp_server._executors.metadata", metadata_executor),
+                patch("mcp_clickhouse.mcp_server._executors.query", query_executor),
                 patch(
                     "mcp_clickhouse.mcp_server._list_tables_with_config",
                     side_effect=blocked_metadata_call,

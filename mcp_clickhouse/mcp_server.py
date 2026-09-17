@@ -30,6 +30,7 @@ from starlette.responses import PlainTextResponse
 
 from mcp_clickhouse.auth import _initialize_auth_parser, _load_default_dotenv
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
+from mcp_clickhouse.executors import _Executors
 from mcp_clickhouse.mcp_env import (
     TLS_TOP_LEVEL_ONLY_KEYS,
     get_chdb_config,
@@ -115,12 +116,7 @@ logger = logging.getLogger(MCP_SERVER_NAME)
 
 _load_default_dotenv()
 
-_max_workers = get_mcp_config().max_workers
-QUERY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers)
-_METADATA_MAX_WORKERS = max(1, min(4, _max_workers))
-METADATA_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=_METADATA_MAX_WORKERS)
-CANCELLATION_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-HEALTH_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+_executors = _Executors(get_mcp_config().max_workers)
 _QUERY_CANCELLATION_WAIT_SECONDS = 1.0
 _HEALTH_CHECK_TIMEOUT_SECONDS = 2.0
 _HEALTH_RESULT_CACHE_SECONDS = 1.0
@@ -221,7 +217,7 @@ def _get_health_probe_future(config: dict) -> concurrent.futures.Future:
     with _health_probe_lock:
         if _health_probe_future is not None and not _health_probe_future.done():
             return _health_probe_future
-        future = HEALTH_EXECUTOR.submit(
+        future = _executors.health.submit(
             _probe_clickhouse_health,
             _bounded_health_config(config),
         )
@@ -363,7 +359,7 @@ def _list_databases_with_config(config: dict[str, Any]) -> str:
 async def list_databases_async() -> str:
     overrides = await _get_client_config_overrides_for_tool()
     config = _resolve_client_config(overrides)
-    future = METADATA_EXECUTOR.submit(_list_databases_with_config, config)
+    future = _executors.metadata.submit(_list_databases_with_config, config)
     return await asyncio.wrap_future(future)
 
 
@@ -734,7 +730,7 @@ async def list_tables_async(
     )
     completed = False
     try:
-        future = METADATA_EXECUTOR.submit(
+        future = _executors.metadata.submit(
             _list_tables_with_config,
             config,
             database,
@@ -1096,7 +1092,7 @@ def _cancel_query(query_id: str):
 
 def _cancel_query_with_bounded_wait(query_id: str) -> None:
     """Run cancellation in its executor and wait briefly for completion."""
-    future = CANCELLATION_EXECUTOR.submit(_cancel_query, query_id)
+    future = _executors.cancellation.submit(_cancel_query, query_id)
     try:
         future.result(timeout=_QUERY_CANCELLATION_WAIT_SECONDS)
     except concurrent.futures.TimeoutError:
@@ -1109,7 +1105,7 @@ def _cancel_query_with_bounded_wait(query_id: str) -> None:
 
 async def _cancel_query_async(query_id: str) -> None:
     """Await cancellation briefly without blocking the event loop."""
-    future = CANCELLATION_EXECUTOR.submit(_cancel_query, query_id)
+    future = _executors.cancellation.submit(_cancel_query, query_id)
     try:
         await asyncio.wait_for(
             asyncio.shield(asyncio.wrap_future(future)),
@@ -1145,14 +1141,14 @@ def run_query(query: str, params: Optional[Dict[str, Any]] = None) -> str:
     try:
         with _active_queries_lock:
             in_flight = len(_active_queries)
-        if in_flight >= _max_workers:
+        if in_flight >= _executors.max_workers:
             logger.warning(
                 "Thread pool saturated: %d in-flight vs %d workers",
-                in_flight, _max_workers,
+                in_flight, _executors.max_workers,
             )
 
         try:
-            future = QUERY_EXECUTOR.submit(execute_query, query, query_id, client_config, params)
+            future = _executors.query.submit(execute_query, query, query_id, client_config, params)
         except Exception:
             _remove_active_query(query_id, state)
             raise
@@ -1242,14 +1238,14 @@ async def run_query_async(query: str, params: Optional[Dict[str, Any]] = None) -
     try:
         with _active_queries_lock:
             in_flight = len(_active_queries)
-        if in_flight >= _max_workers:
+        if in_flight >= _executors.max_workers:
             logger.warning(
                 "Thread pool saturated: %d in-flight vs %d workers",
-                in_flight, _max_workers,
+                in_flight, _executors.max_workers,
             )
 
         try:
-            future = QUERY_EXECUTOR.submit(execute_query, query, query_id, client_config, params)
+            future = _executors.query.submit(execute_query, query, query_id, client_config, params)
         except Exception:
             _remove_active_query(query_id, state)
             raise
@@ -1835,10 +1831,7 @@ def _clear_client_cache():
 
 def _shutdown():
     # Drain every worker before closing the clients they may hold.
-    QUERY_EXECUTOR.shutdown(wait=True)
-    METADATA_EXECUTOR.shutdown(wait=True)
-    CANCELLATION_EXECUTOR.shutdown(wait=True)
-    HEALTH_EXECUTOR.shutdown(wait=True)
+    _executors.shutdown()
     _clear_client_cache()
 
 
@@ -1972,7 +1965,7 @@ def run_chdb_select_query(query: str) -> str:
     """Run SQL in chDB, an in-process ClickHouse engine"""
     logger.info(f"Executing chDB SELECT query: {query}")
     try:
-        future = QUERY_EXECUTOR.submit(execute_chdb_query, query)
+        future = _executors.query.submit(execute_chdb_query, query)
         timeout_secs = get_mcp_config().query_timeout
         try:
             result = future.result(timeout=timeout_secs)
@@ -1993,7 +1986,7 @@ async def run_chdb_select_query_async(query: str) -> str:
     """Async MCP-facing wrapper for chDB queries."""
     logger.info(f"Executing chDB SELECT query: {query}")
     try:
-        future = QUERY_EXECUTOR.submit(execute_chdb_query, query)
+        future = _executors.query.submit(execute_chdb_query, query)
         timeout_secs = get_mcp_config().query_timeout
         try:
             result = await asyncio.wait_for(

@@ -250,9 +250,9 @@ async def test_concurrent_health_checks_share_one_bounded_probe(caplog):
             patch.object(mcp_server, "_probe_clickhouse_health", side_effect=slow_probe),
             patch.object(mcp_server, "_HEALTH_CHECK_TIMEOUT_SECONDS", 0.2),
             patch.object(
-                mcp_server.HEALTH_EXECUTOR,
+                mcp_server._executors.health,
                 "submit",
-                wraps=mcp_server.HEALTH_EXECUTOR.submit,
+                wraps=mcp_server._executors.health.submit,
             ) as submit,
         ):
             tasks = [
@@ -267,7 +267,7 @@ async def test_concurrent_health_checks_share_one_bounded_probe(caplog):
 
                 assert started.is_set()
                 assert submit.call_count == 1
-                assert mcp_server.HEALTH_EXECUTOR._work_queue.qsize() == 0
+                assert mcp_server._executors.health._work_queue.qsize() == 0
                 assert received_configs == [
                     {"connect_timeout": 0.2, "send_receive_timeout": 0.2}
                 ]

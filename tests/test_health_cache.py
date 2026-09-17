@@ -171,9 +171,9 @@ async def test_concurrent_requests_share_one_probe_and_cache_its_result():
         patch.object(mcp_server, "_resolve_client_config", return_value={}),
         patch.object(mcp_server, "_probe_clickhouse_health", side_effect=slow_probe),
         patch.object(
-            mcp_server.HEALTH_EXECUTOR,
+            mcp_server._executors.health,
             "submit",
-            wraps=mcp_server.HEALTH_EXECUTOR.submit,
+            wraps=mcp_server._executors.health.submit,
         ) as submit,
     ):
         tasks = [asyncio.create_task(mcp_server.health_check(_health_request())) for _ in range(20)]

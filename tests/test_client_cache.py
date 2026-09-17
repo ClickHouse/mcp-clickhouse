@@ -495,10 +495,10 @@ class TestShutdownOrdering:
     """Tests that atexit shutdown closes the executor before the cache."""
 
     @patch("mcp_clickhouse.mcp_server._clear_client_cache")
-    @patch("mcp_clickhouse.mcp_server.HEALTH_EXECUTOR")
-    @patch("mcp_clickhouse.mcp_server.CANCELLATION_EXECUTOR")
-    @patch("mcp_clickhouse.mcp_server.METADATA_EXECUTOR")
-    @patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR")
+    @patch("mcp_clickhouse.mcp_server._executors.health")
+    @patch("mcp_clickhouse.mcp_server._executors.cancellation")
+    @patch("mcp_clickhouse.mcp_server._executors.metadata")
+    @patch("mcp_clickhouse.mcp_server._executors.query")
     def test_executor_shutdown_runs_before_cache_clear(
         self,
         mock_query_executor,

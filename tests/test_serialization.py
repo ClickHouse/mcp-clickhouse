@@ -285,7 +285,7 @@ async def test_async_chdb_processing_does_not_wait_for_query_worker():
     second_task = None
     try:
         with (
-            patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR", query_executor),
+            patch("mcp_clickhouse.mcp_server._executors.query", query_executor),
             patch("mcp_clickhouse.mcp_server.execute_chdb_query", side_effect=execute_query),
             patch("mcp_clickhouse.mcp_server._process_chdb_result", side_effect=process_result),
             patch(

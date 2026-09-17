@@ -217,7 +217,7 @@ class TestRunQueryTimeout:
 
     @pytest.mark.parametrize("params", [None, {"seconds": 999}])
     @patch("mcp_clickhouse.mcp_server._cancel_query")
-    @patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR")
+    @patch("mcp_clickhouse.mcp_server._executors.query")
     @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
     def test_timeout_triggers_cancel(self, _mock_ctx, mock_executor, mock_cancel, params):
         """When run_query times out, it should call _cancel_query with the query_id."""
@@ -379,7 +379,7 @@ class TestRunQueryTimeout:
             assert not _active_queries
 
     @patch("mcp_clickhouse.mcp_server._cancel_query_with_bounded_wait")
-    @patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR")
+    @patch("mcp_clickhouse.mcp_server._executors.query")
     def test_queued_timeout_removes_state(self, mock_executor, mock_cancel):
         queued_future = MagicMock()
         queued_future.result.side_effect = concurrent.futures.TimeoutError()
@@ -404,7 +404,7 @@ class TestRunQueryTimeout:
     async def test_async_queued_timeout_removes_state(self):
         queued_future = concurrent.futures.Future()
         with (
-            patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR") as query_executor,
+            patch("mcp_clickhouse.mcp_server._executors.query") as query_executor,
             patch("mcp_clickhouse.mcp_server._resolve_client_config", return_value={}),
             patch(
                 "mcp_clickhouse.mcp_server.get_mcp_config",
@@ -425,7 +425,7 @@ class TestRunQueryTimeout:
     async def test_async_queued_caller_cancellation_removes_state(self, params):
         queued_future = concurrent.futures.Future()
         with (
-            patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR") as query_executor,
+            patch("mcp_clickhouse.mcp_server._executors.query") as query_executor,
             patch("mcp_clickhouse.mcp_server._resolve_client_config", return_value={}),
             patch(
                 "mcp_clickhouse.mcp_server.get_mcp_config",
@@ -456,7 +456,7 @@ class TestRunQueryTimeout:
     @pytest.mark.asyncio
     async def test_submit_failure_removes_state(self, runner):
         with (
-            patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR") as query_executor,
+            patch("mcp_clickhouse.mcp_server._executors.query") as query_executor,
             patch("mcp_clickhouse.mcp_server._resolve_client_config", return_value={}),
         ):
             query_executor.submit.side_effect = RuntimeError("executor closed")
@@ -481,7 +481,7 @@ class TestRunQueryTimeout:
             release.wait(timeout=0.5)
 
         with (
-            patch("mcp_clickhouse.mcp_server.QUERY_EXECUTOR") as query_executor,
+            patch("mcp_clickhouse.mcp_server._executors.query") as query_executor,
             patch(
                 "mcp_clickhouse.mcp_server._resolve_client_config", return_value={}
             ),
@@ -516,7 +516,7 @@ class TestRunQueryTimeout:
             release_blockers.wait(timeout=1)
 
         blocker_futures = [
-            mcp_server.CANCELLATION_EXECUTOR.submit(block_worker, index)
+            mcp_server._executors.cancellation.submit(block_worker, index)
             for index in range(2)
         ]
         try:
