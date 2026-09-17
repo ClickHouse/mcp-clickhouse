@@ -255,8 +255,8 @@ def test_selected_dotenv_configures_initial_executors_and_http_auth(isolated_pac
     )
 
 
-@pytest.mark.parametrize("entrypoint", ["package", "file"])
-def test_entrypoint_keeps_independent_executor_ownership(isolated_package, entrypoint):
+@pytest.mark.parametrize("entrypoint", ["package", "file", "package-file", "file-file"])
+def test_entrypoint_keeps_independent_executor_and_chdb_ownership(isolated_package, entrypoint):
     source_root, _ = isolated_package
     shutil.copyfile(
         Path(__file__).resolve().parents[1] / "fastmcp.json", source_root / "fastmcp.json"
@@ -268,6 +268,7 @@ def test_entrypoint_keeps_independent_executor_ownership(isolated_package, entry
         import atexit
         import concurrent.futures
         import importlib
+        import json
         import os
         import sys
         import types
@@ -275,9 +276,12 @@ def test_entrypoint_keeps_independent_executor_ownership(isolated_package, entry
         from unittest.mock import patch
 
         import clickhouse_connect
+        from fastmcp import Client
         from fastmcp.utilities.mcp_server_config import MCPServerConfig
+        from starlette.requests import Request
 
         pools, sessions, callbacks, events = [], [], [], []
+        submissions, snapshots = [], []
         original_register = atexit.register
 
         class Pool(concurrent.futures.ThreadPoolExecutor):
@@ -286,14 +290,33 @@ def test_entrypoint_keeps_independent_executor_ownership(isolated_package, entry
                 if args or "max_workers" in kwargs:
                     pools.append(self)
 
+            def submit(self, fn, /, *args, **kwargs):
+                if self in pools:
+                    submissions.append((pools.index(self), fn.__self__, args))
+                return super().submit(fn, *args, **kwargs)
+
             def shutdown(self, wait=True, **kwargs):
                 if self in pools:
                     events.append(("pool", pools.index(self), wait))
                 super().shutdown(wait=wait, **kwargs)
 
+        class Result:
+            def __init__(self, session, query):
+                self.result = [{"session": session, "query": query}]
+
+            def has_error(self):
+                return False
+
+            def data(self):
+                return json.dumps({"data": self.result})
+
         class Session:
             def __init__(self, path):
                 sessions.append(self)
+
+            def query(self, query, output_format):
+                assert output_format == "JSON"
+                return Result(sessions.index(self), query)
 
             def close(self):
                 events.append(("chdb", sessions.index(self)))
@@ -313,6 +336,66 @@ def test_entrypoint_keeps_independent_executor_ownership(isolated_package, entry
         chdb.session.Session = Session
         sys.modules.update({"chdb": chdb, "chdb.session": chdb.session})
 
+        async def check_async_calls(namespace, backend, index):
+            result = await namespace["run_chdb_select_query_async"]("async")
+            assert json.loads(result) == [{"session": index, "query": "async"}]
+            assert submissions[-1] == (index * 4, backend, ("async",))
+            async with Client(namespace["mcp"]) as client:
+                assert {tool.name for tool in await client.list_tools()} == {"run_chdb_select_query"}
+                assert {prompt.name for prompt in await client.list_prompts()} == {"chdb_initial_prompt"}
+                result = await client.call_tool("run_chdb_select_query", {"query": "mcp"})
+                assert json.loads(result.content[0].text) == [{"session": index, "query": "mcp"}]
+                assert submissions[-1] == (index * 4, backend, ("mcp",))
+
+        async def check_health_ownership():
+            request = Request({"type": "http", "method": "GET", "headers": []})
+            for failed_index, (namespace, backend, *_) in enumerate(snapshots):
+                backend.client = None
+                backend.error_message = "private initialization detail"
+                try:
+                    for index, (other, *_) in enumerate(snapshots):
+                        response = await other["health_check"](request)
+                        if index == failed_index:
+                            assert response.status_code == 503
+                            assert response.body == (
+                                b"ERROR. chDB initialization failed. Check server logs for details."
+                            )
+                        else:
+                            assert response.status_code == 200 and response.body == b"OK"
+                    backend.error_message = None
+                    response = await namespace["health_check"](request)
+                    assert response.status_code == 503
+                    assert b"Server misconfigured" in response.body
+                finally:
+                    backend.client = sessions[failed_index]
+                    backend.error_message = None
+
+        def check_assemblies():
+            namespaces = [callback.__globals__ for callback in callbacks[::2]]
+            for namespace in namespaces[len(snapshots):]:
+                snapshots.append((
+                    namespace, namespace["_chdb_backend"], namespace["create_chdb_client"],
+                    namespace["run_chdb_select_query"], namespace["run_chdb_select_query_async"],
+                ))
+            assert len({id(snapshot[1]) for snapshot in snapshots}) == len(namespaces)
+            for index, (namespace, backend, create, run_sync, run_async) in enumerate(snapshots):
+                assert namespace["_chdb_backend"] is backend
+                assert namespace["create_chdb_client"] is create
+                assert namespace["run_chdb_select_query"] is run_sync
+                assert namespace["run_chdb_select_query_async"] is run_async
+                assert create.__self__ is run_sync.__self__ is run_async.__self__ is backend
+                assert backend.executors is namespace["_executors"]
+                assert create() is backend.client is sessions[index]
+                assert backend.error_message is None
+                assert json.loads(run_sync("sync")) == [{"session": index, "query": "sync"}]
+                assert submissions[-1] == (index * 4, backend, ("sync",))
+                asyncio.run(check_async_calls(namespace, backend, index))
+            asyncio.run(check_health_ownership())
+            package = sys.modules["mcp_clickhouse"]
+            for name in ("create_chdb_client", "run_chdb_select_query", "chdb_initial_prompt"):
+                assert getattr(package, name) is namespaces[0][name]
+            assert not events
+
         with patch("concurrent.futures.ThreadPoolExecutor", Pool), patch(
             "atexit.register", record_register
         ), patch.object(
@@ -320,14 +403,16 @@ def test_entrypoint_keeps_independent_executor_ownership(isolated_package, entry
         ) as get_client:
             assert asyncio.run(asyncio.to_thread(lambda: "default executor")) == "default executor"
             assert not pools and not events
-            if os.environ["STARTUP_ENTRYPOINT"] == "package":
-                loaded = importlib.import_module("mcp_clickhouse.mcp_server").mcp
-                count = 1
-            else:
-                os.chdir(os.environ["PYTHONPATH"])
-                config = MCPServerConfig.from_file(Path(os.environ["PYTHONPATH"]) / "fastmcp.json")
-                loaded = asyncio.run(config.source.load_server())
-                count = 2
+            entrypoint = os.environ["STARTUP_ENTRYPOINT"]
+            for step in entrypoint.split("-"):
+                if step == "package":
+                    loaded = importlib.import_module("mcp_clickhouse.mcp_server").mcp
+                else:
+                    os.chdir(os.environ["PYTHONPATH"])
+                    config = MCPServerConfig.from_file(Path(os.environ["PYTHONPATH"]) / "fastmcp.json")
+                    loaded = asyncio.run(config.source.load_server())
+                check_assemblies()
+            count = {"package": 1, "file": 2, "package-file": 2, "file-file": 3}[entrypoint]
             get_client.assert_not_called()
 
         shutdowns = callbacks[::2]
@@ -345,7 +430,7 @@ def test_entrypoint_keeps_independent_executor_ownership(isolated_package, entry
             assert [executors.query, executors.metadata, executors.cancellation, executors.health] == (
                 pools[index * 4:(index + 1) * 4]
             )
-            assert namespace["_chdb_client"] is sessions[index]
+            assert namespace["_chdb_backend"].client is sessions[index]
             namespace["_clear_client_cache"] = lambda index=index: events.append(("cache", index))
 
         # Preserve the existing atexit order during the structural refactor.

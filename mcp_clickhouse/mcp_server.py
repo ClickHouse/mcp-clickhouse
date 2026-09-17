@@ -1,7 +1,6 @@
 import asyncio
 import atexit
 import concurrent.futures
-import json
 import logging
 import os
 import re
@@ -29,7 +28,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
 from mcp_clickhouse.auth import _initialize_auth_parser, _load_default_dotenv
-from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
+from mcp_clickhouse.chdb_backend import _ChDBBackend, chdb_initial_prompt as chdb_initial_prompt
 from mcp_clickhouse.executors import _Executors
 from mcp_clickhouse.mcp_env import (
     TLS_TOP_LEVEL_ONLY_KEYS,
@@ -144,8 +143,7 @@ mcp = ClickHouseFastMCP(
     version=MCP_SERVER_VERSION,
     instructions=CLICKHOUSE_SERVER_INSTRUCTIONS,
 )
-_chdb_client = None
-_chdb_error_message: Optional[str] = None
+_chdb_backend = _ChDBBackend(_executors)
 
 
 def _probe_clickhouse_health(config: dict) -> None:
@@ -266,9 +264,9 @@ async def health_check(request: Request) -> PlainTextResponse:
         if not clickhouse_enabled:
             # If ClickHouse is disabled, check chDB status
             chdb_config = get_chdb_config()
-            if chdb_config.enabled and _chdb_client is not None:
+            if chdb_config.enabled and _chdb_backend.client is not None:
                 return PlainTextResponse("OK")
-            elif chdb_config.enabled and _chdb_error_message:
+            elif chdb_config.enabled and _chdb_backend.error_message:
                 return PlainTextResponse(
                     "ERROR. chDB initialization failed. Check server logs for details.",
                     status_code=503,
@@ -1919,137 +1917,9 @@ def _normalize_readonly_value(value: Any) -> Optional[str]:
     return str(value)
 
 
-def create_chdb_client():
-    """Create a chDB client connection."""
-    if not get_chdb_config().enabled:
-        raise ValueError("chDB is not enabled. Set CHDB_ENABLED=true to enable it.")
-    if _chdb_client is None:
-        raise RuntimeError(_chdb_error_message or "chDB client is not available.")
-    return _chdb_client
-
-
-def execute_chdb_query(query: str):
-    """Execute a query using chDB client."""
-    client = create_chdb_client()
-    try:
-        res = client.query(query, "JSON")
-        if res.has_error():
-            error_msg = res.error_message()
-            logger.error(f"Error executing chDB query: {error_msg}")
-            return {"error": error_msg}
-
-        result_data = res.data()
-        if not result_data:
-            return []
-
-        result_json = json.loads(result_data)
-
-        return result_json.get("data", [])
-
-    except Exception as err:
-        logger.error(f"Error executing chDB query: {err}")
-        return {"error": str(err)}
-
-
-def _process_chdb_result(result) -> str:
-    if isinstance(result, dict) and "error" in result:
-        logger.warning(f"chDB query failed: {result['error']}")
-        return _serialize_tool_result({
-            "status": "error",
-            "message": f"chDB query failed: {result['error']}",
-        })
-    return _serialize_tool_result(result)
-
-
-def run_chdb_select_query(query: str) -> str:
-    """Run SQL in chDB, an in-process ClickHouse engine"""
-    logger.info(f"Executing chDB SELECT query: {query}")
-    try:
-        future = _executors.query.submit(execute_chdb_query, query)
-        timeout_secs = get_mcp_config().query_timeout
-        try:
-            result = future.result(timeout=timeout_secs)
-            return _process_chdb_result(result)
-        except concurrent.futures.TimeoutError:
-            logger.warning(f"chDB query timed out after {timeout_secs} seconds: {query}")
-            future.cancel()
-            return _serialize_tool_result({
-                "status": "error",
-                "message": f"chDB query timed out after {timeout_secs} seconds",
-            })
-    except Exception as e:
-        logger.error(f"Unexpected error in run_chdb_select_query: {e}")
-        return _serialize_tool_result({"status": "error", "message": f"Unexpected error: {e}"})
-
-
-async def run_chdb_select_query_async(query: str) -> str:
-    """Async MCP-facing wrapper for chDB queries."""
-    logger.info(f"Executing chDB SELECT query: {query}")
-    try:
-        future = _executors.query.submit(execute_chdb_query, query)
-        timeout_secs = get_mcp_config().query_timeout
-        try:
-            result = await asyncio.wait_for(
-                asyncio.wrap_future(future), timeout=timeout_secs
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"chDB query timed out after {timeout_secs} seconds: {query}"
-            )
-            future.cancel()
-            return _serialize_tool_result({
-                "status": "error",
-                "message": f"chDB query timed out after {timeout_secs} seconds",
-            })
-
-        return await asyncio.to_thread(_process_chdb_result, result)
-    except Exception as e:
-        logger.error(f"Unexpected error in run_chdb_select_query_async: {e}")
-        return _serialize_tool_result({"status": "error", "message": f"Unexpected error: {e}"})
-
-
-def chdb_initial_prompt() -> str:
-    """This prompt helps users understand how to interact and perform common operations in chDB"""
-    return CHDB_PROMPT
-
-
-def _init_chdb_client():
-    """Initialize the global chDB client instance."""
-    global _chdb_error_message
-    try:
-        if not get_chdb_config().enabled:
-            logger.info("chDB is disabled, skipping client initialization")
-            _chdb_error_message = None
-            return None
-
-        client_config = get_chdb_config().get_client_config()
-        data_path = client_config["data_path"]
-        logger.info(f"Creating chDB client with data_path={data_path}")
-        import chdb.session as chs
-
-        client = chs.Session(path=data_path)
-        _chdb_error_message = None
-        logger.info(f"Successfully connected to chDB with data_path={data_path}")
-        return client
-    except ModuleNotFoundError as e:
-        if e.name in {"chdb", "chdb.session"}:
-            _chdb_error_message = (
-                "chDB support requires the optional dependency. "
-                "Install mcp-clickhouse[chdb] to enable chDB features."
-            )
-            logger.warning(_chdb_error_message)
-            return None
-        _chdb_error_message = f"Failed to initialize chDB client: {e}"
-        logger.error(_chdb_error_message)
-        return None
-    except ImportError as e:
-        _chdb_error_message = f"Failed to initialize chDB client: {e}"
-        logger.error(_chdb_error_message)
-        return None
-    except Exception as e:
-        _chdb_error_message = f"Failed to initialize chDB client: {e}"
-        logger.error(_chdb_error_message)
-        return None
+create_chdb_client = _chdb_backend.create_chdb_client
+run_chdb_select_query = _chdb_backend.run_chdb_select_query
+run_chdb_select_query_async = _chdb_backend.run_chdb_select_query_async
 
 
 def _register_chdb_tools():
@@ -2058,16 +1928,15 @@ def _register_chdb_tools():
     Note: This function is not idempotent. Calling it multiple times will
     register duplicate tools. It is intended to be called once at module load.
     """
-    global _chdb_client
     if not get_chdb_config().enabled:
         return
 
-    _chdb_client = _init_chdb_client()
-    if _chdb_client is None:
+    _chdb_backend.client = _chdb_backend._init_chdb_client()
+    if _chdb_backend.client is None:
         logger.warning("chDB is enabled but unavailable; skipping chDB tool registration")
         return
 
-    atexit.register(_chdb_client.close)
+    atexit.register(_chdb_backend.client.close)
     mcp.add_tool(
         Tool.from_function(
             run_chdb_select_query_async,

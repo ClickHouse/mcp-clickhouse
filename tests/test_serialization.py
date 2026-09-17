@@ -9,11 +9,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 from fastmcp import Client
 
+from mcp_clickhouse import mcp_server
 from mcp_clickhouse.mcp_server import (
     mcp,
     run_chdb_select_query,
@@ -216,7 +217,7 @@ def test_chdb_tool_serializes_nested_wide_integers():
         }
     ]
 
-    with patch("mcp_clickhouse.mcp_server.execute_chdb_query", return_value=chdb_result):
+    with patch.object(mcp_server._chdb_backend, "execute_chdb_query", return_value=chdb_result):
         result = json.loads(run_chdb_select_query("SELECT values"))
 
     assert result == [
@@ -238,12 +239,13 @@ async def test_async_chdb_result_processing_runs_off_event_loop():
         return '[{"value": 1}]'
 
     with (
-        patch("mcp_clickhouse.mcp_server.execute_chdb_query", return_value=[{"value": 1}]),
-        patch("mcp_clickhouse.mcp_server._process_chdb_result", side_effect=process_result),
+        patch.object(mcp_server._chdb_backend, "execute_chdb_query", return_value=[{"value": 1}]),
+        patch("mcp_clickhouse.chdb_backend._process_chdb_result", side_effect=process_result),
     ):
         result = await run_chdb_select_query_async("SELECT 1")
 
     assert result == '[{"value": 1}]'
+    assert processing_thread_id is not None
     assert processing_thread_id != event_loop_thread_id
 
 
@@ -285,13 +287,13 @@ async def test_async_chdb_processing_does_not_wait_for_query_worker():
     second_task = None
     try:
         with (
-            patch("mcp_clickhouse.mcp_server._executors.query", query_executor),
-            patch("mcp_clickhouse.mcp_server.execute_chdb_query", side_effect=execute_query),
-            patch("mcp_clickhouse.mcp_server._process_chdb_result", side_effect=process_result),
+            patch.object(mcp_server._chdb_backend.executors, "query", query_executor),
+            patch.object(mcp_server._chdb_backend, "execute_chdb_query", side_effect=execute_query),
+            patch("mcp_clickhouse.chdb_backend._process_chdb_result", side_effect=process_result),
             patch(
-                "mcp_clickhouse.mcp_server.get_mcp_config",
+                "mcp_clickhouse.chdb_backend.get_mcp_config",
                 return_value=SimpleNamespace(query_timeout=2),
-            ),
+            ) as get_mcp_config,
         ):
             first_task = asyncio.create_task(run_chdb_select_query_async("first"))
             assert await event_was_set(first_query_started)
@@ -306,6 +308,7 @@ async def test_async_chdb_processing_does_not_wait_for_query_worker():
 
             assert await first_task == '[{"value": 1}]'
             assert await second_task == '[{"value": 2}]'
+            assert get_mcp_config.call_args_list == [call(), call()]
     finally:
         release_first_query.set()
         release_second_query.set()
@@ -322,13 +325,14 @@ async def test_async_chdb_serialization_is_not_part_of_query_timeout():
         return '[{"value": 1}]'
 
     with (
-        patch("mcp_clickhouse.mcp_server.execute_chdb_query", return_value=[{"value": 1}]),
-        patch("mcp_clickhouse.mcp_server._process_chdb_result", side_effect=slow_process_result),
+        patch.object(mcp_server._chdb_backend, "execute_chdb_query", return_value=[{"value": 1}]),
+        patch("mcp_clickhouse.chdb_backend._process_chdb_result", side_effect=slow_process_result),
         patch(
-            "mcp_clickhouse.mcp_server.get_mcp_config",
+            "mcp_clickhouse.chdb_backend.get_mcp_config",
             return_value=SimpleNamespace(query_timeout=0.05),
-        ),
+        ) as get_mcp_config,
     ):
         result = await run_chdb_select_query_async("SELECT 1")
 
     assert result == '[{"value": 1}]'
+    get_mcp_config.assert_called_once_with()

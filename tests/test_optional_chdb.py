@@ -12,6 +12,14 @@ from starlette.requests import Request
 from mcp_clickhouse import mcp_server
 
 
+@pytest.fixture(autouse=True)
+def restore_chdb_state(monkeypatch):
+    monkeypatch.setattr(mcp_server._chdb_backend, "client", mcp_server._chdb_backend.client)
+    monkeypatch.setattr(
+        mcp_server._chdb_backend, "error_message", mcp_server._chdb_backend.error_message
+    )
+
+
 def test_init_chdb_client_surfaces_optional_dependency_message():
     real_import = builtins.__import__
 
@@ -26,10 +34,10 @@ def test_init_chdb_client_surfaces_optional_dependency_message():
         patch.dict("os.environ", {"CHDB_ENABLED": "true"}, clear=False),
         patch("builtins.__import__", side_effect=raising_import),
     ):
-        client = mcp_server._init_chdb_client()
+        client = mcp_server._chdb_backend._init_chdb_client()
 
     assert client is None
-    assert "mcp-clickhouse[chdb]" in mcp_server._chdb_error_message
+    assert "mcp-clickhouse[chdb]" in mcp_server._chdb_backend.error_message
 
 
 def test_init_chdb_client_treats_other_import_errors_as_init_failures():
@@ -44,20 +52,20 @@ def test_init_chdb_client_treats_other_import_errors_as_init_failures():
         patch.dict("os.environ", {"CHDB_ENABLED": "true"}, clear=False),
         patch("builtins.__import__", side_effect=raising_import),
     ):
-        client = mcp_server._init_chdb_client()
+        client = mcp_server._chdb_backend._init_chdb_client()
 
     assert client is None
-    assert "Failed to initialize chDB client" in mcp_server._chdb_error_message
-    assert "mcp-clickhouse[chdb]" not in mcp_server._chdb_error_message
+    assert "Failed to initialize chDB client" in mcp_server._chdb_backend.error_message
+    assert "mcp-clickhouse[chdb]" not in mcp_server._chdb_backend.error_message
 
 
 def test_create_chdb_client_surfaces_optional_dependency_message():
     with (
         patch.dict("os.environ", {"CHDB_ENABLED": "true"}, clear=False),
-        patch.object(mcp_server, "_chdb_client", None),
+        patch.object(mcp_server._chdb_backend, "client", None),
         patch.object(
-            mcp_server,
-            "_chdb_error_message",
+            mcp_server._chdb_backend,
+            "error_message",
             "chDB support requires the optional dependency. "
             "Install mcp-clickhouse[chdb] to enable chDB features.",
         ),
@@ -69,13 +77,14 @@ def test_create_chdb_client_surfaces_optional_dependency_message():
 def test_register_chdb_tools_skips_when_client_is_unavailable():
     with (
         patch.dict("os.environ", {"CHDB_ENABLED": "true"}, clear=False),
-        patch.object(mcp_server, "_init_chdb_client", return_value=None),
-        patch.object(mcp_server, "_chdb_client", None),
+        patch.object(mcp_server._chdb_backend, "_init_chdb_client", return_value=None) as init,
+        patch.object(mcp_server._chdb_backend, "client", None),
         patch.object(mcp_server.mcp, "add_tool") as add_tool,
         patch.object(mcp_server.mcp, "add_prompt") as add_prompt,
     ):
         mcp_server._register_chdb_tools()
 
+    init.assert_called_once_with()
     add_tool.assert_not_called()
     add_prompt.assert_not_called()
 
@@ -84,13 +93,16 @@ def test_register_chdb_tools_registers_when_client_is_available():
     mock_client = MagicMock()
     with (
         patch.dict("os.environ", {"CHDB_ENABLED": "true"}, clear=False),
-        patch.object(mcp_server, "_init_chdb_client", return_value=mock_client),
-        patch.object(mcp_server, "_chdb_client", None),
+        patch.object(mcp_server._chdb_backend, "_init_chdb_client", return_value=mock_client) as init,
+        patch.object(mcp_server._chdb_backend, "client", None),
         patch.object(mcp_server.mcp, "add_tool") as add_tool,
         patch.object(mcp_server.mcp, "add_prompt") as add_prompt,
     ):
-        mcp_server._register_chdb_tools()
+        with patch.object(mcp_server.atexit, "register") as register:
+            mcp_server._register_chdb_tools()
 
+    init.assert_called_once_with()
+    register.assert_called_once_with(mock_client.close)
     add_tool.assert_called_once()
     add_prompt.assert_called_once()
 
@@ -105,10 +117,10 @@ async def test_health_check_hides_internal_chdb_init_error_details():
             {"CLICKHOUSE_ENABLED": "false", "CHDB_ENABLED": "true"},
             clear=False,
         ),
-        patch.object(mcp_server, "_chdb_client", None),
+        patch.object(mcp_server._chdb_backend, "client", None),
         patch.object(
-            mcp_server,
-            "_chdb_error_message",
+            mcp_server._chdb_backend,
+            "error_message",
             "Failed to initialize chDB client: /tmp/private.db is unreadable",
         ),
     ):
