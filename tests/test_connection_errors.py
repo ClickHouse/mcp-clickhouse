@@ -5,20 +5,22 @@ from unittest.mock import MagicMock, patch
 import pytest
 from clickhouse_connect.driver.exceptions import OperationalError
 
-from mcp_clickhouse.mcp_server import (
+from mcp_clickhouse.clients import (
     _NATIVE_PROTOCOL_PORTS,
-    _clear_client_cache,
     _connection_error_hints,
     _format_connection_failure,
+)
+from mcp_clickhouse.mcp_server import (
+    _clickhouse_clients,
     create_clickhouse_client,
 )
 
 
 @pytest.fixture(autouse=True)
 def clear_client_cache():
-    _clear_client_cache()
+    _clickhouse_clients._clear_client_cache()
     yield
-    _clear_client_cache()
+    _clickhouse_clients._clear_client_cache()
 
 
 def test_native_protocol_ports_constant():
@@ -122,7 +124,7 @@ def test_format_connection_failure_without_hints():
     assert "Hint:" not in message
 
 
-@patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+@patch("mcp_clickhouse.clients.clickhouse_connect")
 def test_create_client_preserves_exception_and_logs_hint(mock_cc, monkeypatch, caplog):
     import logging
 
@@ -157,7 +159,7 @@ def test_create_client_preserves_exception_and_logs_hint(mock_cc, monkeypatch, c
     mcp_env._CONFIG_INSTANCE = None
 
 
-@patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+@patch("mcp_clickhouse.clients.clickhouse_connect")
 def test_create_client_warns_on_native_port(mock_cc, monkeypatch, caplog):
     import logging
 

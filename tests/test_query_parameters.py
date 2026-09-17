@@ -12,8 +12,10 @@ from clickhouse_connect.driver.binding import external_bind_re
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from mcp_clickhouse.mcp_server import (
+from mcp_clickhouse.clients import (
     _ClientCacheEntry,
+)
+from mcp_clickhouse.mcp_server import (
     _has_unclosed_placeholder,
     create_clickhouse_client,
     mcp,
@@ -162,7 +164,7 @@ async def test_registered_query_reports_parameter_errors(params, error):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("params", [[], [13], "invalid", 13, True])
 async def test_registered_query_rejects_non_object_params(params):
-    with patch("mcp_clickhouse.mcp_server._acquire_clickhouse_client") as acquire:
+    with patch("mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client") as acquire:
         async with Client(mcp) as client:
             result = await client.call_tool(
                 "run_query", {"query": "SELECT 1", "params": params}, raise_on_error=False
@@ -190,7 +192,7 @@ async def test_registered_query_rejects_client_side_binding(monkeypatch, query, 
         query=MagicMock(return_value=SimpleNamespace(column_names=[], result_rows=[])),
     )
     entry = _ClientCacheEntry(fake_client, 0, active_users=1)
-    with patch("mcp_clickhouse.mcp_server._acquire_clickhouse_client", return_value=entry) as acquire:
+    with patch("mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client", return_value=entry) as acquire:
         async with Client(mcp) as client:
             result = await client.call_tool(
                 "run_query", {"query": query, "params": params}, raise_on_error=False
@@ -207,7 +209,7 @@ async def test_registered_query_rejects_client_side_binding(monkeypatch, query, 
 @pytest.mark.parametrize("runner", [run_query, run_query_async])
 async def test_python_query_rejects_raw_binary_binding(runner):
     with (
-        patch("mcp_clickhouse.mcp_server._acquire_clickhouse_client") as acquire,
+        patch("mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client") as acquire,
         pytest.raises(ToolError, match="name:Type"),
     ):
         result = runner("SELECT {value:UInt32}, $raw$", {"value": 13, "$raw$": b"raw SQL"})
@@ -241,8 +243,8 @@ async def test_typed_parameters_preserve_percent_text():
 @pytest.mark.parametrize("params", [[13], {13: "value"}])
 async def test_python_query_rejects_invalid_params_before_client_acquisition(runner, params):
     with (
-        patch("mcp_clickhouse.mcp_server._resolve_client_config", return_value={}),
-        patch("mcp_clickhouse.mcp_server._acquire_clickhouse_client") as acquire,
+        patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
+        patch("mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client") as acquire,
         pytest.raises(ToolError, match="params must be an object with string keys"),
     ):
         result = runner("SELECT 1", params)
@@ -263,7 +265,7 @@ async def test_python_query_rejects_invalid_params_before_client_acquisition(run
 async def test_placeholder_flood_rejected_before_raw_regex_and_client_acquisition(query):
     with (
         patch("mcp_clickhouse.mcp_server.external_bind_re", wraps=external_bind_re) as bind_regex,
-        patch("mcp_clickhouse.mcp_server._acquire_clickhouse_client") as acquire,
+        patch("mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client") as acquire,
     ):
         async with Client(mcp) as client:
             result = await client.call_tool(
@@ -296,9 +298,9 @@ def test_incomplete_placeholder_detection_uses_driver_name_grammar(name):
 @pytest.mark.parametrize("runner", [run_query, run_query_async])
 async def test_python_query_rejects_placeholder_flood(runner):
     with (
-        patch("mcp_clickhouse.mcp_server._resolve_client_config", return_value={}),
+        patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
         patch("mcp_clickhouse.mcp_server.external_bind_re", wraps=external_bind_re) as bind_regex,
-        patch("mcp_clickhouse.mcp_server._acquire_clickhouse_client") as acquire,
+        patch("mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client") as acquire,
         pytest.raises(ToolError, match="Too many unterminated"),
     ):
         result = runner("SELECT {value:UInt32}, " + "{other:" * 80000, {"value": 13})
@@ -314,8 +316,8 @@ async def test_python_query_rejects_placeholder_flood(runner):
 @pytest.mark.parametrize("placeholder", ["{ id:UInt32}", "{id :UInt32}", "{ id : UInt32 }"])
 async def test_spaced_placeholder_rejected_with_spaces_message(runner, placeholder):
     with (
-        patch("mcp_clickhouse.mcp_server._resolve_client_config", return_value={}),
-        patch("mcp_clickhouse.mcp_server._acquire_clickhouse_client") as acquire,
+        patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
+        patch("mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client") as acquire,
         pytest.raises(ToolError, match="opening brace, name, and colon adjacent"),
     ):
         result = runner(f"SELECT {placeholder}", {"id": 13})

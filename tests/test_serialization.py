@@ -200,8 +200,8 @@ async def test_registered_run_query_returns_exact_integer_boundary_text():
     )
 
     with (
-        patch("mcp_clickhouse.mcp_server._acquire_clickhouse_client", return_value=entry),
-        patch("mcp_clickhouse.mcp_server._release_client_entry"),
+        patch("mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client", return_value=entry),
+        patch("mcp_clickhouse.mcp_server._clickhouse_clients._release_client_entry"),
     ):
         async with Client(mcp) as client:
             result = await client.call_tool("run_query", {"query": "SELECT boundaries"})

@@ -12,15 +12,17 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from mcp_clickhouse import mcp_server
-from mcp_clickhouse.mcp_server import (
-    _ActiveQueryState,
+from mcp_clickhouse.clients import (
     _ClientCacheEntry,
+    _resolve_client_config,
+)
+from mcp_clickhouse.mcp_server import (
+    _clickhouse_clients,
+    _ActiveQueryState,
     _active_queries,
     _active_queries_lock,
     _cancel_query,
     _cancel_query_async,
-    _clear_client_cache,
-    _resolve_client_config,
     execute_query,
     run_query,
     run_query_async,
@@ -31,17 +33,17 @@ class TestQueryIdTracking:
     """Tests for query_id propagation through execute_query."""
 
     def setup_method(self):
-        _clear_client_cache()
+        _clickhouse_clients._clear_client_cache()
         with _active_queries_lock:
             _active_queries.clear()
 
     def teardown_method(self):
-        _clear_client_cache()
+        _clickhouse_clients._clear_client_cache()
         with _active_queries_lock:
             _active_queries.clear()
 
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_context", side_effect=RuntimeError)
     def test_query_id_passed_in_settings(self, _mock_ctx, mock_cc):
         """query_id should be included in the settings dict passed to client.query()."""
         mock_client = MagicMock(server_version="24.1")
@@ -60,8 +62,8 @@ class TestQueryIdTracking:
         settings = call_args[1].get("settings") or call_args.kwargs.get("settings")
         assert settings["query_id"] == "test-query-id-123"
 
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_context", side_effect=RuntimeError)
     def test_active_queries_tracked_and_cleaned(self, _mock_ctx, mock_cc):
         """execute_query should register in _active_queries and clean up on completion."""
         mock_client = MagicMock(server_version="24.1")
@@ -84,8 +86,8 @@ class TestQueryIdTracking:
         with _active_queries_lock:
             assert "tracking-test-id" not in _active_queries
 
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
-    @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_context", side_effect=RuntimeError)
     def test_active_queries_cleaned_on_error(self, _mock_ctx, mock_cc):
         """execute_query should clean up _active_queries even on error."""
         mock_client = MagicMock(server_version="24.1")
@@ -106,12 +108,12 @@ class TestCancelQuery:
     """Tests for _cancel_query server-side cancellation."""
 
     def setup_method(self):
-        _clear_client_cache()
+        _clickhouse_clients._clear_client_cache()
         with _active_queries_lock:
             _active_queries.clear()
 
     def teardown_method(self):
-        _clear_client_cache()
+        _clickhouse_clients._clear_client_cache()
         with _active_queries_lock:
             _active_queries.clear()
 
@@ -150,8 +152,50 @@ class TestCancelQuery:
 
         _cancel_query(query_id)  # Should not raise
 
+        client_entry.client.command.assert_not_called()
+        assert client_entry.active_users == 0
         with _active_queries_lock:
             assert _active_queries[query_id].cancelled is True
+
+    def test_cancel_before_client_publication(self, caplog):
+        query_id = str(uuid.uuid4())
+        state = _ActiveQueryState("SELECT 1")
+        with _active_queries_lock:
+            _active_queries[query_id] = state
+
+        _cancel_query(query_id)
+
+        assert state.cancelled is True
+        assert state.client_entry is None
+        assert "cancelled before client acquisition completed" in caplog.text
+
+    @pytest.mark.parametrize("retired_before_cancel", [False, True])
+    def test_cancel_retains_client_until_kill_finishes(self, retired_before_cancel):
+        client = MagicMock()
+        entry = _ClientCacheEntry(client, 0, active_users=1)
+        query_id = str(uuid.uuid4())
+        with _clickhouse_clients.lock:
+            _clickhouse_clients.cache[("cancel-test",)] = entry
+        with _active_queries_lock:
+            _active_queries[query_id] = _ActiveQueryState("SELECT 1", client_entry=entry)
+        if retired_before_cancel:
+            _clickhouse_clients._clear_client_cache()
+
+        def finish_worker_during_kill(_query):
+            assert entry.active_users == 2
+            _clickhouse_clients._clear_client_cache()
+            _clickhouse_clients._release_client_entry(entry)
+            assert entry.retired is True
+            assert entry.active_users == 1
+            client.close.assert_not_called()
+
+        client.command.side_effect = finish_worker_during_kill
+        _cancel_query(query_id)
+
+        client.command.assert_called_once_with(f"KILL QUERY WHERE query_id = '{query_id}'")
+        assert entry.active_users == 0
+        assert entry.closed is True
+        client.close.assert_called_once_with()
 
     def test_cancel_failure_does_not_raise(self):
         """_cancel_query should swallow exceptions from KILL QUERY."""
@@ -206,19 +250,19 @@ class TestRunQueryTimeout:
     """Tests for run_query timeout triggering _cancel_query."""
 
     def setup_method(self):
-        _clear_client_cache()
+        _clickhouse_clients._clear_client_cache()
         with _active_queries_lock:
             _active_queries.clear()
 
     def teardown_method(self):
-        _clear_client_cache()
+        _clickhouse_clients._clear_client_cache()
         with _active_queries_lock:
             _active_queries.clear()
 
     @pytest.mark.parametrize("params", [None, {"seconds": 999}])
     @patch("mcp_clickhouse.mcp_server._cancel_query")
     @patch("mcp_clickhouse.mcp_server._executors.query")
-    @patch("mcp_clickhouse.mcp_server.get_context", side_effect=RuntimeError)
+    @patch("mcp_clickhouse.clients.get_context", side_effect=RuntimeError)
     def test_timeout_triggers_cancel(self, _mock_ctx, mock_executor, mock_cancel, params):
         """When run_query times out, it should call _cancel_query with the query_id."""
         mock_future = MagicMock()
@@ -249,13 +293,13 @@ class TestRunQueryTimeout:
             return entry
 
         with (
-            patch("mcp_clickhouse.mcp_server._resolve_client_config", return_value={}),
+            patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
             patch(
                 "mcp_clickhouse.mcp_server.get_mcp_config",
                 return_value=SimpleNamespace(query_timeout=0.02),
             ),
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client",
                 side_effect=blocked_acquisition,
             ),
             patch("mcp_clickhouse.mcp_server._cancel_query_with_bounded_wait"),
@@ -297,13 +341,13 @@ class TestRunQueryTimeout:
             return SimpleNamespace(query_timeout=0.02)
 
         with (
-            patch("mcp_clickhouse.mcp_server._resolve_client_config", return_value={}),
+            patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
             patch(
                 "mcp_clickhouse.mcp_server.get_mcp_config",
                 side_effect=timeout_config,
             ),
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client",
                 return_value=entry,
             ),
             patch(
@@ -346,13 +390,13 @@ class TestRunQueryTimeout:
             return entry
 
         with (
-            patch("mcp_clickhouse.mcp_server._resolve_client_config", return_value={}),
+            patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
             patch(
                 "mcp_clickhouse.mcp_server.get_mcp_config",
                 return_value=SimpleNamespace(query_timeout=0.02),
             ),
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client",
                 side_effect=blocked_acquisition,
             ),
             patch("mcp_clickhouse.mcp_server._cancel_query_async"),
@@ -387,7 +431,7 @@ class TestRunQueryTimeout:
         mock_executor.submit.return_value = queued_future
 
         with (
-            patch("mcp_clickhouse.mcp_server._resolve_client_config", return_value={}),
+            patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
             patch(
                 "mcp_clickhouse.mcp_server.get_mcp_config",
                 return_value=SimpleNamespace(query_timeout=0.02),
@@ -405,7 +449,7 @@ class TestRunQueryTimeout:
         queued_future = concurrent.futures.Future()
         with (
             patch("mcp_clickhouse.mcp_server._executors.query") as query_executor,
-            patch("mcp_clickhouse.mcp_server._resolve_client_config", return_value={}),
+            patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
             patch(
                 "mcp_clickhouse.mcp_server.get_mcp_config",
                 return_value=SimpleNamespace(query_timeout=0.01),
@@ -426,7 +470,7 @@ class TestRunQueryTimeout:
         queued_future = concurrent.futures.Future()
         with (
             patch("mcp_clickhouse.mcp_server._executors.query") as query_executor,
-            patch("mcp_clickhouse.mcp_server._resolve_client_config", return_value={}),
+            patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
             patch(
                 "mcp_clickhouse.mcp_server.get_mcp_config",
                 return_value=SimpleNamespace(query_timeout=30),
@@ -457,7 +501,7 @@ class TestRunQueryTimeout:
     async def test_submit_failure_removes_state(self, runner):
         with (
             patch("mcp_clickhouse.mcp_server._executors.query") as query_executor,
-            patch("mcp_clickhouse.mcp_server._resolve_client_config", return_value={}),
+            patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
         ):
             query_executor.submit.side_effect = RuntimeError("executor closed")
             with pytest.raises(RuntimeError, match="executor closed"):
@@ -483,7 +527,7 @@ class TestRunQueryTimeout:
         with (
             patch("mcp_clickhouse.mcp_server._executors.query") as query_executor,
             patch(
-                "mcp_clickhouse.mcp_server._resolve_client_config", return_value={}
+                "mcp_clickhouse.clients._resolve_client_config", return_value={}
             ),
             patch(
                 "mcp_clickhouse.mcp_server.get_mcp_config",

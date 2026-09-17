@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from starlette.requests import Request
 
-from mcp_clickhouse import mcp_server
+from mcp_clickhouse import clients, mcp_server
 
 
 @pytest.fixture(autouse=True)
@@ -146,7 +146,7 @@ async def test_health_check_hides_clickhouse_connection_error_details():
 
     with (
         patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
-        patch.object(mcp_server, "_resolve_client_config", return_value={}),
+        patch.object(clients, "_resolve_client_config", return_value={}),
         patch.object(mcp_server, "_probe_clickhouse_health", side_effect=raise_with_secrets),
     ):
         response = await mcp_server.health_check(request)
@@ -170,20 +170,20 @@ async def test_health_check_rejects_cached_client_with_invalid_credentials():
     }
     client = MagicMock()
     client.command.side_effect = ConnectionError("password=secret-token rejected")
-    entry = mcp_server._ClientCacheEntry(client, time.time())
-    cache_key = mcp_server._config_to_cache_key(config)
+    entry = clients._ClientCacheEntry(client, time.time())
+    cache_key = clients._config_to_cache_key(config)
 
-    mcp_server._clear_client_cache()
-    with mcp_server._client_cache_lock:
-        mcp_server._client_cache[cache_key] = entry
+    mcp_server._clickhouse_clients._clear_client_cache()
+    with mcp_server._clickhouse_clients.lock:
+        mcp_server._clickhouse_clients.cache[cache_key] = entry
     try:
         with (
             patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
-            patch.object(mcp_server, "_resolve_client_config", return_value=config),
+            patch.object(clients, "_resolve_client_config", return_value=config),
         ):
             response = await mcp_server.health_check(request)
     finally:
-        mcp_server._clear_client_cache()
+        mcp_server._clickhouse_clients._clear_client_cache()
 
     assert response.status_code == 503
     assert response.body == (
@@ -207,7 +207,7 @@ async def test_health_check_probe_is_off_loop_and_bounded(caplog):
     with caplog.at_level(logging.WARNING, logger="mcp-clickhouse"):
         with (
             patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
-            patch.object(mcp_server, "_resolve_client_config", return_value={}),
+            patch.object(clients, "_resolve_client_config", return_value={}),
             patch.object(mcp_server, "_probe_clickhouse_health", side_effect=slow_probe),
             patch.object(mcp_server, "_HEALTH_CHECK_TIMEOUT_SECONDS", 0.08),
         ):
@@ -255,7 +255,7 @@ async def test_concurrent_health_checks_share_one_bounded_probe(caplog):
         with (
             patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
             patch.object(
-                mcp_server,
+                clients,
                 "_resolve_client_config",
                 return_value={"connect_timeout": 30, "send_receive_timeout": 45},
             ),
@@ -323,7 +323,7 @@ async def test_timed_out_health_waiters_retrieve_late_probe_exception():
     try:
         with (
             patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
-            patch.object(mcp_server, "_resolve_client_config", return_value={}),
+            patch.object(clients, "_resolve_client_config", return_value={}),
             patch.object(mcp_server, "_probe_clickhouse_health", side_effect=failing_probe),
             patch.object(mcp_server, "_HEALTH_CHECK_TIMEOUT_SECONDS", 0.02),
         ):

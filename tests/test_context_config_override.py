@@ -17,12 +17,14 @@ from fastmcp.server.dependencies import get_context
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
 from mcp_clickhouse.mcp_env import TLS_TOP_LEVEL_ONLY_KEYS
-from mcp_clickhouse.mcp_server import (
+from mcp_clickhouse.clients import (
     CLIENT_CONFIG_OVERRIDES_KEY,
+    _get_client_config_overrides,
+)
+from mcp_clickhouse.mcp_server import (
+    _clickhouse_clients,
     _active_queries,
     _active_queries_lock,
-    _clear_client_cache,
-    _get_client_config_overrides,
     _remove_active_query,
     create_clickhouse_client,
     list_tables_async,
@@ -121,12 +123,12 @@ class FakeQueryClient:
 
 class TestConfigOverrideUnit:
     def setup_method(self):
-        _clear_client_cache()
+        _clickhouse_clients._clear_client_cache()
 
     def teardown_method(self):
-        _clear_client_cache()
+        _clickhouse_clients._clear_client_cache()
 
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_overrides_merged_into_client_config(self, mock_cc):
         mock_cc.get_client.return_value = MagicMock(server_version="24.1")
 
@@ -136,7 +138,7 @@ class TestConfigOverrideUnit:
         assert call_kwargs["connect_timeout"] == 99
         assert call_kwargs["send_receive_timeout"] == 199
 
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_empty_overrides_no_change(self, mock_cc):
         mock_cc.get_client.return_value = MagicMock(server_version="24.1")
 
@@ -146,7 +148,7 @@ class TestConfigOverrideUnit:
         assert "host" in call_kwargs
         assert "username" in call_kwargs
 
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_none_overrides_no_change(self, mock_cc):
         mock_cc.get_client.return_value = MagicMock(server_version="24.1")
 
@@ -154,7 +156,7 @@ class TestConfigOverrideUnit:
 
         assert "host" in mock_cc.get_client.call_args.kwargs
 
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_no_request_context_falls_back_to_defaults(self, mock_cc):
         mock_cc.get_client.return_value = MagicMock(server_version="24.1")
 
@@ -163,7 +165,7 @@ class TestConfigOverrideUnit:
         assert "host" in mock_cc.get_client.call_args.kwargs
 
     @pytest.mark.parametrize("invalid_overrides", [[], "", 0, False])
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_invalid_context_state_fails_before_client_creation(self, mock_cc, invalid_overrides):
         with pytest.raises(ToolError) as exc_info:
             create_clickhouse_client(invalid_overrides)
@@ -173,7 +175,7 @@ class TestConfigOverrideUnit:
         mock_cc.get_client.assert_not_called()
 
     @pytest.mark.parametrize("key", ["settings", "generic_args"])
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_invalid_nested_mapping_fails_before_client_creation(self, mock_cc, key):
         with pytest.raises(ToolError, match=rf"{key} must be a mapping"):
             create_clickhouse_client({key: "do-not-expose"})
@@ -193,8 +195,8 @@ class TestConfigOverrideUnit:
             "pool_mgr",
         ],
     )
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_generic_args_cannot_override_tls_client_keys(
         self, mock_cc, mock_get_config, key
     ):
@@ -224,8 +226,8 @@ class TestConfigOverrideUnit:
             ),
         ],
     )
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_invalid_tls_overrides_fail_before_client_creation(
         self, mock_cc, mock_get_config, overrides, error_name
     ):
@@ -240,8 +242,8 @@ class TestConfigOverrideUnit:
         assert "invalid" not in str(exc_info.value)
         mock_cc.get_client.assert_not_called()
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_managed_certificate_requires_https_interface(self, mock_cc, mock_get_config):
         mock_get_config.return_value = _mock_config(
             _base_client_config(interface="http", secure=True)
@@ -252,8 +254,8 @@ class TestConfigOverrideUnit:
 
         mock_cc.get_client.assert_not_called()
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_pool_manager_cannot_bypass_managed_certificates(
         self, mock_cc, mock_get_config
     ):
@@ -270,8 +272,8 @@ class TestConfigOverrideUnit:
         mock_cc.get_client.assert_not_called()
 
     @pytest.mark.parametrize("key", sorted(TLS_TOP_LEVEL_ONLY_KEYS))
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_dsn_query_cannot_override_managed_tls_config(self, mock_cc, mock_get_config, key):
         mock_get_config.return_value = _mock_config(
             _base_client_config(
@@ -291,8 +293,8 @@ class TestConfigOverrideUnit:
         assert "/secrets/" not in str(exc_info.value)
         mock_cc.get_client.assert_not_called()
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_dsn_override_cannot_select_chdb_backend(self, mock_cc, mock_get_config):
         mock_get_config.return_value = _mock_config(
             _base_client_config(interface="https", secure=True, verify=True)
@@ -304,8 +306,8 @@ class TestConfigOverrideUnit:
         assert "memory" not in str(exc_info.value)
         mock_cc.get_client.assert_not_called()
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_invalid_dsn_override_does_not_echo_userinfo(self, mock_cc, mock_get_config):
         mock_get_config.return_value = _mock_config(
             _base_client_config(interface="https", secure=True, verify=True)
@@ -392,8 +394,8 @@ class TestConfigOverrideUnit:
         ("secure", "expected_interface"),
         [(True, "https"), (False, "http")],
     )
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_secure_override_keeps_interface_aligned(
         self, mock_cc, mock_get_config, secure, expected_interface
     ):
@@ -410,8 +412,8 @@ class TestConfigOverrideUnit:
         ("secure", "expected_secure"),
         [("true", True), ("TRUE", True), (" false ", False)],
     )
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_string_secure_override_is_normalized(
         self, mock_cc, mock_get_config, secure, expected_secure
     ):
@@ -429,8 +431,8 @@ class TestConfigOverrideUnit:
         assert call_kwargs["interface"] == ("https" if expected_secure else "http")
 
     @pytest.mark.parametrize("secure", ["1", "yes", 1, "typo", None])
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_invalid_secure_override_is_rejected(self, mock_cc, mock_get_config, secure):
         mock_get_config.return_value = _mock_config(_base_client_config())
 
@@ -439,8 +441,8 @@ class TestConfigOverrideUnit:
 
         mock_cc.get_client.assert_not_called()
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_inconsistent_secure_and_interface_overrides_are_rejected(
         self, mock_cc, mock_get_config
     ):
@@ -458,8 +460,8 @@ class TestConfigOverrideUnit:
             (False, "http", "https"),
         ],
     )
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_interface_override_must_agree_with_base_secure_setting(
         self,
         mock_cc,
@@ -477,8 +479,8 @@ class TestConfigOverrideUnit:
 
         mock_cc.get_client.assert_not_called()
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_environment_tls_error_becomes_tool_error(self, mock_cc, mock_get_config):
         mock_get_config.return_value.get_client_config.side_effect = ValueError(
             "CLICKHOUSE_CLIENT_CERT requires CLICKHOUSE_SECURE=true"
@@ -489,8 +491,8 @@ class TestConfigOverrideUnit:
 
         mock_cc.get_client.assert_not_called()
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_token_auth_override_is_not_blocked_by_password_check(self, mock_cc, mock_get_config):
         mock_get_config.return_value = _mock_config(
             _base_client_config(interface="https", secure=True, verify=True)
@@ -503,8 +505,8 @@ class TestConfigOverrideUnit:
         assert call_kwargs["access_token"] == "tok"
         assert call_kwargs["password"] is None
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_mutual_base_switching_to_strict_without_env_password_passes_through(
         self, mock_cc, mock_get_config, monkeypatch
     ):
@@ -526,8 +528,8 @@ class TestConfigOverrideUnit:
         assert call_kwargs["password"] == ""
         assert call_kwargs["tls_mode"] == "strict"
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_tls_overrides_are_normalized(self, mock_cc, mock_get_config):
         mock_get_config.return_value = _mock_config(
             _base_client_config(interface="https", secure=True, verify=True)
@@ -551,8 +553,8 @@ class TestConfigOverrideUnit:
         assert call_kwargs["password"] == "secret"
 
     @pytest.mark.parametrize("tls_mode", ["", "  "])
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_blank_tls_mode_override_means_unset(self, mock_cc, mock_get_config, tls_mode):
         mock_get_config.return_value = _mock_config(
             _base_client_config(
@@ -572,8 +574,8 @@ class TestConfigOverrideUnit:
         assert "tls_mode" not in call_kwargs
         assert call_kwargs["password"] == ""
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_mutual_tls_override_does_not_pass_base_password(
         self, mock_cc, mock_get_config
     ):
@@ -586,8 +588,8 @@ class TestConfigOverrideUnit:
 
         assert mock_cc.get_client.call_args.kwargs["password"] == ""
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_verify_proxy_keeps_basic_auth_with_client_certificate(
         self, mock_cc, mock_get_config, monkeypatch
     ):
@@ -616,8 +618,8 @@ class TestConfigOverrideUnit:
         ("verify", "expected"),
         [("true", True), ("FALSE", False), ("Proxy", "proxy"), (True, True), (False, False)],
     )
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_verify_override_is_normalized(self, mock_cc, mock_get_config, verify, expected):
         mock_get_config.return_value = _mock_config(
             _base_client_config(interface="https", secure=True, verify=True)
@@ -631,8 +633,8 @@ class TestConfigOverrideUnit:
         assert type(actual) is type(expected)
 
     @pytest.mark.parametrize("verify", ["no", "typo", "1", None])
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_invalid_verify_override_is_rejected(self, mock_cc, mock_get_config, verify):
         mock_get_config.return_value = _mock_config(
             _base_client_config(interface="https", secure=True, verify=True)
@@ -652,8 +654,8 @@ class TestConfigOverrideUnit:
             ({"generic_args": {"ch_role": "secret-tenant-d"}}, "generic_args.ch_role"),
         ],
     )
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_role_aliases_fail_before_config_or_client_creation(
         self, mock_cc, mock_get_config, overrides, rejected_key
     ):
@@ -676,8 +678,8 @@ class TestConfigOverrideUnit:
         mock_get_config.assert_not_called()
         mock_cc.get_client.assert_not_called()
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_nested_mappings_merge_with_base_config(self, mock_cc, mock_get_config):
         base_settings = {"role": "tenant_a", "max_block_size": 100}
         base_generic_args = {"query_limit": 10}
@@ -703,8 +705,8 @@ class TestConfigOverrideUnit:
         assert base_settings == {"role": "tenant_a", "max_block_size": 100}
         assert base_generic_args == {"query_limit": 10}
 
-    @patch("mcp_clickhouse.mcp_server.get_config")
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.get_config")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_explicit_role_override_replaces_base_role(self, mock_cc, mock_get_config):
         mock_get_config.return_value = _mock_config(
             _base_client_config(settings={"role": "tenant_a"})
@@ -715,7 +717,7 @@ class TestConfigOverrideUnit:
 
         assert mock_cc.get_client.call_args.kwargs["settings"]["role"] == "tenant_b"
 
-    @patch("mcp_clickhouse.mcp_server.clickhouse_connect")
+    @patch("mcp_clickhouse.clients.clickhouse_connect")
     def test_opaque_client_object_is_preserved_by_identity(self, mock_cc):
         class OpaquePoolManager:
             def __deepcopy__(self, _memo):
@@ -728,7 +730,7 @@ class TestConfigOverrideUnit:
 
         assert mock_cc.get_client.call_args.kwargs["pool_mgr"] is pool_manager
 
-    @patch("mcp_clickhouse.mcp_server.get_context")
+    @patch("mcp_clickhouse.clients.get_context")
     def test_capture_snapshots_mappings_but_preserves_opaque_objects(self, mock_get_context):
         pool_manager = object()
         settings = {"max_threads": 2}
@@ -750,7 +752,7 @@ class TestConfigOverrideUnit:
         assert snapshot["settings"] == {"max_threads": 2}
         assert snapshot["pool_mgr"] is pool_manager
 
-    @patch("mcp_clickhouse.mcp_server.get_context")
+    @patch("mcp_clickhouse.clients.get_context")
     def test_capture_does_not_fall_back_to_session_state(self, mock_get_context):
         mock_ctx = MagicMock()
         mock_ctx._request_state = {}
@@ -762,7 +764,7 @@ class TestConfigOverrideUnit:
 
         mock_ctx.get_state.assert_not_awaited()
 
-    @patch("mcp_clickhouse.mcp_server.get_context", return_value=SimpleNamespace())
+    @patch("mcp_clickhouse.clients.get_context", return_value=SimpleNamespace())
     def test_capture_fails_loudly_when_fastmcp_private_state_api_drifts(
         self,
         _mock_get_context,
@@ -773,7 +775,7 @@ class TestConfigOverrideUnit:
     @pytest.mark.parametrize("params", [None, {"value": 13}])
     @patch("mcp_clickhouse.mcp_server.execute_query", return_value="result")
     @patch(
-        "mcp_clickhouse.mcp_server._get_client_config_overrides",
+        "mcp_clickhouse.clients._get_client_config_overrides",
         return_value={"connect_timeout": 41},
     )
     def test_sync_run_query_passes_resolved_config(self, _mock_get_overrides, mock_execute, params):
@@ -788,7 +790,7 @@ class TestConfigOverrideUnit:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("params", [None, {"value": 13}])
     @patch("mcp_clickhouse.mcp_server.execute_query", return_value="result")
-    @patch("mcp_clickhouse.mcp_server._get_client_config_overrides_for_tool")
+    @patch("mcp_clickhouse.clients._get_client_config_overrides_for_tool")
     async def test_async_run_query_passes_resolved_config(
         self, mock_get_overrides, mock_execute, params
     ):
@@ -811,10 +813,10 @@ def mcp_server():
 
 class TestConfigOverrideMcpBoundary:
     def setup_method(self):
-        _clear_client_cache()
+        _clickhouse_clients._clear_client_cache()
 
     def teardown_method(self):
-        _clear_client_cache()
+        _clickhouse_clients._clear_client_cache()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("params", [None, {"value": 13}])
@@ -822,7 +824,7 @@ class TestConfigOverrideMcpBoundary:
         middleware = ConfigOverrideMiddleware({"connect_timeout": 99})
         mcp_server.add_middleware(middleware)
         try:
-            with patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client") as get_client:
+            with patch("mcp_clickhouse.clients.clickhouse_connect.get_client") as get_client:
                 get_client.side_effect = lambda **kwargs: FakeQueryClient(
                     kwargs["connect_timeout"], expected_params=params
                 )
@@ -958,7 +960,7 @@ class TestConfigOverrideMcpBoundary:
         middleware = QueryOverrideMiddleware()
         mcp_server.add_middleware(middleware)
         try:
-            with patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client") as get_client:
+            with patch("mcp_clickhouse.clients.clickhouse_connect.get_client") as get_client:
                 get_client.side_effect = lambda **kwargs: FakeQueryClient(
                     kwargs["connect_timeout"], barrier,
                     expected_params={"value": kwargs["connect_timeout"]} if with_params else None,
@@ -988,7 +990,7 @@ class TestConfigOverrideMcpBoundary:
         middleware = ConfigOverrideMiddleware(invalid_value)
         mcp_server.add_middleware(middleware)
         try:
-            with patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client") as get_client:
+            with patch("mcp_clickhouse.clients.clickhouse_connect.get_client") as get_client:
                 async with Client(mcp_server) as client:
                     with pytest.raises(ToolError) as exc_info:
                         await client.call_tool("run_query", {"query": "SELECT 1"})
@@ -1006,7 +1008,7 @@ class TestConfigOverrideMcpBoundary:
         )
         mcp_server.add_middleware(middleware)
         try:
-            with patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client") as get_client:
+            with patch("mcp_clickhouse.clients.clickhouse_connect.get_client") as get_client:
                 async with Client(mcp_server) as client:
                     with pytest.raises(ToolError) as exc_info:
                         await client.call_tool("list_databases", {})
@@ -1027,7 +1029,7 @@ class TestConfigOverrideMcpBoundary:
         middleware = OneShotSessionOverrideMiddleware()
         mcp_server.add_middleware(middleware)
         try:
-            with patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client") as get_client:
+            with patch("mcp_clickhouse.clients.clickhouse_connect.get_client") as get_client:
                 get_client.side_effect = lambda **kwargs: FakeQueryClient(
                     kwargs["connect_timeout"]
                 )
@@ -1045,10 +1047,10 @@ class TestConfigOverrideMcpBoundary:
     async def test_private_request_state_drift_fails_at_mcp_boundary(self, mcp_server):
         with (
             patch(
-                "mcp_clickhouse.mcp_server._request_client_config_overrides",
+                "mcp_clickhouse.clients._request_client_config_overrides",
                 side_effect=RuntimeError("FastMCP request-local state API is unavailable"),
             ),
-            patch("mcp_clickhouse.mcp_server.clickhouse_connect.get_client") as get_client,
+            patch("mcp_clickhouse.clients.clickhouse_connect.get_client") as get_client,
         ):
             async with Client(mcp_server) as client:
                 with pytest.raises(ToolError, match="request-local state API is unavailable"):

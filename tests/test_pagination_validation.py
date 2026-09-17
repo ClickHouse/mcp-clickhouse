@@ -26,7 +26,7 @@ from mcp_clickhouse.mcp_server import (
 @pytest.mark.asyncio
 async def test_list_tables_rejects_non_positive_page_size(page_size):
     """Reject page sizes that cannot produce a valid page through MCP."""
-    with patch("mcp_clickhouse.mcp_server._acquire_clickhouse_client") as acquire_client:
+    with patch("mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client") as acquire_client:
         async with Client(mcp) as client:
             with pytest.raises(ToolError, match="greater than 0"):
                 await client.call_tool(
@@ -75,10 +75,10 @@ def test_duplicate_page_token_has_only_one_concurrent_claim():
     try:
         with (
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client",
                 side_effect=entries,
             ),
-            patch("mcp_clickhouse.mcp_server._release_client_entry"),
+            patch("mcp_clickhouse.mcp_server._clickhouse_clients._release_client_entry"),
             patch(
                 "mcp_clickhouse.mcp_server.fetch_table_names_from_system",
                 return_value=["first", "second"],
@@ -144,10 +144,10 @@ def test_page_token_mismatch_retains_original_token(
     try:
         with (
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client",
                 return_value=entry,
             ),
-            patch("mcp_clickhouse.mcp_server._release_client_entry"),
+            patch("mcp_clickhouse.mcp_server._clickhouse_clients._release_client_entry"),
             patch(
                 "mcp_clickhouse.mcp_server.fetch_table_names_from_system",
                 return_value=[],
@@ -220,10 +220,10 @@ def test_mismatch_failure_cannot_restore_token_after_valid_caller_consumes_it():
     try:
         with (
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client",
                 side_effect=entries,
             ),
-            patch("mcp_clickhouse.mcp_server._release_client_entry"),
+            patch("mcp_clickhouse.mcp_server._clickhouse_clients._release_client_entry"),
             patch(
                 "mcp_clickhouse.mcp_server.fetch_table_names_from_system",
                 return_value=["first", "second", "third"],
@@ -346,11 +346,11 @@ def test_page_token_cursor_survives_connection_retry():
     try:
         with (
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client",
                 side_effect=entries,
             ),
-            patch("mcp_clickhouse.mcp_server._release_client_entry"),
-            patch("mcp_clickhouse.mcp_server._evict_cached_client"),
+            patch("mcp_clickhouse.mcp_server._clickhouse_clients._release_client_entry"),
+            patch("mcp_clickhouse.mcp_server._clickhouse_clients._evict_cached_client"),
             patch(
                 "mcp_clickhouse.mcp_server.fetch_table_names_from_system"
             ) as fetch_names,
@@ -401,11 +401,11 @@ def test_page_token_is_restored_after_final_page_fetch_failure():
     try:
         with (
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client",
                 side_effect=entries,
             ),
-            patch("mcp_clickhouse.mcp_server._release_client_entry"),
-            patch("mcp_clickhouse.mcp_server._evict_cached_client"),
+            patch("mcp_clickhouse.mcp_server._clickhouse_clients._release_client_entry"),
+            patch("mcp_clickhouse.mcp_server._clickhouse_clients._evict_cached_client"),
             patch(
                 "mcp_clickhouse.mcp_server.fetch_table_names_from_system"
             ) as fetch_names,
@@ -463,10 +463,10 @@ async def test_cancelled_mcp_call_does_not_commit_page_cursor(resume_from_token)
     try:
         with (
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._clickhouse_clients._acquire_clickhouse_client",
                 return_value=entry,
             ),
-            patch("mcp_clickhouse.mcp_server._release_client_entry"),
+            patch("mcp_clickhouse.mcp_server._clickhouse_clients._release_client_entry"),
             patch(
                 "mcp_clickhouse.mcp_server.fetch_table_names_from_system",
                 return_value=["first", "second", "third"],

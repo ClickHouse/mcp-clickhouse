@@ -431,7 +431,9 @@ def test_entrypoint_keeps_independent_executor_and_chdb_ownership(isolated_packa
                 pools[index * 4:(index + 1) * 4]
             )
             assert namespace["_chdb_backend"].client is sessions[index]
-            namespace["_clear_client_cache"] = lambda index=index: events.append(("cache", index))
+            namespace["_clickhouse_clients"]._clear_client_cache = (
+                lambda index=index: events.append(("cache", index))
+            )
 
         # Preserve the existing atexit order during the structural refactor.
         expected = []
@@ -444,6 +446,138 @@ def test_entrypoint_keeps_independent_executor_and_chdb_ownership(isolated_packa
         assert events == expected, events
         """,
         {"STARTUP_ENTRYPOINT": entrypoint, "CHDB_ENABLED": "true", "CLICKHOUSE_MCP_MAX_WORKERS": "6"},
+    )
+
+
+@pytest.mark.parametrize("entrypoint", ["package", "file", "package-file", "file-file"])
+def test_entrypoint_keeps_independent_clickhouse_clients(isolated_package, entrypoint):
+    source_root, _ = isolated_package
+    shutil.copyfile(
+        Path(__file__).resolve().parents[1] / "fastmcp.json", source_root / "fastmcp.json"
+    )
+    _run_python(
+        isolated_package,
+        """
+        import asyncio
+        import atexit
+        import importlib
+        import json
+        import os
+        import sys
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        import clickhouse_connect
+        from fastmcp import Client
+        from fastmcp.utilities.mcp_server_config import MCPServerConfig
+
+        callbacks, created, snapshots = [], [], []
+        original_register = atexit.register
+
+        class Connection:
+            server_version = "test"
+            server_settings = {}
+
+            def __init__(self, **config):
+                self.config = config
+                self.index = len(created)
+                self.closed = False
+                self.grants = 0
+                self.commands = []
+                created.append(self)
+
+            def query(self, query, **kwargs):
+                assert not self.closed
+                if query == "SHOW GRANTS":
+                    self.grants += 1
+                    return SimpleNamespace(result_rows=[])
+                return SimpleNamespace(column_names=["client"], result_rows=[[self.index]])
+
+            def command(self, query):
+                assert not self.closed
+                self.commands.append(query)
+                return "default"
+
+            def close(self):
+                assert not self.closed
+                self.closed = True
+
+        def record_register(callback, *args, **kwargs):
+            if callback.__name__ == "_shutdown":
+                callbacks.append(callback)
+                assert not args and not kwargs
+                return callback
+            return original_register(callback, *args, **kwargs)
+
+        async def check_tool(namespace, expected):
+            async with Client(namespace["mcp"]) as client:
+                result = await client.call_tool("run_query", {"query": "SELECT 1"})
+                assert json.loads(result.content[0].text)["rows"] == [[expected.index]]
+
+        with patch("atexit.register", record_register), patch.object(
+            clickhouse_connect, "get_client", side_effect=Connection
+        ):
+            for step in os.environ["STARTUP_ENTRYPOINT"].split("-"):
+                before_load = len(created)
+                if step == "package":
+                    importlib.import_module("mcp_clickhouse.mcp_server")
+                else:
+                    os.chdir(os.environ["PYTHONPATH"])
+                    config = MCPServerConfig.from_file(Path(os.environ["PYTHONPATH"]) / "fastmcp.json")
+                    asyncio.run(config.source.load_server())
+                assert len(created) == before_load
+                namespaces = [callback.__globals__ for callback in callbacks]
+                for namespace in namespaces[len(snapshots):]:
+                    manager = namespace["_clickhouse_clients"]
+                    assert not manager.cache and manager.grants_advisory_done is False
+                    create = namespace["create_clickhouse_client"]
+                    independent = create()
+                    assert independent.grants == 1
+                    assert manager.grants_advisory_done is True
+                    independent.close()
+                    config = namespace["clients"]._resolve_client_config()
+                    entry = manager._acquire_clickhouse_client(config)
+                    manager._release_client_entry(entry)
+                    assert entry.client.config["autogenerate_session_id"] is False
+                    snapshots.append((namespace, manager, entry.client, create, config))
+                assert len({id(snapshot[1]) for snapshot in snapshots}) == len(snapshots)
+                assert len({id(snapshot[1].cache) for snapshot in snapshots}) == len(snapshots)
+                assert len({id(snapshot[1].lock) for snapshot in snapshots}) == len(snapshots)
+                for namespace, manager, cached, create, config in snapshots:
+                    assert namespace["_clickhouse_clients"] is manager
+                    assert namespace["create_clickhouse_client"] is create
+                    assert create.__self__ is manager
+                    independent = create()
+                    assert independent is not cached and independent.grants == 0
+                    assert "autogenerate_session_id" not in independent.config
+                    independent.close()
+                    assert json.loads(namespace["run_query"]("SELECT 1"))["rows"] == [[cached.index]]
+                    asyncio.run(check_tool(namespace, cached))
+                    namespace["_probe_clickhouse_health"](config)
+                    assert cached.commands[-1] == "SELECT 1"
+                    assert len(manager.cache) == 1
+                    assert next(iter(manager.cache.values())).client is cached
+                assert sys.modules["mcp_clickhouse"].create_clickhouse_client is snapshots[0][3]
+
+        count = {"package": 1, "file": 2, "package-file": 2, "file-file": 3}[
+            os.environ["STARTUP_ENTRYPOINT"]
+        ]
+        assert len(snapshots) == count
+        for index, callback in reversed(list(enumerate(callbacks))):
+            callback()
+            for other, (_, manager, cached, *_) in enumerate(snapshots):
+                assert cached.closed is (other >= index)
+                assert bool(manager.cache) is (other < index)
+        """,
+        {
+            "STARTUP_ENTRYPOINT": entrypoint,
+            "CLICKHOUSE_ENABLED": "true",
+            "CLICKHOUSE_HOST": "localhost",
+            "CLICKHOUSE_USER": "test",
+            "CLICKHOUSE_PASSWORD": "",
+            "CLICKHOUSE_ALLOW_WRITE_ACCESS": "true",
+        },
     )
 
 
