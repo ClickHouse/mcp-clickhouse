@@ -15,12 +15,14 @@ import pytest
 from fastmcp import Client
 
 from mcp_clickhouse.mcp_server import (
-    _serialize_tool_result_with_simplejson,
-    _serialize_tool_result_with_stdlib,
-    _stringify_unsafe_integers,
     mcp,
     run_chdb_select_query,
     run_chdb_select_query_async,
+)
+from mcp_clickhouse.serialization import (
+    _serialize_tool_result_with_simplejson,
+    _serialize_tool_result_with_stdlib,
+    _stringify_unsafe_integers,
 )
 
 
