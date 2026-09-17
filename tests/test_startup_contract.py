@@ -136,7 +136,14 @@ def test_fresh_submodule_import_preserves_registration_and_exports(
             token = package.create_page_token("startup", None, None, ["first", "second"], 1, True)
             assert token in package.table_pagination_cache
             assert server.CLIENT_CONFIG_OVERRIDES_KEY == "clickhouse_client_config_overrides"
+            transport = importlib.import_module("mcp_clickhouse.transport")
+            assert server.ClickHouseFastMCP is transport.ClickHouseFastMCP
             assert isinstance(server.mcp, server.ClickHouseFastMCP)
+            try:
+                with patch("mcp_clickhouse.mcp_server._resolve_auth"):
+                    raise AssertionError("Obsolete auth patch still resolves")
+            except AttributeError:
+                pass
             assert importlib.import_module("mcp_clickhouse.main").mcp is server.mcp
             for name in ("http_app", "sse_app", "streamable_http_app", "run_http_async"):
                 assert callable(getattr(server.mcp, name)), name

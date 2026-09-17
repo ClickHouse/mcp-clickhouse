@@ -6,7 +6,7 @@ import os
 from collections.abc import Mapping
 from typing import Any, Dict, Optional
 
-from dotenv import dotenv_values
+from dotenv import dotenv_values, load_dotenv
 from fastmcp.server.auth import AuthProvider
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from fastmcp.utilities.auth import parse_scopes
@@ -208,6 +208,44 @@ def _initialize_auth_parser() -> None:
 
 def _is_legacy_auth_name(name: str) -> bool:
     return name.casefold().startswith("fastmcp_server_auth")
+
+
+def _find_default_dotenv() -> str:
+    """Find the nearest .env at or above the installed package directory."""
+    directory = os.path.dirname(os.path.realpath(__file__))
+    while True:
+        env_file = os.path.join(directory, ".env")
+        if os.path.isfile(env_file):
+            return env_file
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return ""
+        directory = parent
+
+
+def _load_default_dotenv() -> None:
+    """Load repository settings while preserving process auth precedence."""
+    auth_snapshot = {
+        name: value
+        for name, value in os.environ.items()
+        if _is_legacy_auth_name(name)
+    }
+    auth_process_names = {name.casefold() for name in auth_snapshot}
+    env_file_snapshot = {
+        name: value
+        for name, value in os.environ.items()
+        if name.casefold() == "fastmcp_env_file"
+    }
+    try:
+        load_dotenv(dotenv_path=_find_default_dotenv())
+    finally:
+        for name in tuple(os.environ):
+            if name.casefold() == "fastmcp_env_file" or (
+                _is_legacy_auth_name(name) and name.casefold() in auth_process_names
+            ):
+                del os.environ[name]
+        os.environ.update(auth_snapshot)
+        os.environ.update(env_file_snapshot)
 
 
 def _get_case_insensitive_value(

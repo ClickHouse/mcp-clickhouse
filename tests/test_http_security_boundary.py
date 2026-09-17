@@ -19,6 +19,7 @@ with warnings.catch_warnings():
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 import mcp_clickhouse.auth as auth_module
+import mcp_clickhouse.transport as transport_module
 import mcp_clickhouse.mcp_server as mcp_server_module
 import mcp_clickhouse.main as main_module
 from mcp_clickhouse.mcp_server import ClickHouseFastMCP
@@ -407,7 +408,7 @@ def test_repo_host_guard_overrides_fastmcp_host_origin_settings(
     monkeypatch.setenv("FASTMCP_HTTP_ALLOWED_ORIGINS", '["https://fastmcp.example"]')
     configured_settings = FastMCPSettings()
     monkeypatch.setattr(fastmcp, "settings", configured_settings)
-    monkeypatch.setattr(mcp_server_module, "fastmcp_settings", configured_settings)
+    monkeypatch.setattr(transport_module, "fastmcp_settings", configured_settings)
     app = ClickHouseFastMCP("test").http_app(transport="http")
 
     with TestClient(app, base_url="http://repo.example") as client:
@@ -527,13 +528,13 @@ def test_http_app_detects_positional_transport(monkeypatch: pytest.MonkeyPatch):
     _clear_http_env(monkeypatch)
     monkeypatch.setenv("CLICKHOUSE_MCP_AUTH_DISABLED", "true")
     seen_transports = []
-    resolve_auth = mcp_server_module._resolve_auth
+    resolve_auth = transport_module._resolve_auth
 
     def recording_resolve_auth(config, transport=None):
         seen_transports.append(transport)
         return resolve_auth(config, transport=transport)
 
-    monkeypatch.setattr(mcp_server_module, "_resolve_auth", recording_resolve_auth)
+    monkeypatch.setattr(transport_module, "_resolve_auth", recording_resolve_auth)
 
     ClickHouseFastMCP("test").http_app(None, None, None, None, "sse")
 

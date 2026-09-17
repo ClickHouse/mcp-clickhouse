@@ -15,12 +15,12 @@ import mcp_clickhouse.mcp_server as mcp_server_module
 from mcp_clickhouse.auth import (
     _LEGACY_AUTH_PROVIDER_ENV,
     _get_case_insensitive_value,
+    _load_default_dotenv,
     _load_fastmcp_auth_provider,
     _parse_auth_provider_env_value,
     _resolve_auth,
 )
 from mcp_clickhouse.mcp_env import MCPServerConfig
-from mcp_clickhouse.mcp_server import _load_default_dotenv
 
 
 class RecordingAuthProvider(AuthProvider):
@@ -251,9 +251,9 @@ def test_default_dotenv_preserves_process_auth_and_loads_noncolliding_auth(
         monkeypatch.setenv("CLICKHOUSE_HOST", "file-host")
 
     load_default = MagicMock(side_effect=load_values)
-    monkeypatch.setattr(mcp_server_module, "load_dotenv", load_default)
+    monkeypatch.setattr(auth_module, "load_dotenv", load_default)
     monkeypatch.setattr(
-        mcp_server_module,
+        auth_module,
         "_find_default_dotenv",
         lambda: "/package/.env",
     )
@@ -284,7 +284,7 @@ def test_default_dotenv_delegates_python_dotenv_disabled(
     monkeypatch.delenv("CLICKHOUSE_HOST", raising=False)
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "true")
     monkeypatch.setattr(
-        mcp_server_module,
+        auth_module,
         "_find_default_dotenv",
         lambda: str(env_file),
     )
@@ -304,20 +304,20 @@ def test_default_dotenv_discovery_walks_up_from_resolved_package_directory(
     env_file = package_dir.parent / ".env"
     env_file.write_text("CLICKHOUSE_HOST=package-host\n")
     monkeypatch.setattr(
-        mcp_server_module,
+        auth_module,
         "__file__",
-        str(package_dir / "mcp_server.py"),
+        str(package_dir / "auth.py"),
     )
 
-    assert mcp_server_module._find_default_dotenv() == str(env_file)
+    assert auth_module._find_default_dotenv() == str(env_file)
 
 
 def test_default_dotenv_discovery_returns_empty_path_when_missing(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr(mcp_server_module.os.path, "isfile", lambda _path: False)
+    monkeypatch.setattr(auth_module.os.path, "isfile", lambda _path: False)
 
-    assert mcp_server_module._find_default_dotenv() == ""
+    assert auth_module._find_default_dotenv() == ""
 
 
 def _copy_isolated_package(tmp_path):
@@ -458,7 +458,7 @@ def test_module_dotenv_auth_loads_from_foreign_working_directory_without_redirec
     monkeypatch.chdir(launch_dir)
     monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
     monkeypatch.setattr(
-        mcp_server_module,
+        auth_module,
         "_find_default_dotenv",
         lambda: str(module_file),
     )
@@ -496,7 +496,7 @@ def test_lowercase_process_auth_value_wins_over_uppercase_file_value(
     else:
         monkeypatch.delenv("FASTMCP_ENV_FILE", raising=False)
         monkeypatch.setattr(
-            mcp_server_module,
+            auth_module,
             "_find_default_dotenv",
             lambda: str(env_file),
         )
@@ -562,7 +562,7 @@ def test_trusted_selector_uses_cwd_dotenv_provider_fields(
             module_file = tmp_path / "module.env"
             module_file.write_text(f"FASTMCP_SERVER_AUTH={provider_path}\n")
             monkeypatch.setattr(
-                mcp_server_module,
+                auth_module,
                 "_find_default_dotenv",
                 lambda: str(module_file),
             )
