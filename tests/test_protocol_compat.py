@@ -14,10 +14,8 @@ from fastmcp.exceptions import ToolError
 from starlette.testclient import TestClient
 
 from mcp_clickhouse.mcp_server import (
-    _active_queries,
-    _active_queries_lock,
     _get_mcp_server_version,
-    _remove_active_query,
+    _queries,
     mcp,
 )
 
@@ -68,9 +66,9 @@ def _sse_data(response) -> dict:
 
 
 def _completed_query(_query, query_id, _config, _params=None):
-    with _active_queries_lock:
-        state = _active_queries[query_id]
-    _remove_active_query(query_id, state)
+    with _queries.active_queries_lock:
+        state = _queries.active_queries[query_id]
+    _queries._remove_active_query(query_id, state)
     return '{"columns":["value"],"rows":[[1]]}'
 
 
@@ -132,7 +130,7 @@ def test_modern_http_discover_list_and_tool_error_without_initialize(
             ),
         )
         with patch(
-            "mcp_clickhouse.mcp_server.execute_query",
+            "mcp_clickhouse.mcp_server._queries.execute_query",
             side_effect=_completed_query,
         ) as execute:
             tool_success = client.post(
@@ -421,13 +419,15 @@ def test_modern_http_decodes_mcp_name_base64_sentinel(
 
     with (
         patch(
-            "mcp_clickhouse.mcp_server.execute_query",
+            "mcp_clickhouse.mcp_server._queries.execute_query",
             side_effect=_completed_query,
-        ),
+        ) as execute,
         TestClient(app) as client,
     ):
         response = client.post("/mcp", headers=headers, json=request)
 
+    execute.assert_called_once()
+    assert execute.call_args.args[0] == "SELECT 1"
     assert response.status_code == 200
     assert response.json()["id"] == 91
     assert response.json()["result"]["isError"] is False

@@ -12,10 +12,7 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 from mcp_clickhouse.mcp_server import (
-    _claim_page_token_for_request,
-    _list_tables_with_config,
-    _restore_page_token,
-    _table_pagination_cache_lock,
+    _metadata,
     create_page_token,
     mcp,
     table_pagination_cache,
@@ -26,7 +23,7 @@ from mcp_clickhouse.mcp_server import (
 @pytest.mark.asyncio
 async def test_list_tables_rejects_non_positive_page_size(page_size):
     """Reject page sizes that cannot produce a valid page through MCP."""
-    with patch("mcp_clickhouse.mcp_server._acquire_clickhouse_client") as acquire_client:
+    with patch("mcp_clickhouse.mcp_server._metadata.clients._acquire_clickhouse_client") as acquire_client:
         async with Client(mcp) as client:
             with pytest.raises(ToolError, match="greater than 0"):
                 await client.call_tool(
@@ -54,7 +51,7 @@ def test_duplicate_page_token_has_only_one_concurrent_claim():
     barrier = threading.Barrier(2)
     start_indexes = []
     start_indexes_lock = threading.Lock()
-    with _table_pagination_cache_lock:
+    with _metadata.table_pagination_cache_lock:
         table_pagination_cache.clear()
     token = create_page_token(
         "database",
@@ -75,23 +72,23 @@ def test_duplicate_page_token_has_only_one_concurrent_claim():
     try:
         with (
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._metadata.clients._acquire_clickhouse_client",
                 side_effect=entries,
             ),
-            patch("mcp_clickhouse.mcp_server._release_client_entry"),
+            patch("mcp_clickhouse.mcp_server._metadata.clients._release_client_entry"),
             patch(
-                "mcp_clickhouse.mcp_server.fetch_table_names_from_system",
+                "mcp_clickhouse.metadata.fetch_table_names_from_system",
                 return_value=["first", "second"],
             ),
             patch(
-                "mcp_clickhouse.mcp_server.get_paginated_table_data",
+                "mcp_clickhouse.metadata.get_paginated_table_data",
                 side_effect=paginated_data,
             ),
             ThreadPoolExecutor(max_workers=2) as executor,
         ):
             futures = [
                 executor.submit(
-                    _list_tables_with_config,
+                    _metadata._list_tables_with_config,
                     {},
                     "database",
                     None,
@@ -108,7 +105,7 @@ def test_duplicate_page_token_has_only_one_concurrent_claim():
         assert start_indexes.count(0) == 1
         assert all(result["tables"] == [] for result in results)
     finally:
-        with _table_pagination_cache_lock:
+        with _metadata.table_pagination_cache_lock:
             table_pagination_cache.clear()
 
 
@@ -127,7 +124,7 @@ def test_page_token_mismatch_retains_original_token(
     not_like,
     include_detailed_columns,
 ):
-    with _table_pagination_cache_lock:
+    with _metadata.table_pagination_cache_lock:
         table_pagination_cache.clear()
     token = create_page_token(
         "database",
@@ -137,32 +134,32 @@ def test_page_token_mismatch_retains_original_token(
         1,
         True,
     )
-    with _table_pagination_cache_lock:
+    with _metadata.table_pagination_cache_lock:
         original_state = dict(table_pagination_cache[token])
 
     entry = MagicMock(client=MagicMock())
     try:
         with (
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._metadata.clients._acquire_clickhouse_client",
                 return_value=entry,
             ),
-            patch("mcp_clickhouse.mcp_server._release_client_entry"),
+            patch("mcp_clickhouse.mcp_server._metadata.clients._release_client_entry"),
             patch(
-                "mcp_clickhouse.mcp_server.fetch_table_names_from_system",
+                "mcp_clickhouse.metadata.fetch_table_names_from_system",
                 return_value=[],
             ),
             patch(
-                "mcp_clickhouse.mcp_server.get_paginated_table_data",
+                "mcp_clickhouse.metadata.get_paginated_table_data",
                 return_value=([], 0, False),
             ),
             patch(
-                "mcp_clickhouse.mcp_server._restore_page_token",
-                wraps=_restore_page_token,
+                "mcp_clickhouse.mcp_server._metadata._restore_page_token",
+                wraps=_metadata._restore_page_token,
             ) as restore_page_token,
         ):
             result = json.loads(
-                _list_tables_with_config(
+                _metadata._list_tables_with_config(
                     {},
                     database,
                     like,
@@ -179,10 +176,10 @@ def test_page_token_mismatch_retains_original_token(
             "total_tables": 0,
         }
         restore_page_token.assert_not_called()
-        with _table_pagination_cache_lock:
+        with _metadata.table_pagination_cache_lock:
             assert table_pagination_cache[token] == original_state
     finally:
-        with _table_pagination_cache_lock:
+        with _metadata.table_pagination_cache_lock:
             table_pagination_cache.clear()
 
 
@@ -191,7 +188,7 @@ def test_mismatch_failure_cannot_restore_token_after_valid_caller_consumes_it():
     valid_call_finished = threading.Event()
     saved_indexes = []
     saved_indexes_lock = threading.Lock()
-    with _table_pagination_cache_lock:
+    with _metadata.table_pagination_cache_lock:
         table_pagination_cache.clear()
     token = create_page_token(
         "database",
@@ -220,26 +217,26 @@ def test_mismatch_failure_cannot_restore_token_after_valid_caller_consumes_it():
     try:
         with (
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._metadata.clients._acquire_clickhouse_client",
                 side_effect=entries,
             ),
-            patch("mcp_clickhouse.mcp_server._release_client_entry"),
+            patch("mcp_clickhouse.mcp_server._metadata.clients._release_client_entry"),
             patch(
-                "mcp_clickhouse.mcp_server.fetch_table_names_from_system",
+                "mcp_clickhouse.metadata.fetch_table_names_from_system",
                 return_value=["first", "second", "third"],
             ),
             patch(
-                "mcp_clickhouse.mcp_server.get_paginated_table_data",
+                "mcp_clickhouse.metadata.get_paginated_table_data",
                 side_effect=paginated_data,
             ),
             patch(
-                "mcp_clickhouse.mcp_server._restore_page_token",
-                wraps=_restore_page_token,
+                "mcp_clickhouse.mcp_server._metadata._restore_page_token",
+                wraps=_metadata._restore_page_token,
             ) as restore_page_token,
             ThreadPoolExecutor(max_workers=1) as executor,
         ):
             mismatch = executor.submit(
-                _list_tables_with_config,
+                _metadata._list_tables_with_config,
                 {},
                 "wrong_database",
                 None,
@@ -251,7 +248,7 @@ def test_mismatch_failure_cannot_restore_token_after_valid_caller_consumes_it():
             assert mismatch_page_started.wait(timeout=2)
             try:
                 valid_result = json.loads(
-                    _list_tables_with_config(
+                    _metadata._list_tables_with_config(
                         {}, "database", None, None, token, 1, True
                     )
                 )
@@ -262,7 +259,7 @@ def test_mismatch_failure_cannot_restore_token_after_valid_caller_consumes_it():
                 mismatch.result(timeout=2)
 
             third_result = json.loads(
-                _list_tables_with_config(
+                _metadata._list_tables_with_config(
                     {}, "database", None, None, token, 1, True
                 )
             )
@@ -271,11 +268,11 @@ def test_mismatch_failure_cannot_restore_token_after_valid_caller_consumes_it():
         assert third_result["total_tables"] == 3
         assert saved_indexes == [2, 0]
         restore_page_token.assert_not_called()
-        with _table_pagination_cache_lock:
+        with _metadata.table_pagination_cache_lock:
             assert token not in table_pagination_cache
     finally:
         valid_call_finished.set()
-        with _table_pagination_cache_lock:
+        with _metadata.table_pagination_cache_lock:
             table_pagination_cache.clear()
 
 
@@ -283,7 +280,7 @@ def test_restored_page_token_keeps_original_expiration_deadline():
     current_time = [100.0]
     cache = TTLCache(maxsize=100, ttl=10, timer=lambda: current_time[0])
 
-    with patch("mcp_clickhouse.mcp_server.table_pagination_cache", cache):
+    with patch("mcp_clickhouse.mcp_server._metadata.table_pagination_cache", cache):
         token = create_page_token(
             "database",
             None,
@@ -293,7 +290,7 @@ def test_restored_page_token_keeps_original_expiration_deadline():
             True,
         )
         current_time[0] = 109.9
-        state = _claim_page_token_for_request(
+        state = _metadata._claim_page_token_for_request(
             token,
             "database",
             None,
@@ -301,13 +298,13 @@ def test_restored_page_token_keeps_original_expiration_deadline():
             True,
         )
         assert state is not None
-        _restore_page_token(token, state)
+        _metadata._restore_page_token(token, state)
         assert token in cache
 
         current_time[0] = 110.1
         assert token in cache
         assert (
-            _claim_page_token_for_request(
+            _metadata._claim_page_token_for_request(
                 token,
                 "database",
                 None,
@@ -318,12 +315,12 @@ def test_restored_page_token_keeps_original_expiration_deadline():
         )
         assert token not in cache
 
-        _restore_page_token(token, state)
+        _metadata._restore_page_token(token, state)
         assert token not in cache
 
 
 def test_page_token_cursor_survives_connection_retry():
-    with _table_pagination_cache_lock:
+    with _metadata.table_pagination_cache_lock:
         table_pagination_cache.clear()
     token = create_page_token(
         "database",
@@ -346,21 +343,21 @@ def test_page_token_cursor_survives_connection_retry():
     try:
         with (
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._metadata.clients._acquire_clickhouse_client",
                 side_effect=entries,
             ),
-            patch("mcp_clickhouse.mcp_server._release_client_entry"),
-            patch("mcp_clickhouse.mcp_server._evict_cached_client"),
+            patch("mcp_clickhouse.mcp_server._metadata.clients._release_client_entry"),
+            patch("mcp_clickhouse.mcp_server._metadata.clients._evict_cached_client"),
             patch(
-                "mcp_clickhouse.mcp_server.fetch_table_names_from_system"
+                "mcp_clickhouse.metadata.fetch_table_names_from_system"
             ) as fetch_names,
             patch(
-                "mcp_clickhouse.mcp_server.get_paginated_table_data",
+                "mcp_clickhouse.metadata.get_paginated_table_data",
                 side_effect=paginated_data,
             ),
         ):
             result = json.loads(
-                _list_tables_with_config(
+                _metadata._list_tables_with_config(
                     {}, "database", None, None, token, 1, True
                 )
             )
@@ -373,12 +370,12 @@ def test_page_token_cursor_survives_connection_retry():
         }
         fetch_names.assert_not_called()
     finally:
-        with _table_pagination_cache_lock:
+        with _metadata.table_pagination_cache_lock:
             table_pagination_cache.clear()
 
 
 def test_page_token_is_restored_after_final_page_fetch_failure():
-    with _table_pagination_cache_lock:
+    with _metadata.table_pagination_cache_lock:
         table_pagination_cache.clear()
     token = create_page_token(
         "database",
@@ -388,7 +385,7 @@ def test_page_token_is_restored_after_final_page_fetch_failure():
         2,
         True,
     )
-    with _table_pagination_cache_lock:
+    with _metadata.table_pagination_cache_lock:
         original_state = dict(table_pagination_cache[token])
     clients = [MagicMock(), MagicMock()]
     entries = [MagicMock(client=client) for client in clients]
@@ -401,30 +398,30 @@ def test_page_token_is_restored_after_final_page_fetch_failure():
     try:
         with (
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._metadata.clients._acquire_clickhouse_client",
                 side_effect=entries,
             ),
-            patch("mcp_clickhouse.mcp_server._release_client_entry"),
-            patch("mcp_clickhouse.mcp_server._evict_cached_client"),
+            patch("mcp_clickhouse.mcp_server._metadata.clients._release_client_entry"),
+            patch("mcp_clickhouse.mcp_server._metadata.clients._evict_cached_client"),
             patch(
-                "mcp_clickhouse.mcp_server.fetch_table_names_from_system"
+                "mcp_clickhouse.metadata.fetch_table_names_from_system"
             ) as fetch_names,
             patch(
-                "mcp_clickhouse.mcp_server.get_paginated_table_data",
+                "mcp_clickhouse.metadata.get_paginated_table_data",
                 side_effect=fail_page_fetch,
             ),
         ):
             with pytest.raises(ConnectionError, match="connection failed"):
-                _list_tables_with_config(
+                _metadata._list_tables_with_config(
                     {}, "database", None, None, token, 1, True
                 )
 
         assert start_indexes == [2, 2]
         fetch_names.assert_not_called()
-        with _table_pagination_cache_lock:
+        with _metadata.table_pagination_cache_lock:
             assert table_pagination_cache[token] == original_state
     finally:
-        with _table_pagination_cache_lock:
+        with _metadata.table_pagination_cache_lock:
             table_pagination_cache.clear()
 
 
@@ -434,7 +431,7 @@ async def test_cancelled_mcp_call_does_not_commit_page_cursor(resume_from_token)
     page_started = threading.Event()
     release_page = threading.Event()
     page_finished = threading.Event()
-    with _table_pagination_cache_lock:
+    with _metadata.table_pagination_cache_lock:
         table_pagination_cache.clear()
 
     page_token = None
@@ -448,7 +445,7 @@ async def test_cancelled_mcp_call_does_not_commit_page_cursor(resume_from_token)
             1,
             True,
         )
-        with _table_pagination_cache_lock:
+        with _metadata.table_pagination_cache_lock:
             original_state = dict(table_pagination_cache[page_token])
 
     def blocked_page(_client, _database, _table_names, start_idx, _page_size, _details):
@@ -463,16 +460,16 @@ async def test_cancelled_mcp_call_does_not_commit_page_cursor(resume_from_token)
     try:
         with (
             patch(
-                "mcp_clickhouse.mcp_server._acquire_clickhouse_client",
+                "mcp_clickhouse.mcp_server._metadata.clients._acquire_clickhouse_client",
                 return_value=entry,
             ),
-            patch("mcp_clickhouse.mcp_server._release_client_entry"),
+            patch("mcp_clickhouse.mcp_server._metadata.clients._release_client_entry"),
             patch(
-                "mcp_clickhouse.mcp_server.fetch_table_names_from_system",
+                "mcp_clickhouse.metadata.fetch_table_names_from_system",
                 return_value=["first", "second", "third"],
             ),
             patch(
-                "mcp_clickhouse.mcp_server.get_paginated_table_data",
+                "mcp_clickhouse.metadata.get_paginated_table_data",
                 side_effect=blocked_page,
             ),
         ):
@@ -495,14 +492,14 @@ async def test_cancelled_mcp_call_does_not_commit_page_cursor(resume_from_token)
             release_page.set()
             assert await asyncio.to_thread(page_finished.wait, 2)
 
-        with _table_pagination_cache_lock:
+        with _metadata.table_pagination_cache_lock:
             if resume_from_token:
                 assert dict(table_pagination_cache) == {page_token: original_state}
             else:
                 assert not table_pagination_cache
     finally:
         release_page.set()
-        with _table_pagination_cache_lock:
+        with _metadata.table_pagination_cache_lock:
             table_pagination_cache.clear()
 
 

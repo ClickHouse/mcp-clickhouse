@@ -15,7 +15,17 @@ Act like an experienced maintainer of a public Python MCP server and database in
 
 ## Project Map
 
-- `mcp_clickhouse/mcp_server.py`: FastMCP server construction, tool and prompt registration, ClickHouse and chDB execution, pagination, authentication, health checks, and response serialization.
+- `mcp_clickhouse/mcp_server.py`: Startup assembly, FastMCP server construction, tool and prompt registration, and shutdown coordination.
+- `mcp_clickhouse/auth.py`: Default dotenv loading, HTTP/SSE authentication, and FastMCP provider environment compatibility.
+- `mcp_clickhouse/transport.py`: FastMCP HTTP/SSE app construction and trusted proxy integration.
+- `mcp_clickhouse/executors.py`: Per-server query, metadata, cancellation, and health worker pools.
+- `mcp_clickhouse/chdb_backend.py`: Per-server chDB state, lazy client initialization, query execution, and result processing.
+- `mcp_clickhouse/clients.py`: Request configuration, connection diagnostics, readonly settings, and per-server ClickHouse client caches and leases.
+- `mcp_clickhouse/queries.py`: Per-server ClickHouse query execution, active-query state, cancellation, and destructive-operation guards.
+- `mcp_clickhouse/metadata.py`: Database and table discovery, metadata models, and per-server pagination state.
+- `mcp_clickhouse/health.py`: Per-server health probes, result caching, and the public health route.
+- `mcp_clickhouse/serialization.py`: JSON tool-result encoding and exact integer handling.
+- `mcp_clickhouse/http_security.py`: Host and Origin validation and trusted proxy handling.
 - `mcp_clickhouse/mcp_env.py`: environment-backed configuration and validation. Treat this as the source of truth for configuration semantics.
 - `mcp_clickhouse/main.py`: runtime entry point and transport startup.
 - `mcp_clickhouse/mcp_middleware_hook.py`: optional user-provided middleware loading.
@@ -40,9 +50,9 @@ Act like an experienced maintainer of a public Python MCP server and database in
 
 ## Architecture And MCP Contract
 
-This module has meaningful import-time behavior. `mcp_server.py` loads `.env`, resolves transport authentication, constructs the `FastMCP` instance, and conditionally registers ClickHouse and chDB tools. Account for that when changing configuration or writing tests. Environment changes made after import may not affect server construction or tool registration.
+This module has meaningful import-time behavior. `mcp_server.py` loads `.env`, creates executors, constructs the `FastMCP` instance, and conditionally registers ClickHouse and chDB tools. HTTP/SSE authentication resolves when the transport app is constructed. Account for that when changing configuration or writing tests. Environment changes made after import may not affect server construction or tool registration.
 
-- Keep blocking ClickHouse and chDB work off the event loop. MCP-facing query tools are async wrappers around work submitted to `QUERY_EXECUTOR`.
+- Keep blocking ClickHouse and chDB work off the event loop. MCP-facing query tools are async wrappers around work submitted to the query executor.
 - When changing query execution, consider the synchronous helper, the async MCP wrapper, timeout handling, cancellation, logging, and error conversion together.
 - Registered tool functions must remain compatible with FastMCP introspection. Preserve useful type annotations and docstrings because they contribute to the exposed schema.
 - Tool results are deliberately JSON-encoded strings. Do not return raw dictionaries or lists without verifying FastMCP protocol behavior and updating all affected tests and documentation.

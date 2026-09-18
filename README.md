@@ -688,6 +688,31 @@ CLICKHOUSE_PASSWORD=clickhouse
    curl http://localhost:8000/health
    ```
 
+### Code layout
+
+The package uses a flat module layout. Start with [mcp_server.py](mcp_clickhouse/mcp_server.py)
+for server assembly and registration, then follow the implementation into its owning module.
+
+| Module | Responsibility |
+|--------|----------------|
+| [mcp_server.py](mcp_clickhouse/mcp_server.py), [main.py](mcp_clickhouse/main.py) | Startup assembly, tool and prompt registration, shutdown coordination, and CLI startup |
+| [clients.py](mcp_clickhouse/clients.py) | Request configuration, cached ClickHouse connections, and client leases |
+| [queries.py](mcp_clickhouse/queries.py) | Query execution, cancellation, and destructive-operation guards |
+| [metadata.py](mcp_clickhouse/metadata.py) | Database and table discovery, metadata models, and pagination |
+| [chdb_backend.py](mcp_clickhouse/chdb_backend.py), [chdb_prompt.py](mcp_clickhouse/chdb_prompt.py) | Optional chDB initialization, query execution, and prompt content |
+| [health.py](mcp_clickhouse/health.py), [executors.py](mcp_clickhouse/executors.py) | Health probes and caching, and the worker pools used by server operations |
+| [auth.py](mcp_clickhouse/auth.py), [transport.py](mcp_clickhouse/transport.py), [http_security.py](mcp_clickhouse/http_security.py) | Dotenv loading, authentication, HTTP/SSE app construction, and Host/Origin validation |
+| [mcp_env.py](mcp_clickhouse/mcp_env.py), [serialization.py](mcp_clickhouse/serialization.py) | Environment configuration and JSON result encoding |
+| [mcp_middleware_hook.py](mcp_clickhouse/mcp_middleware_hook.py), [skills_advisor.py](mcp_clickhouse/skills_advisor.py) | Custom middleware loading and server instructions |
+
+Each server assembly owns its worker pools, client cache, active queries, pagination cache,
+health state, and chDB backend. Worker and client cleanup runs at process exit. Package imports
+initialize the default server, including when first importing an extracted module.
+
+In tests, patch the module or owner instance where the code reads a dependency. For example,
+patch `mcp_clickhouse.clients.clickhouse_connect.get_client` for client creation. Compatibility
+imports in `mcp_server.py` can be separate bindings from the ones an implementation uses.
+
 ### Environment Variables
 
 Configuration is split into **independent** groups. Mixing them up is a common cause of hard-to-debug connection failures:

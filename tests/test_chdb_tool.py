@@ -17,14 +17,16 @@ class TestChDBTools(unittest.TestCase):
     def setUpClass(cls):
         """Set up the environment before chDB tests."""
         cls._previous_chdb_enabled = os.environ.get("CHDB_ENABLED")
-        cls._previous_chdb_client = mcp_server._chdb_client
-        cls._previous_chdb_error_message = mcp_server._chdb_error_message
+        cls._previous_chdb_client = mcp_server._chdb_backend.client
+        cls._previous_chdb_error_message = mcp_server._chdb_backend.error_message
 
         os.environ["CHDB_ENABLED"] = "true"
-        if mcp_server._chdb_client is None:
-            mcp_server._chdb_client = mcp_server._init_chdb_client()
+        if mcp_server._chdb_backend.client is None:
+            mcp_server._chdb_backend.client = mcp_server._chdb_backend._init_chdb_client()
         cls.client = mcp_server.create_chdb_client()
-        cls._created_client = cls._previous_chdb_client is None and cls.client is mcp_server._chdb_client
+        cls._created_client = (
+            cls._previous_chdb_client is None and cls.client is mcp_server._chdb_backend.client
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -32,8 +34,8 @@ class TestChDBTools(unittest.TestCase):
         if getattr(cls, "_created_client", False):
             cls.client.close()
 
-        mcp_server._chdb_client = cls._previous_chdb_client
-        mcp_server._chdb_error_message = cls._previous_chdb_error_message
+        mcp_server._chdb_backend.client = cls._previous_chdb_client
+        mcp_server._chdb_backend.error_message = cls._previous_chdb_error_message
 
         if cls._previous_chdb_enabled is None:
             os.environ.pop("CHDB_ENABLED", None)

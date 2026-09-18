@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mcp_clickhouse import mcp_server
+from mcp_clickhouse import clients
 from mcp_clickhouse.mcp_env import ClickHouseConfig
 
 
@@ -190,9 +190,9 @@ def test_write_access_property_controls_readonly_setting(
         monkeypatch.setenv("CLICKHOUSE_ALLOW_WRITE_ACCESS", value)
 
     config = ClickHouseConfig()
-    monkeypatch.setattr(mcp_server, "get_config", lambda: config)
+    monkeypatch.setattr(clients, "get_config", lambda: config)
 
     assert config.allow_write_access is expected
-    assert mcp_server.build_query_settings(SimpleNamespace(server_settings={})) == {
+    assert clients.build_query_settings(SimpleNamespace(server_settings={})) == {
         "readonly": readonly
     }

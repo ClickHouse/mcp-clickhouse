@@ -409,7 +409,9 @@ async def test_run_query_does_not_block_other_mcp_requests(mcp_server, params):
         return json.dumps({"columns": ["value"], "rows": [[1]]})
 
     async with Client(mcp_server) as client:
-        with patch("mcp_clickhouse.mcp_server.execute_query", side_effect=slow_execute_query):
+        with patch(
+            "mcp_clickhouse.mcp_server._queries.execute_query", side_effect=slow_execute_query
+        ) as execute:
             slow_task = asyncio.create_task(
                 client.call_tool("run_query", {"query": "SELECT {value:UInt32}", "params": params})
             )
@@ -421,5 +423,8 @@ async def test_run_query_does_not_block_other_mcp_requests(mcp_server, params):
 
             await slow_task
 
+    execute.assert_called_once()
+    assert execute.call_args.args[0] == "SELECT {value:UInt32}"
+    assert execute.call_args.args[3] == params
     assert len(tools) >= 1
     assert list_tools_elapsed < 0.5

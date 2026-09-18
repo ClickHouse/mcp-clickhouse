@@ -11,7 +11,7 @@ from mcp_clickhouse import (
     list_tables,
     table_pagination_cache,
 )
-from mcp_clickhouse.mcp_server import Table
+from mcp_clickhouse.metadata import Table
 
 load_dotenv()
 
