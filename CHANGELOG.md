@@ -16,6 +16,10 @@ All notable changes to this project will be documented in this file.
 - Request-scoped client overrides are now validated for TLS consistency before client creation. `verify`, `ca_cert`, `client_cert`, `client_cert_key`, `tls_mode`, `server_host_name`, and `pool_mgr` must be top-level overrides and are rejected under `generic_args` and as DSN query parameters. Previously `generic_args.verify` and a DSN `verify` parameter reached clickhouse-connect. DSN overrides cannot select the chdb backend.
 - A `secure` override now switches the client interface between `https` and `http`, and an explicit `interface` override must be `http` or `https` and agree with `secure`. Previously a `secure` override alone left the base interface in place. `secure` and `verify` override values must be booleans or the strings `true` or `false`. `verify` also accepts `proxy`.
 
+### Compatibility
+
+- Some undocumented imports from `mcp_clickhouse.mcp_server`, including `Table`, `execute_query`, and `QUERY_EXECUTOR`, have been removed. See [Code layout](README.md#code-layout) for the owning modules. Query execution methods and worker pools now belong to per-server instances. The exports in `mcp_clickhouse.__all__` and the documented `mcp_server.CLIENT_CONFIG_OVERRIDES_KEY` import remain available. MCP tool and prompt contracts are unchanged.
+
 ## 0.6.0 - 2026-09-03
 
 ### Added

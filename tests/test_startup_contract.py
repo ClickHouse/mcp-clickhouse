@@ -139,11 +139,7 @@ def test_fresh_submodule_import_preserves_registration_and_exports(
             transport = importlib.import_module("mcp_clickhouse.transport")
             assert server.ClickHouseFastMCP is transport.ClickHouseFastMCP
             assert isinstance(server.mcp, server.ClickHouseFastMCP)
-            try:
-                with patch("mcp_clickhouse.mcp_server._resolve_auth"):
-                    raise AssertionError("Obsolete auth patch still resolves")
-            except AttributeError:
-                pass
+            assert not hasattr(server, "_resolve_auth")
             assert importlib.import_module("mcp_clickhouse.main").mcp is server.mcp
             for name in ("http_app", "sse_app", "streamable_http_app", "run_http_async"):
                 assert callable(getattr(server.mcp, name)), name
@@ -221,8 +217,7 @@ def test_selected_dotenv_configures_initial_executors_and_http_auth(isolated_pac
         ) as executor, patch.object(TypeAdapter, "__init__", record_adapter):
             server = importlib.import_module("mcp_clickhouse.mcp_server")
         assert parser_startup_state == [("3", 4)], parser_startup_state
-        # Preserve pool count and order during the structural refactor.
-        # This can be relaxed after the refactor is complete.
+        # Preserve dotenv sizing and pool creation order before auth parser initialization.
         assert executor.call_args_list == [
             call(max_workers=3), call(max_workers=3), call(max_workers=2), call(max_workers=1)
         ]
@@ -437,7 +432,7 @@ def test_entrypoint_keeps_independent_executor_and_chdb_ownership(isolated_packa
                 lambda index=index: events.append(("cache", index))
             )
 
-        # Preserve the existing atexit order during the structural refactor.
+        # Check chDB, pool, and cache callback order, newest assembly first.
         expected = []
         for index in reversed(range(count)):
             expected.append(("chdb", index))

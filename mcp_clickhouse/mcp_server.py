@@ -1,3 +1,5 @@
+"""Assemble the default server and preserve package compatibility exports."""
+
 import atexit
 import logging
 import os
