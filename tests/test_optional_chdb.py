@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from starlette.requests import Request
 
-from mcp_clickhouse import clients, mcp_server
+from mcp_clickhouse import clients, health, mcp_server
 
 
 @pytest.fixture(autouse=True)
@@ -117,9 +117,9 @@ async def test_health_check_hides_internal_chdb_init_error_details():
             {"CLICKHOUSE_ENABLED": "false", "CHDB_ENABLED": "true"},
             clear=False,
         ),
-        patch.object(mcp_server._chdb_backend, "client", None),
+        patch.object(mcp_server._health.chdb_backend, "client", None),
         patch.object(
-            mcp_server._chdb_backend,
+            mcp_server._health.chdb_backend,
             "error_message",
             "Failed to initialize chDB client: /tmp/private.db is unreadable",
         ),
@@ -147,7 +147,7 @@ async def test_health_check_hides_clickhouse_connection_error_details():
     with (
         patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
         patch.object(clients, "_resolve_client_config", return_value={}),
-        patch.object(mcp_server, "_probe_clickhouse_health", side_effect=raise_with_secrets),
+        patch.object(mcp_server._health, "_probe_clickhouse_health", side_effect=raise_with_secrets),
     ):
         response = await mcp_server.health_check(request)
 
@@ -173,9 +173,9 @@ async def test_health_check_rejects_cached_client_with_invalid_credentials():
     entry = clients._ClientCacheEntry(client, time.time())
     cache_key = clients._config_to_cache_key(config)
 
-    mcp_server._clickhouse_clients._clear_client_cache()
-    with mcp_server._clickhouse_clients.lock:
-        mcp_server._clickhouse_clients.cache[cache_key] = entry
+    mcp_server._health.clients._clear_client_cache()
+    with mcp_server._health.clients.lock:
+        mcp_server._health.clients.cache[cache_key] = entry
     try:
         with (
             patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
@@ -183,7 +183,7 @@ async def test_health_check_rejects_cached_client_with_invalid_credentials():
         ):
             response = await mcp_server.health_check(request)
     finally:
-        mcp_server._clickhouse_clients._clear_client_cache()
+        mcp_server._health.clients._clear_client_cache()
 
     assert response.status_code == 503
     assert response.body == (
@@ -208,8 +208,8 @@ async def test_health_check_probe_is_off_loop_and_bounded(caplog):
         with (
             patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
             patch.object(clients, "_resolve_client_config", return_value={}),
-            patch.object(mcp_server, "_probe_clickhouse_health", side_effect=slow_probe),
-            patch.object(mcp_server, "_HEALTH_CHECK_TIMEOUT_SECONDS", 0.08),
+            patch.object(mcp_server._health, "_probe_clickhouse_health", side_effect=slow_probe),
+            patch.object(health, "_HEALTH_CHECK_TIMEOUT_SECONDS", 0.08),
         ):
             started_at = time.monotonic()
             task = asyncio.create_task(mcp_server.health_check(request))
@@ -223,8 +223,8 @@ async def test_health_check_probe_is_off_loop_and_bounded(caplog):
                 release.set()
 
     for _ in range(50):
-        with mcp_server._health_probe_lock:
-            if mcp_server._health_probe_future is None:
+        with mcp_server._health.health_probe_lock:
+            if mcp_server._health.health_probe_future is None:
                 break
         await asyncio.sleep(0.01)
 
@@ -259,12 +259,12 @@ async def test_concurrent_health_checks_share_one_bounded_probe(caplog):
                 "_resolve_client_config",
                 return_value={"connect_timeout": 30, "send_receive_timeout": 45},
             ),
-            patch.object(mcp_server, "_probe_clickhouse_health", side_effect=slow_probe),
-            patch.object(mcp_server, "_HEALTH_CHECK_TIMEOUT_SECONDS", 0.2),
+            patch.object(mcp_server._health, "_probe_clickhouse_health", side_effect=slow_probe),
+            patch.object(health, "_HEALTH_CHECK_TIMEOUT_SECONDS", 0.2),
             patch.object(
-                mcp_server._executors.health,
+                mcp_server._health.executors.health,
                 "submit",
-                wraps=mcp_server._executors.health.submit,
+                wraps=mcp_server._health.executors.health.submit,
             ) as submit,
         ):
             tasks = [
@@ -279,7 +279,7 @@ async def test_concurrent_health_checks_share_one_bounded_probe(caplog):
 
                 assert started.is_set()
                 assert submit.call_count == 1
-                assert mcp_server._executors.health._work_queue.qsize() == 0
+                assert mcp_server._health.executors.health._work_queue.qsize() == 0
                 assert received_configs == [
                     {"connect_timeout": 0.2, "send_receive_timeout": 0.2}
                 ]
@@ -288,8 +288,8 @@ async def test_concurrent_health_checks_share_one_bounded_probe(caplog):
                 release.set()
 
     for _ in range(50):
-        with mcp_server._health_probe_lock:
-            if mcp_server._health_probe_future is None:
+        with mcp_server._health.health_probe_lock:
+            if mcp_server._health.health_probe_future is None:
                 break
         await asyncio.sleep(0.01)
 
@@ -324,8 +324,8 @@ async def test_timed_out_health_waiters_retrieve_late_probe_exception():
         with (
             patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
             patch.object(clients, "_resolve_client_config", return_value={}),
-            patch.object(mcp_server, "_probe_clickhouse_health", side_effect=failing_probe),
-            patch.object(mcp_server, "_HEALTH_CHECK_TIMEOUT_SECONDS", 0.02),
+            patch.object(mcp_server._health, "_probe_clickhouse_health", side_effect=failing_probe),
+            patch.object(health, "_HEALTH_CHECK_TIMEOUT_SECONDS", 0.02),
         ):
             tasks = [
                 asyncio.create_task(mcp_server.health_check(request)) for _ in range(20)
@@ -339,8 +339,8 @@ async def test_timed_out_health_waiters_retrieve_late_probe_exception():
             release.set()
 
             for _ in range(100):
-                with mcp_server._health_probe_lock:
-                    if mcp_server._health_probe_future is None:
+                with mcp_server._health.health_probe_lock:
+                    if mcp_server._health.health_probe_future is None:
                         break
                 await asyncio.sleep(0.01)
 

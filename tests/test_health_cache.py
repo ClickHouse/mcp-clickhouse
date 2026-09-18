@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from starlette.requests import Request
 
-from mcp_clickhouse import clients, mcp_server
+from mcp_clickhouse import clients, health, mcp_server
 
 HEALTH_ERROR_BODY = b"ERROR. ClickHouse connection failed. Check server logs for details."
 
@@ -20,8 +20,8 @@ def _health_request() -> Request:
 async def _wait_for_idle_probe() -> None:
     """Wait until the shared probe future is cleared so counts are stable."""
     for _ in range(100):
-        with mcp_server._health_probe_lock:
-            if mcp_server._health_probe_future is None:
+        with mcp_server._health.health_probe_lock:
+            if mcp_server._health.health_probe_future is None:
                 return
         await asyncio.sleep(0.01)
     raise AssertionError("health probe future was never cleared")
@@ -52,7 +52,7 @@ async def test_successful_result_is_reused_within_the_cache_window():
     with (
         patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
         patch.object(clients, "_resolve_client_config", return_value={}),
-        patch.object(mcp_server, "_probe_clickhouse_health", side_effect=probe),
+        patch.object(mcp_server._health, "_probe_clickhouse_health", side_effect=probe),
     ):
         first = await mcp_server.health_check(_health_request())
         await _wait_for_idle_probe()
@@ -73,7 +73,7 @@ async def test_failed_result_is_reused_within_the_cache_window(caplog):
         with (
             patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
             patch.object(clients, "_resolve_client_config", return_value={}),
-            patch.object(mcp_server, "_probe_clickhouse_health", side_effect=probe),
+            patch.object(mcp_server._health, "_probe_clickhouse_health", side_effect=probe),
         ):
             first = await mcp_server.health_check(_health_request())
             await _wait_for_idle_probe()
@@ -101,8 +101,8 @@ async def test_probe_runs_again_once_the_cache_window_expires():
     with (
         patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
         patch.object(clients, "_resolve_client_config", return_value={}),
-        patch.object(mcp_server, "_probe_clickhouse_health", side_effect=probe),
-        patch.object(mcp_server, "_HEALTH_RESULT_CACHE_SECONDS", 0.05),
+        patch.object(mcp_server._health, "_probe_clickhouse_health", side_effect=probe),
+        patch.object(health, "_HEALTH_RESULT_CACHE_SECONDS", 0.05),
     ):
         await mcp_server.health_check(_health_request())
         await _wait_for_idle_probe()
@@ -120,8 +120,8 @@ async def test_recovery_is_reported_after_the_cache_window_expires():
     with (
         patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
         patch.object(clients, "_resolve_client_config", return_value={}),
-        patch.object(mcp_server, "_probe_clickhouse_health", side_effect=probe),
-        patch.object(mcp_server, "_HEALTH_RESULT_CACHE_SECONDS", 0.05),
+        patch.object(mcp_server._health, "_probe_clickhouse_health", side_effect=probe),
+        patch.object(health, "_HEALTH_RESULT_CACHE_SECONDS", 0.05),
     ):
         failed = await mcp_server.health_check(_health_request())
         await _wait_for_idle_probe()
@@ -143,7 +143,7 @@ async def test_concurrent_requests_after_a_cached_result_do_not_probe_again():
     with (
         patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
         patch.object(clients, "_resolve_client_config", return_value={}),
-        patch.object(mcp_server, "_probe_clickhouse_health", side_effect=probe),
+        patch.object(mcp_server._health, "_probe_clickhouse_health", side_effect=probe),
     ):
         await mcp_server.health_check(_health_request())
         await _wait_for_idle_probe()
@@ -169,11 +169,11 @@ async def test_concurrent_requests_share_one_probe_and_cache_its_result():
     with (
         patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
         patch.object(clients, "_resolve_client_config", return_value={}),
-        patch.object(mcp_server, "_probe_clickhouse_health", side_effect=slow_probe),
+        patch.object(mcp_server._health, "_probe_clickhouse_health", side_effect=slow_probe),
         patch.object(
-            mcp_server._executors.health,
+            mcp_server._health.executors.health,
             "submit",
-            wraps=mcp_server._executors.health.submit,
+            wraps=mcp_server._health.executors.health.submit,
         ) as submit,
     ):
         tasks = [asyncio.create_task(mcp_server.health_check(_health_request())) for _ in range(20)]
@@ -207,14 +207,14 @@ async def test_timed_out_check_caches_nothing_until_the_probe_finishes():
     with (
         patch.dict("os.environ", {"CLICKHOUSE_ENABLED": "true"}, clear=False),
         patch.object(clients, "_resolve_client_config", return_value={}),
-        patch.object(mcp_server, "_probe_clickhouse_health", side_effect=hanging_probe),
-        patch.object(mcp_server, "_HEALTH_CHECK_TIMEOUT_SECONDS", 0.05),
+        patch.object(mcp_server._health, "_probe_clickhouse_health", side_effect=hanging_probe),
+        patch.object(health, "_HEALTH_CHECK_TIMEOUT_SECONDS", 0.05),
     ):
         try:
             timed_out = await mcp_server.health_check(_health_request())
             assert timed_out.status_code == 503
-            assert mcp_server._cached_health_result() is None
+            assert mcp_server._health._cached_health_result() is None
         finally:
             release.set()
         await _wait_for_idle_probe()
-        assert mcp_server._cached_health_result() is True
+        assert mcp_server._health._cached_health_result() is True

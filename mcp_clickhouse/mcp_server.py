@@ -1,24 +1,17 @@
-import asyncio
 import atexit
-import concurrent.futures
 import logging
 import os
-import threading
-import time
-import weakref
 from importlib.metadata import PackageNotFoundError, version as package_version
-from typing import Optional, Tuple
 
 from fastmcp.prompts import Prompt
 from fastmcp.tools import Tool
-from starlette.requests import Request
-from starlette.responses import PlainTextResponse
 
 from mcp_clickhouse import clients
 from mcp_clickhouse.auth import _initialize_auth_parser, _load_default_dotenv
 from mcp_clickhouse.chdb_backend import _ChDBBackend, chdb_initial_prompt as chdb_initial_prompt
 from mcp_clickhouse.clients import CLIENT_CONFIG_OVERRIDES_KEY as CLIENT_CONFIG_OVERRIDES_KEY
 from mcp_clickhouse.executors import _Executors
+from mcp_clickhouse.health import _Health
 from mcp_clickhouse.mcp_env import (
     get_chdb_config,
     get_mcp_config,
@@ -53,20 +46,12 @@ logger = logging.getLogger(MCP_SERVER_NAME)
 _load_default_dotenv()
 
 _executors = _Executors(get_mcp_config().max_workers)
-_HEALTH_CHECK_TIMEOUT_SECONDS = 2.0
-_HEALTH_RESULT_CACHE_SECONDS = 1.0
-_CLICKHOUSE_HEALTH_ERROR_BODY = (
-    "ERROR. ClickHouse connection failed. Check server logs for details."
-)
 
 _clickhouse_clients = clients._ClickHouseClients()
 
 _queries = _Queries(_executors, _clickhouse_clients)
 
-_health_probe_future: Optional[concurrent.futures.Future] = None
-_health_probe_lock = threading.Lock()
-_logged_health_probe_futures: weakref.WeakSet[concurrent.futures.Future] = weakref.WeakSet()
-_health_result_cache: Optional[Tuple[float, bool]] = None
+_health = _Health(_executors, _clickhouse_clients)
 
 _initialize_auth_parser()
 
@@ -78,166 +63,8 @@ mcp = ClickHouseFastMCP(
 _chdb_backend = _ChDBBackend(_executors)
 
 
-def _probe_clickhouse_health(config: dict) -> None:
-    """Run an authenticated ClickHouse health query with a leased client."""
-    entry = _clickhouse_clients._acquire_clickhouse_client(config)
-    try:
-        entry.client.command("SELECT 1")
-    finally:
-        _clickhouse_clients._release_client_entry(entry)
-
-
-def _bounded_health_config(config: dict) -> dict:
-    """Cap ClickHouse network timeouts to the public health timeout."""
-    bounded = clients._ResolvedClientConfig(
-        dict(config),
-        overrides_applied=getattr(config, "overrides_applied", False),
-    )
-    for key in ("connect_timeout", "send_receive_timeout"):
-        value = bounded.get(key)
-        if value is None or value > _HEALTH_CHECK_TIMEOUT_SECONDS:
-            bounded[key] = _HEALTH_CHECK_TIMEOUT_SECONDS
-    return bounded
-
-
-def _clear_completed_health_probe(future: concurrent.futures.Future) -> None:
-    """Clear the shared health future when its probe finishes."""
-    global _health_probe_future
-    with _health_probe_lock:
-        if _health_probe_future is future:
-            _health_probe_future = None
-
-
-def _cache_health_probe_result(future: concurrent.futures.Future) -> None:
-    """Cache a completed probe outcome for the reuse window."""
-    global _health_result_cache
-    if future.cancelled():
-        return
-    healthy = future.exception() is None
-    with _health_probe_lock:
-        _health_result_cache = (
-            time.monotonic() + _HEALTH_RESULT_CACHE_SECONDS,
-            healthy,
-        )
-
-
-def _cached_health_result() -> Optional[bool]:
-    """Return a cached probe outcome, or None when none is still valid."""
-    global _health_result_cache
-    with _health_probe_lock:
-        if _health_result_cache is None:
-            return None
-        expires_at, healthy = _health_result_cache
-        if time.monotonic() >= expires_at:
-            _health_result_cache = None
-            return None
-        return healthy
-
-
-def _clear_health_result_cache() -> None:
-    """Drop any cached probe outcome so the next check probes ClickHouse."""
-    global _health_result_cache
-    with _health_probe_lock:
-        _health_result_cache = None
-
-
-def _get_health_probe_future(config: dict) -> concurrent.futures.Future:
-    """Return the single in-flight ClickHouse health probe."""
-    global _health_probe_future
-    with _health_probe_lock:
-        if _health_probe_future is not None and not _health_probe_future.done():
-            return _health_probe_future
-        future = _executors.health.submit(
-            _probe_clickhouse_health,
-            _bounded_health_config(config),
-        )
-        _health_probe_future = future
-    future.add_done_callback(_cache_health_probe_result)
-    future.add_done_callback(_clear_completed_health_probe)
-    return future
-
-
-def _claim_health_probe_log(future: Optional[concurrent.futures.Future]) -> bool:
-    """Return true once for each shared health probe future."""
-    if future is None:
-        return True
-    with _health_probe_lock:
-        if future in _logged_health_probe_futures:
-            return False
-        _logged_health_probe_futures.add(future)
-        return True
-
-
-def _retrieve_health_probe_wrapper_result(future: asyncio.Future) -> None:
-    """Retrieve a completed health wrapper result."""
-    try:
-        future.result()
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        pass
-
-
-@mcp.custom_route("/health", methods=["GET"])
-async def health_check(request: Request) -> PlainTextResponse:
-    """Liveness probe. Intentionally unauthenticated and minimal.
-
-    A completed ClickHouse probe result is reused for one second, so a failure
-    or a recovery can be reported up to a second late.
-
-    Debug via server logs.
-    """
-    future = None
-    try:
-        # Check if ClickHouse is enabled by trying to create config
-        # If ClickHouse is disabled, this will succeed but connection will fail
-        clickhouse_enabled = os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true"
-
-        if not clickhouse_enabled:
-            # If ClickHouse is disabled, check chDB status
-            chdb_config = get_chdb_config()
-            if chdb_config.enabled and _chdb_backend.client is not None:
-                return PlainTextResponse("OK")
-            elif chdb_config.enabled and _chdb_backend.error_message:
-                return PlainTextResponse(
-                    "ERROR. chDB initialization failed. Check server logs for details.",
-                    status_code=503,
-                )
-            else:
-                logger.error(
-                    "Health check failed: both CLICKHOUSE_ENABLED=false and CHDB_ENABLED=false"
-                )
-                return PlainTextResponse(
-                    "ERROR. Server misconfigured. Check server logs for details.",
-                    status_code=503,
-                )
-
-        cached_result = _cached_health_result()
-        if cached_result is not None:
-            if cached_result:
-                return PlainTextResponse("OK")
-            return PlainTextResponse(_CLICKHOUSE_HEALTH_ERROR_BODY, status_code=503)
-
-        future = _get_health_probe_future(clients._resolve_client_config())
-        wrapped_future = asyncio.wrap_future(future)
-        wrapped_future.add_done_callback(_retrieve_health_probe_wrapper_result)
-        await asyncio.wait_for(
-            asyncio.shield(wrapped_future),
-            timeout=_HEALTH_CHECK_TIMEOUT_SECONDS,
-        )
-        return PlainTextResponse("OK")
-    except asyncio.TimeoutError:
-        if _claim_health_probe_log(future):
-            logger.warning(
-                "Health check timed out after %.1f seconds",
-                _HEALTH_CHECK_TIMEOUT_SECONDS,
-            )
-        return PlainTextResponse(_CLICKHOUSE_HEALTH_ERROR_BODY, status_code=503)
-    except Exception:
-        # Log the underlying error server-side, but don't leak details over the wire.
-        if _claim_health_probe_log(future):
-            logger.exception("Health check failed: ClickHouse connection error")
-        return PlainTextResponse(_CLICKHOUSE_HEALTH_ERROR_BODY, status_code=503)
+_health.chdb_backend = _chdb_backend
+health_check = mcp.custom_route("/health", methods=["GET"])(_health.health_check)
 
 
 _metadata = _Metadata(_executors, _clickhouse_clients)

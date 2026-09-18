@@ -353,7 +353,9 @@ def test_entrypoint_keeps_independent_executor_and_chdb_ownership(isolated_packa
                 backend.client = None
                 backend.error_message = "private initialization detail"
                 try:
-                    for index, (other, *_) in enumerate(snapshots):
+                    for index, (other, other_backend, *_) in enumerate(snapshots):
+                        assert other["_health"].chdb_backend is other_backend
+                        assert other["health_check"].__self__ is other["_health"]
                         response = await other["health_check"](request)
                         if index == failed_index:
                             assert response.status_code == 503
@@ -460,6 +462,7 @@ def test_entrypoint_keeps_independent_clickhouse_owners(isolated_package, entryp
         """
         import asyncio
         import atexit
+        import concurrent.futures
         import importlib
         import json
         import os
@@ -471,7 +474,9 @@ def test_entrypoint_keeps_independent_clickhouse_owners(isolated_package, entryp
         import clickhouse_connect
         from fastmcp import Client
         from fastmcp.utilities.mcp_server_config import MCPServerConfig
+        from starlette.testclient import TestClient
 
+        health_snapshots = []
         callbacks, created, snapshots, query_snapshots, metadata_snapshots = [], [], [], [], []
         shared_page_token = "52c27074-a18d-4b1f-870b-1454dfc6bf8c"
         original_register = atexit.register
@@ -600,6 +605,84 @@ def test_entrypoint_keeps_independent_clickhouse_owners(isolated_package, entryp
                     cache.clear()
                 seed_page(owner, saved["create_page_token"], names)
 
+        def check_health(index, namespace, manager, cached, config):
+            owner, lock, logged, handler, app = health_snapshots[index]
+            assert namespace["_health"] is owner
+            assert owner.clients is manager
+            assert owner.executors is namespace["_executors"]
+            assert owner.chdb_backend is namespace["_chdb_backend"]
+            assert owner.health_probe_lock is lock
+            assert owner.logged_health_probe_futures is logged
+            assert namespace["health_check"] is handler
+            assert handler.__self__ is owner and asyncio.iscoroutinefunction(handler)
+            route = next(route for route in app.routes if route.path == "/health")
+            assert route.endpoint is handler
+            assert route.methods == {"GET", "HEAD"}
+            owner._clear_health_result_cache()
+            with patch.object(
+                owner.executors.health, "submit", wraps=owner.executors.health.submit,
+            ) as submit, patch.object(
+                owner.clients, "_acquire_clickhouse_client",
+                wraps=owner.clients._acquire_clickhouse_client,
+            ) as acquire, patch.object(
+                owner.clients, "_release_client_entry",
+                wraps=owner.clients._release_client_entry,
+            ) as release, TestClient(app, base_url="http://untrusted.example") as client:
+                response = client.get("/health", headers={"origin": "https://untrusted.example"})
+                assert response.status_code == 200 and response.content == b"OK"
+            submit.assert_called_once_with(owner._probe_clickhouse_health, config)
+            acquire.assert_called_once_with(config)
+            release.assert_called_once_with(next(iter(manager.cache.values())))
+            assert cached.commands[-1] == "SELECT 1"
+            assert owner.health_probe_future is None
+            assert owner._cached_health_result() is True
+
+        def check_health_state_isolation():
+            futures = [concurrent.futures.Future() for _ in health_snapshots]
+            shared_log_future = concurrent.futures.Future()
+            for (owner, *_), future in zip(health_snapshots, futures):
+                owner._clear_health_result_cache()
+                with patch.object(owner.executors.health, "submit", return_value=future) as submit:
+                    config = {"connect_timeout": 2.0, "send_receive_timeout": 2.0}
+                    assert owner._get_health_probe_future(config) is future
+                    assert owner._get_health_probe_future(config) is future
+                submit.assert_called_once_with(owner._probe_clickhouse_health, config)
+                assert owner._claim_health_probe_log(shared_log_future) is True
+                assert owner._claim_health_probe_log(shared_log_future) is False
+            for index, future in enumerate(futures):
+                before = [snapshot[0].health_result_cache for snapshot in health_snapshots]
+                future.set_result(None)
+                for other_index, (owner, *_) in enumerate(health_snapshots):
+                    if other_index == index:
+                        assert owner.health_probe_future is None
+                        assert owner._cached_health_result() is True
+                    else:
+                        assert owner.health_result_cache == before[other_index]
+                        if other_index > index:
+                            assert owner.health_probe_future is futures[other_index]
+            for failed_index in range(len(health_snapshots)):
+                for index, (owner, *_) in enumerate(health_snapshots):
+                    with owner.health_probe_lock:
+                        owner.health_result_cache = (float("inf"), index != failed_index)
+                for index, (owner, _, _, _, app) in enumerate(health_snapshots):
+                    with patch.object(owner.executors.health, "submit") as submit, TestClient(
+                        app, base_url="http://untrusted.example",
+                    ) as client:
+                        response = client.get("/health")
+                        head = client.head("/health")
+                    assert response.status_code == head.status_code == (
+                        503 if index == failed_index else 200
+                    )
+                    expected = (
+                        b"ERROR. ClickHouse connection failed. Check server logs for details."
+                        if index == failed_index else b"OK"
+                    )
+                    assert response.content == expected and head.content == b""
+                    submit.assert_not_called()
+            for owner, *_ in health_snapshots:
+                owner._clear_health_result_cache()
+                owner.logged_health_probe_futures.clear()
+
         def check_cancellation():
             query_id = "fd0d52e3-0afc-4e38-8c7d-b0bd0de37f66"
             states = []
@@ -688,6 +771,13 @@ def test_entrypoint_keeps_independent_clickhouse_owners(isolated_package, entryp
                         metadata, metadata.table_pagination_cache,
                         metadata.table_pagination_cache_lock, saved,
                     ))
+                    health = namespace["_health"]
+                    assert health.health_probe_future is None and health.health_result_cache is None
+                    assert not health.logged_health_probe_futures
+                    health_snapshots.append((
+                        health, health.health_probe_lock, health.logged_health_probe_futures,
+                        namespace["health_check"], namespace["mcp"].http_app(),
+                    ))
                     seed_page(metadata, saved["create_page_token"], [
                         f"{entry.client.index}_first", f"{entry.client.index}_second",
                         f"{entry.client.index}_third",
@@ -700,6 +790,7 @@ def test_entrypoint_keeps_independent_clickhouse_owners(isolated_package, entryp
                 assert len({id(snapshot[0].active_queries_lock) for snapshot in query_snapshots}) == len(snapshots)
                 for part in (0, 1, 2):
                     assert len({id(snapshot[part]) for snapshot in metadata_snapshots}) == len(snapshots)
+                    assert len({id(snapshot[part]) for snapshot in health_snapshots}) == len(snapshots)
                 for index, (namespace, manager, cached, create, config) in enumerate(snapshots):
                     assert namespace["_clickhouse_clients"] is manager
                     assert namespace["create_clickhouse_client"] is create
@@ -730,8 +821,7 @@ def test_entrypoint_keeps_independent_clickhouse_owners(isolated_package, entryp
                         assert call.args[3] == config and call.args[4] is None
                     assert not owner.active_queries
                     check_metadata(index, namespace, manager, cached, config)
-                    namespace["_probe_clickhouse_health"](config)
-                    assert cached.commands[-1] == "SELECT 1"
+                    check_health(index, namespace, manager, cached, config)
                     assert len(manager.cache) == 1
                     assert next(iter(manager.cache.values())).client is cached
                 assert sys.modules["mcp_clickhouse"].create_clickhouse_client is snapshots[0][3]
@@ -741,6 +831,7 @@ def test_entrypoint_keeps_independent_clickhouse_owners(isolated_package, entryp
                 for name in ("list_databases", "list_tables", "create_page_token"):
                     assert getattr(package, name) is metadata_snapshots[0][3][name]
                 check_cancellation()
+                check_health_state_isolation()
 
         count = {"package": 1, "file": 2, "package-file": 2, "file-file": 3}[
             os.environ["STARTUP_ENTRYPOINT"]
@@ -759,6 +850,9 @@ def test_entrypoint_keeps_independent_clickhouse_owners(isolated_package, entryp
             "CLICKHOUSE_USER": "test",
             "CLICKHOUSE_PASSWORD": "",
             "CLICKHOUSE_ALLOW_WRITE_ACCESS": "true",
+            "CLICKHOUSE_CONNECT_TIMEOUT": "2",
+            "CLICKHOUSE_SEND_RECEIVE_TIMEOUT": "2",
+            "CLICKHOUSE_MCP_AUTH_TOKEN": "startup-health-token",
         },
     )
 
