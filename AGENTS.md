@@ -15,13 +15,14 @@ Act like an experienced maintainer of a public Python MCP server and database in
 
 ## Project Map
 
-- `mcp_clickhouse/mcp_server.py`: Startup assembly, FastMCP server construction, tool and prompt registration, pagination, and health checks.
+- `mcp_clickhouse/mcp_server.py`: Startup assembly, FastMCP server construction, tool and prompt registration, and health checks.
 - `mcp_clickhouse/auth.py`: Default dotenv loading, HTTP/SSE authentication, and FastMCP provider environment compatibility.
 - `mcp_clickhouse/transport.py`: FastMCP HTTP/SSE app construction and trusted proxy integration.
 - `mcp_clickhouse/executors.py`: Per-server query, metadata, cancellation, and health worker pools.
 - `mcp_clickhouse/chdb_backend.py`: Per-server chDB state, lazy client initialization, query execution, and result processing.
 - `mcp_clickhouse/clients.py`: Request configuration, connection diagnostics, readonly settings, and per-server ClickHouse client caches and leases.
 - `mcp_clickhouse/queries.py`: Per-server ClickHouse query execution, active-query state, cancellation, and destructive-operation guards.
+- `mcp_clickhouse/metadata.py`: Database and table discovery, metadata models, and per-server pagination state.
 - `mcp_clickhouse/serialization.py`: JSON tool-result encoding and exact integer handling.
 - `mcp_clickhouse/http_security.py`: Host and Origin validation and trusted proxy handling.
 - `mcp_clickhouse/mcp_env.py`: environment-backed configuration and validation. Treat this as the source of truth for configuration semantics.

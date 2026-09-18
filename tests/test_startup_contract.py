@@ -450,7 +450,7 @@ def test_entrypoint_keeps_independent_executor_and_chdb_ownership(isolated_packa
 
 
 @pytest.mark.parametrize("entrypoint", ["package", "file", "package-file", "file-file"])
-def test_entrypoint_keeps_independent_clickhouse_clients_and_queries(isolated_package, entrypoint):
+def test_entrypoint_keeps_independent_clickhouse_owners(isolated_package, entrypoint):
     source_root, _ = isolated_package
     shutil.copyfile(
         Path(__file__).resolve().parents[1] / "fastmcp.json", source_root / "fastmcp.json"
@@ -472,7 +472,8 @@ def test_entrypoint_keeps_independent_clickhouse_clients_and_queries(isolated_pa
         from fastmcp import Client
         from fastmcp.utilities.mcp_server_config import MCPServerConfig
 
-        callbacks, created, snapshots, query_snapshots = [], [], [], []
+        callbacks, created, snapshots, query_snapshots, metadata_snapshots = [], [], [], [], []
+        shared_page_token = "52c27074-a18d-4b1f-870b-1454dfc6bf8c"
         original_register = atexit.register
 
         class Connection:
@@ -497,6 +498,8 @@ def test_entrypoint_keeps_independent_clickhouse_clients_and_queries(isolated_pa
             def command(self, query):
                 assert not self.closed
                 self.commands.append(query)
+                if query == "SHOW DATABASES":
+                    return f"database_{self.index}\\nshared"
                 return "default"
 
             def close(self):
@@ -514,6 +517,88 @@ def test_entrypoint_keeps_independent_clickhouse_clients_and_queries(isolated_pa
             async with Client(namespace["mcp"]) as client:
                 result = await client.call_tool("run_query", {"query": "SELECT 1"})
                 assert json.loads(result.content[0].text)["rows"] == [[expected.index]]
+
+        async def call_metadata_tool(namespace, name, arguments):
+            async with Client(namespace["mcp"]) as client:
+                result = await client.call_tool(name, arguments)
+                return result.content[0].text
+
+        def seed_page(owner, create, names):
+            with patch("mcp_clickhouse.metadata.uuid.uuid4", return_value=shared_page_token):
+                assert create("database", None, None, names, 1, True) == shared_page_token
+            assert owner.table_pagination_cache[shared_page_token]["table_names"] == names
+
+        def check_metadata(index, namespace, manager, cached, config):
+            owner, cache, lock, saved = metadata_snapshots[index]
+            assert namespace["_metadata"] is owner
+            assert owner.clients is manager
+            assert owner.executors is namespace["_executors"]
+            assert namespace["table_pagination_cache"] is owner.table_pagination_cache is cache
+            assert owner.table_pagination_cache_lock is lock
+            assert cache.maxsize == 100 and cache.ttl == 3600
+            for name, function in saved.items():
+                assert namespace[name] is function
+                assert function.__self__ is owner
+            assert asyncio.iscoroutinefunction(saved["list_databases_async"])
+            assert asyncio.iscoroutinefunction(saved["list_tables_async"])
+            names = [f"{cached.index}_first", f"{cached.index}_second", f"{cached.index}_third"]
+            assert cache[shared_page_token]["table_names"] == names
+            with patch.object(
+                owner.executors.metadata, "submit", wraps=owner.executors.metadata.submit,
+            ) as submit:
+                expected = [f"database_{cached.index}", "shared"]
+                assert json.loads(saved["list_databases"]()) == expected
+                assert json.loads(asyncio.run(saved["list_databases_async"]())) == expected
+                assert json.loads(asyncio.run(call_metadata_tool(namespace, "list_databases", {}))) == expected
+            assert submit.call_count == 2
+            for call in submit.call_args_list:
+                assert call.args == (owner._list_databases_with_config, config)
+            for mode in ("sync", "async", "mcp"):
+                before = [dict(snapshot[1]) for snapshot in metadata_snapshots]
+                with patch.object(
+                    owner.executors.metadata, "submit", wraps=owner.executors.metadata.submit,
+                ) as submit, patch.object(
+                    owner.clients, "_acquire_clickhouse_client",
+                    wraps=owner.clients._acquire_clickhouse_client,
+                ) as acquire, patch.object(
+                    owner.clients, "_release_client_entry",
+                    wraps=owner.clients._release_client_entry,
+                ) as release, patch(
+                    "mcp_clickhouse.metadata.fetch_table_names_from_system",
+                    return_value=names,
+                ) as fetch, patch(
+                    "mcp_clickhouse.metadata.get_paginated_table_data",
+                    return_value=([], 2, True),
+                ) as page:
+                    arguments = {"database": "database", "page_token": shared_page_token, "page_size": 1}
+                    if mode == "sync":
+                        result = saved["list_tables"](**arguments)
+                        submit.assert_not_called()
+                    elif mode == "async":
+                        result = asyncio.run(saved["list_tables_async"](**arguments))
+                    else:
+                        result = asyncio.run(call_metadata_tool(namespace, "list_tables", arguments))
+                    if mode != "sync":
+                        submit.assert_called_once_with(
+                            owner._list_tables_with_config, config, "database", None, None,
+                            shared_page_token, 1, True, before[index][shared_page_token],
+                        )
+                    result = json.loads(result)
+                    acquire.assert_called_once_with(config)
+                    release.assert_called_once_with(next(iter(manager.cache.values())))
+                    fetch.assert_not_called()
+                    page.assert_called_once_with(cached, "database", names, 1, 1, True)
+                next_token = result["next_page_token"]
+                assert result == {"tables": [], "total_tables": 3, "next_page_token": next_token}
+                assert shared_page_token not in cache
+                assert list(cache) == [next_token]
+                assert cache[next_token]["start_idx"] == 2
+                for other_index, snapshot in enumerate(metadata_snapshots):
+                    if other_index != index:
+                        assert dict(snapshot[1]) == before[other_index]
+                with lock:
+                    cache.clear()
+                seed_page(owner, saved["create_page_token"], names)
 
         def check_cancellation():
             query_id = "fd0d52e3-0afc-4e38-8c7d-b0bd0de37f66"
@@ -593,12 +678,28 @@ def test_entrypoint_keeps_independent_clickhouse_clients_and_queries(isolated_pa
                         owner, namespace["run_query"], namespace["run_query_async"],
                         owner._cancel_query_with_bounded_wait, owner._cancel_query_async,
                     ))
+                    metadata = namespace["_metadata"]
+                    assert not metadata.table_pagination_cache
+                    saved = {name: namespace[name] for name in (
+                        "list_databases", "list_databases_async", "list_tables",
+                        "list_tables_async", "create_page_token",
+                    )}
+                    metadata_snapshots.append((
+                        metadata, metadata.table_pagination_cache,
+                        metadata.table_pagination_cache_lock, saved,
+                    ))
+                    seed_page(metadata, saved["create_page_token"], [
+                        f"{entry.client.index}_first", f"{entry.client.index}_second",
+                        f"{entry.client.index}_third",
+                    ])
                 assert len({id(snapshot[1]) for snapshot in snapshots}) == len(snapshots)
                 assert len({id(snapshot[1].cache) for snapshot in snapshots}) == len(snapshots)
                 assert len({id(snapshot[1].lock) for snapshot in snapshots}) == len(snapshots)
                 assert len({id(snapshot[0]) for snapshot in query_snapshots}) == len(snapshots)
                 assert len({id(snapshot[0].active_queries) for snapshot in query_snapshots}) == len(snapshots)
                 assert len({id(snapshot[0].active_queries_lock) for snapshot in query_snapshots}) == len(snapshots)
+                for part in (0, 1, 2):
+                    assert len({id(snapshot[part]) for snapshot in metadata_snapshots}) == len(snapshots)
                 for index, (namespace, manager, cached, create, config) in enumerate(snapshots):
                     assert namespace["_clickhouse_clients"] is manager
                     assert namespace["create_clickhouse_client"] is create
@@ -628,12 +729,17 @@ def test_entrypoint_keeps_independent_clickhouse_clients_and_queries(isolated_pa
                         assert call.args[1] == "SELECT 1"
                         assert call.args[3] == config and call.args[4] is None
                     assert not owner.active_queries
+                    check_metadata(index, namespace, manager, cached, config)
                     namespace["_probe_clickhouse_health"](config)
                     assert cached.commands[-1] == "SELECT 1"
                     assert len(manager.cache) == 1
                     assert next(iter(manager.cache.values())).client is cached
                 assert sys.modules["mcp_clickhouse"].create_clickhouse_client is snapshots[0][3]
                 assert sys.modules["mcp_clickhouse"].run_query is query_snapshots[0][1]
+                package = sys.modules["mcp_clickhouse"]
+                assert package.table_pagination_cache is metadata_snapshots[0][1]
+                for name in ("list_databases", "list_tables", "create_page_token"):
+                    assert getattr(package, name) is metadata_snapshots[0][3][name]
                 check_cancellation()
 
         count = {"package": 1, "file": 2, "package-file": 2, "file-file": 3}[

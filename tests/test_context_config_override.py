@@ -859,7 +859,7 @@ class TestConfigOverrideMcpBoundary:
 
         try:
             with patch(
-                f"mcp_clickhouse.mcp_server.{helper_name}",
+                f"mcp_clickhouse.mcp_server._metadata.{helper_name}",
                 side_effect=capture_config,
             ) as helper:
                 async with Client(mcp_server) as client:
@@ -890,9 +890,9 @@ class TestConfigOverrideMcpBoundary:
             return json.dumps({"status": "ok"})
 
         with patch(
-            f"mcp_clickhouse.mcp_server.{helper_name}",
+            f"mcp_clickhouse.mcp_server._metadata.{helper_name}",
             side_effect=slow_metadata_call,
-        ):
+        ) as helper:
             async with Client(mcp_server) as client:
                 slow_task = asyncio.create_task(client.call_tool(tool_name, arguments))
                 await asyncio.sleep(0.05)
@@ -905,6 +905,9 @@ class TestConfigOverrideMcpBoundary:
 
         assert len(tools) >= 1
         assert elapsed < 0.3
+        helper.assert_called_once()
+        if tool_name == "list_tables":
+            assert helper.call_args.args[1] == "system"
 
     @pytest.mark.asyncio
     async def test_metadata_saturation_does_not_starve_query_executor(self):
@@ -927,10 +930,10 @@ class TestConfigOverrideMcpBoundary:
         metadata_task = None
         try:
             with (
-                patch("mcp_clickhouse.mcp_server._executors.metadata", metadata_executor),
+                patch("mcp_clickhouse.mcp_server._metadata.executors.metadata", metadata_executor),
                 patch("mcp_clickhouse.mcp_server._queries.executors.query", query_executor),
                 patch(
-                    "mcp_clickhouse.mcp_server._list_tables_with_config",
+                    "mcp_clickhouse.mcp_server._metadata._list_tables_with_config",
                     side_effect=blocked_metadata_call,
                 ),
                 patch(
