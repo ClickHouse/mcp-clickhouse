@@ -23,9 +23,7 @@ from mcp_clickhouse.clients import (
 )
 from mcp_clickhouse.mcp_server import (
     _clickhouse_clients,
-    _active_queries,
-    _active_queries_lock,
-    _remove_active_query,
+    _queries,
     create_clickhouse_client,
     list_tables_async,
     mcp,
@@ -773,7 +771,7 @@ class TestConfigOverrideUnit:
             _get_client_config_overrides()
 
     @pytest.mark.parametrize("params", [None, {"value": 13}])
-    @patch("mcp_clickhouse.mcp_server.execute_query", return_value="result")
+    @patch("mcp_clickhouse.mcp_server._queries.execute_query", return_value="result")
     @patch(
         "mcp_clickhouse.clients._get_client_config_overrides",
         return_value={"connect_timeout": 41},
@@ -789,7 +787,7 @@ class TestConfigOverrideUnit:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("params", [None, {"value": 13}])
-    @patch("mcp_clickhouse.mcp_server.execute_query", return_value="result")
+    @patch("mcp_clickhouse.mcp_server._queries.execute_query", return_value="result")
     @patch("mcp_clickhouse.clients._get_client_config_overrides_for_tool")
     async def test_async_run_query_passes_resolved_config(
         self, mock_get_overrides, mock_execute, params
@@ -921,22 +919,22 @@ class TestConfigOverrideMcpBoundary:
             return json.dumps({"status": "ok"})
 
         def completed_query(_query, query_id, _config, _params=None):
-            with _active_queries_lock:
-                state = _active_queries[query_id]
-            _remove_active_query(query_id, state)
+            with _queries.active_queries_lock:
+                state = _queries.active_queries[query_id]
+            _queries._remove_active_query(query_id, state)
             return '{"columns":["value"],"rows":[[1]]}'
 
         metadata_task = None
         try:
             with (
                 patch("mcp_clickhouse.mcp_server._executors.metadata", metadata_executor),
-                patch("mcp_clickhouse.mcp_server._executors.query", query_executor),
+                patch("mcp_clickhouse.mcp_server._queries.executors.query", query_executor),
                 patch(
                     "mcp_clickhouse.mcp_server._list_tables_with_config",
                     side_effect=blocked_metadata_call,
                 ),
                 patch(
-                    "mcp_clickhouse.mcp_server.execute_query",
+                    "mcp_clickhouse.mcp_server._queries.execute_query",
                     side_effect=completed_query,
                 ),
             ):

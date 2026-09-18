@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
-from mcp_clickhouse.mcp_server import (
+from mcp_clickhouse.queries import (
     _strip_comments_and_quoted_text,
     _validate_query_for_destructive_ops,
 )
@@ -25,7 +25,7 @@ def _config(allow_write_access: bool = True, allow_drop: bool = False) -> Simple
 @pytest.fixture
 def write_mode_without_drop():
     """Write access enabled, destructive operations not opted in."""
-    with patch("mcp_clickhouse.mcp_server.get_config", return_value=_config()):
+    with patch("mcp_clickhouse.queries.get_config", return_value=_config()):
         yield
 
 
@@ -151,7 +151,7 @@ def test_non_destructive_queries_allowed(write_mode_without_drop, query):
 @pytest.mark.parametrize("query", DESTRUCTIVE_QUERIES)
 def test_destructive_queries_allowed_with_opt_in(query):
     config = _config(allow_write_access=True, allow_drop=True)
-    with patch("mcp_clickhouse.mcp_server.get_config", return_value=config):
+    with patch("mcp_clickhouse.queries.get_config", return_value=config):
         _validate_query_for_destructive_ops(query)
 
 
@@ -159,7 +159,7 @@ def test_destructive_queries_allowed_with_opt_in(query):
 def test_validation_skipped_in_read_only_mode(query):
     """Read-only mode is enforced by the server-side readonly setting, not here."""
     config = _config(allow_write_access=False, allow_drop=False)
-    with patch("mcp_clickhouse.mcp_server.get_config", return_value=config):
+    with patch("mcp_clickhouse.queries.get_config", return_value=config):
         _validate_query_for_destructive_ops(query)
 
 

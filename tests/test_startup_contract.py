@@ -450,7 +450,7 @@ def test_entrypoint_keeps_independent_executor_and_chdb_ownership(isolated_packa
 
 
 @pytest.mark.parametrize("entrypoint", ["package", "file", "package-file", "file-file"])
-def test_entrypoint_keeps_independent_clickhouse_clients(isolated_package, entrypoint):
+def test_entrypoint_keeps_independent_clickhouse_clients_and_queries(isolated_package, entrypoint):
     source_root, _ = isolated_package
     shutil.copyfile(
         Path(__file__).resolve().parents[1] / "fastmcp.json", source_root / "fastmcp.json"
@@ -472,7 +472,7 @@ def test_entrypoint_keeps_independent_clickhouse_clients(isolated_package, entry
         from fastmcp import Client
         from fastmcp.utilities.mcp_server_config import MCPServerConfig
 
-        callbacks, created, snapshots = [], [], []
+        callbacks, created, snapshots, query_snapshots = [], [], [], []
         original_register = atexit.register
 
         class Connection:
@@ -515,6 +515,52 @@ def test_entrypoint_keeps_independent_clickhouse_clients(isolated_package, entry
                 result = await client.call_tool("run_query", {"query": "SELECT 1"})
                 assert json.loads(result.content[0].text)["rows"] == [[expected.index]]
 
+        def check_cancellation():
+            query_id = "fd0d52e3-0afc-4e38-8c7d-b0bd0de37f66"
+            states = []
+            for owner, *_ in query_snapshots:
+                state = owner._register_active_query(query_id, "SELECT 1")
+                with owner.active_queries_lock:
+                    state.client_entry = next(iter(owner.clients.cache.values()))
+                states.append(state)
+            assert len({id(state) for state in states}) == len(states)
+            try:
+                for cancel_index in (3, 4):
+                    for index, (owner, *_) in enumerate(query_snapshots):
+                        for other, *_ in query_snapshots:
+                            with other.active_queries_lock:
+                                other.active_queries[query_id].cancelled = False
+                        entry = states[index].client_entry
+                        before = [len(state.client_entry.client.commands) for state in states]
+                        with patch.object(
+                            owner.executors.cancellation, "submit",
+                            wraps=owner.executors.cancellation.submit,
+                        ) as submit, patch.object(
+                            owner.clients, "_retain_client_entry",
+                            wraps=owner.clients._retain_client_entry,
+                        ) as retain, patch.object(
+                            owner.clients, "_release_client_entry",
+                            wraps=owner.clients._release_client_entry,
+                        ) as release:
+                            result = query_snapshots[index][cancel_index](query_id)
+                            if asyncio.iscoroutine(result):
+                                asyncio.run(result)
+                        submit.assert_called_once_with(owner._cancel_query, query_id)
+                        retain.assert_called_once_with(entry)
+                        release.assert_called_once_with(entry)
+                        assert entry.active_users == 0
+                        assert entry.client.commands[-1] == (
+                            f"KILL QUERY WHERE query_id = '{query_id}'"
+                        )
+                        for other_index, state in enumerate(states):
+                            assert state.cancelled is (other_index == index)
+                            assert len(state.client_entry.client.commands) == (
+                                before[other_index] + int(other_index == index)
+                            )
+            finally:
+                for (owner, *_), state in zip(query_snapshots, states):
+                    owner._remove_active_query(query_id, state)
+
         with patch("atexit.register", record_register), patch.object(
             clickhouse_connect, "get_client", side_effect=Connection
         ):
@@ -541,24 +587,54 @@ def test_entrypoint_keeps_independent_clickhouse_clients(isolated_package, entry
                     manager._release_client_entry(entry)
                     assert entry.client.config["autogenerate_session_id"] is False
                     snapshots.append((namespace, manager, entry.client, create, config))
+                    owner = namespace["_queries"]
+                    assert not owner.active_queries
+                    query_snapshots.append((
+                        owner, namespace["run_query"], namespace["run_query_async"],
+                        owner._cancel_query_with_bounded_wait, owner._cancel_query_async,
+                    ))
                 assert len({id(snapshot[1]) for snapshot in snapshots}) == len(snapshots)
                 assert len({id(snapshot[1].cache) for snapshot in snapshots}) == len(snapshots)
                 assert len({id(snapshot[1].lock) for snapshot in snapshots}) == len(snapshots)
-                for namespace, manager, cached, create, config in snapshots:
+                assert len({id(snapshot[0]) for snapshot in query_snapshots}) == len(snapshots)
+                assert len({id(snapshot[0].active_queries) for snapshot in query_snapshots}) == len(snapshots)
+                assert len({id(snapshot[0].active_queries_lock) for snapshot in query_snapshots}) == len(snapshots)
+                for index, (namespace, manager, cached, create, config) in enumerate(snapshots):
                     assert namespace["_clickhouse_clients"] is manager
                     assert namespace["create_clickhouse_client"] is create
                     assert create.__self__ is manager
+                    owner, run_sync, run_async, *_ = query_snapshots[index]
+                    assert namespace["_queries"] is owner
+                    assert namespace["run_query"] is run_sync
+                    assert namespace["run_query_async"] is run_async
+                    assert run_sync.__self__ is run_async.__self__ is owner
+                    assert owner.clients is manager
+                    assert owner.executors is namespace["_executors"]
                     independent = create()
                     assert independent is not cached and independent.grants == 0
                     assert "autogenerate_session_id" not in independent.config
                     independent.close()
-                    assert json.loads(namespace["run_query"]("SELECT 1"))["rows"] == [[cached.index]]
-                    asyncio.run(check_tool(namespace, cached))
+                    with patch.object(
+                        owner.executors.query, "submit", wraps=owner.executors.query.submit,
+                    ) as submit:
+                        assert json.loads(run_sync("SELECT 1"))["rows"] == [[cached.index]]
+                        result = asyncio.run(run_async("SELECT 1"))
+                        assert json.loads(result)["rows"] == [[cached.index]]
+                        asyncio.run(check_tool(namespace, cached))
+                    assert submit.call_count == 3
+                    for call in submit.call_args_list:
+                        assert call.args[0].__self__ is owner
+                        assert call.args[0] == owner.execute_query
+                        assert call.args[1] == "SELECT 1"
+                        assert call.args[3] == config and call.args[4] is None
+                    assert not owner.active_queries
                     namespace["_probe_clickhouse_health"](config)
                     assert cached.commands[-1] == "SELECT 1"
                     assert len(manager.cache) == 1
                     assert next(iter(manager.cache.values())).client is cached
                 assert sys.modules["mcp_clickhouse"].create_clickhouse_client is snapshots[0][3]
+                assert sys.modules["mcp_clickhouse"].run_query is query_snapshots[0][1]
+                check_cancellation()
 
         count = {"package": 1, "file": 2, "package-file": 2, "file-file": 3}[
             os.environ["STARTUP_ENTRYPOINT"]

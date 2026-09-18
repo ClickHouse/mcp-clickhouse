@@ -14,11 +14,9 @@ from mcp_clickhouse.clients import (
 )
 from mcp_clickhouse.mcp_server import (
     _clickhouse_clients,
-    _active_queries,
-    _active_queries_lock,
+    _queries,
     _shutdown,
     create_clickhouse_client,
-    execute_query,
 )
 
 
@@ -241,13 +239,13 @@ class TestEvictionOnError:
 
     def setup_method(self):
         _clickhouse_clients._clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
+        with _queries.active_queries_lock:
+            _queries.active_queries.clear()
 
     def teardown_method(self):
         _clickhouse_clients._clear_client_cache()
-        with _active_queries_lock:
-            _active_queries.clear()
+        with _queries.active_queries_lock:
+            _queries.active_queries.clear()
 
     @patch("mcp_clickhouse.clients.clickhouse_connect")
     @patch("mcp_clickhouse.clients.get_context", side_effect=RuntimeError)
@@ -261,7 +259,7 @@ class TestEvictionOnError:
         config = _resolve_client_config()
 
         with pytest.raises(ToolError, match="connection reset"):
-            execute_query("SELECT 1", "evict-test", config)
+            _queries.execute_query("SELECT 1", "evict-test", config)
 
         # Client should have been evicted — next call creates a new one
         mock_client_new = MagicMock(server_version="24.2")
@@ -272,7 +270,7 @@ class TestEvictionOnError:
         mock_client_new.query.return_value = mock_result
         mock_cc.get_client.return_value = mock_client_new
 
-        execute_query("SELECT 1", "evict-test-2", config)
+        _queries.execute_query("SELECT 1", "evict-test-2", config)
         assert mock_cc.get_client.call_count == 2
 
     @patch("mcp_clickhouse.clients.clickhouse_connect")
@@ -287,7 +285,7 @@ class TestEvictionOnError:
         config = _resolve_client_config()
 
         with pytest.raises(ToolError):
-            execute_query("SELECT x", "no-evict-test", config)
+            _queries.execute_query("SELECT x", "no-evict-test", config)
 
         # Client should still be cached, second call reuses it
         mock_client.query.side_effect = None
@@ -295,7 +293,7 @@ class TestEvictionOnError:
         mock_result.result_rows = []
         mock_result.column_names = []
         mock_client.query.return_value = mock_result
-        execute_query("SELECT 1", "no-evict-test-2", config)
+        _queries.execute_query("SELECT 1", "no-evict-test-2", config)
 
         # get_client only called once, reused from cache
         assert mock_cc.get_client.call_count == 1
