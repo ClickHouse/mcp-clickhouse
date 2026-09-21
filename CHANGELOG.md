@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.7.0 - 2026-09-18
 
 ### Added
 - Optional `params` on `run_query` for ClickHouse `{name:Type}` parameter binding, including scalar values and arrays. Existing calls and result encoding are unchanged. ([#238](https://github.com/ClickHouse/mcp-clickhouse/issues/238))
