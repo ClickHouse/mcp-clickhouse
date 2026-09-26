@@ -492,12 +492,14 @@ class TestShutdownOrdering:
     @patch("mcp_clickhouse.mcp_server._clickhouse_clients._clear_client_cache")
     @patch("mcp_clickhouse.mcp_server._executors.health")
     @patch("mcp_clickhouse.mcp_server._executors.cancellation")
+    @patch("mcp_clickhouse.mcp_server._executors.enrichment")
     @patch("mcp_clickhouse.mcp_server._executors.metadata")
     @patch("mcp_clickhouse.mcp_server._executors.query")
     def test_executor_shutdown_runs_before_cache_clear(
         self,
         mock_query_executor,
         mock_metadata_executor,
+        mock_enrichment_executor,
         mock_cancellation_executor,
         mock_health_executor,
         mock_clear,
@@ -506,6 +508,7 @@ class TestShutdownOrdering:
         call_order = []
         mock_query_executor.shutdown.side_effect = lambda wait: call_order.append("query")
         mock_metadata_executor.shutdown.side_effect = lambda wait: call_order.append("metadata")
+        mock_enrichment_executor.shutdown.side_effect = lambda wait: call_order.append("enrich")
         mock_cancellation_executor.shutdown.side_effect = lambda wait: call_order.append(
             "cancel"
         )
@@ -514,9 +517,10 @@ class TestShutdownOrdering:
 
         _shutdown()
 
-        assert call_order == ["query", "metadata", "cancel", "health", "cache"]
+        assert call_order == ["query", "metadata", "enrich", "cancel", "health", "cache"]
         mock_query_executor.shutdown.assert_called_once_with(wait=True)
         mock_metadata_executor.shutdown.assert_called_once_with(wait=True)
+        mock_enrichment_executor.shutdown.assert_called_once_with(wait=True)
         mock_cancellation_executor.shutdown.assert_called_once_with(wait=True)
         mock_health_executor.shutdown.assert_called_once_with(wait=True)
         mock_clear.assert_called_once_with()
