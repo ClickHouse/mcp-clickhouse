@@ -535,6 +535,8 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
         CLICKHOUSE_MCP_MAX_WORKERS: Maximum thread pool workers for query execution (default: 10)
+        CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY: Enrich query results with context from the
+            canonical AGENTS metadata database (default: false)
         CLICKHOUSE_MCP_ALLOWED_HOSTS: Comma separated Host header values accepted on
             HTTP/SSE (default: derived from a concrete bind host and port)
         CLICKHOUSE_MCP_TRUSTED_PROXIES: Comma separated proxy IP addresses or CIDR
@@ -576,6 +578,15 @@ class MCPServerConfig:
         Default: 10
         """
         return int(os.getenv("CLICKHOUSE_MCP_MAX_WORKERS", "10"))
+
+    @property
+    def agents_schema_discovery(self) -> bool:
+        """Whether query results are enriched with Agents Schema context.
+
+        Default: False, preserving the existing run_query response shape unless
+        an operator explicitly enables the feature.
+        """
+        return os.getenv("CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY", "false").lower() == "true"
 
     @property
     def allowed_hosts(self) -> List[str]:

@@ -216,10 +216,11 @@ def test_selected_dotenv_configures_initial_executors_and_http_auth(isolated_pac
             "concurrent.futures.ThreadPoolExecutor", wraps=concurrent.futures.ThreadPoolExecutor
         ) as executor, patch.object(TypeAdapter, "__init__", record_adapter):
             server = importlib.import_module("mcp_clickhouse.mcp_server")
-        assert parser_startup_state == [("3", 4)], parser_startup_state
+        assert parser_startup_state == [("3", 5)], parser_startup_state
         # Preserve dotenv sizing and pool creation order before auth parser initialization.
         assert executor.call_args_list == [
-            call(max_workers=3), call(max_workers=3), call(max_workers=2), call(max_workers=1)
+            call(max_workers=3), call(max_workers=3), call(max_workers=2),
+            call(max_workers=2), call(max_workers=1)
         ]
 
         app = server.mcp.http_app()
@@ -334,13 +335,13 @@ def test_entrypoint_keeps_independent_executor_and_chdb_ownership(isolated_packa
         async def check_async_calls(namespace, backend, index):
             result = await namespace["run_chdb_select_query_async"]("async")
             assert json.loads(result) == [{"session": index, "query": "async"}]
-            assert submissions[-1] == (index * 4, backend, ("async",))
+            assert submissions[-1] == (index * 5, backend, ("async",))
             async with Client(namespace["mcp"]) as client:
                 assert {tool.name for tool in await client.list_tools()} == {"run_chdb_select_query"}
                 assert {prompt.name for prompt in await client.list_prompts()} == {"chdb_initial_prompt"}
                 result = await client.call_tool("run_chdb_select_query", {"query": "mcp"})
                 assert json.loads(result.content[0].text) == [{"session": index, "query": "mcp"}]
-                assert submissions[-1] == (index * 4, backend, ("mcp",))
+                assert submissions[-1] == (index * 5, backend, ("mcp",))
 
         async def check_health_ownership():
             request = Request({"type": "http", "method": "GET", "headers": []})
@@ -385,7 +386,7 @@ def test_entrypoint_keeps_independent_executor_and_chdb_ownership(isolated_packa
                 assert create() is backend.client is sessions[index]
                 assert backend.error_message is None
                 assert json.loads(run_sync("sync")) == [{"session": index, "query": "sync"}]
-                assert submissions[-1] == (index * 4, backend, ("sync",))
+                assert submissions[-1] == (index * 5, backend, ("sync",))
                 asyncio.run(check_async_calls(namespace, backend, index))
             asyncio.run(check_health_ownership())
             package = sys.modules["mcp_clickhouse"]
@@ -418,14 +419,20 @@ def test_entrypoint_keeps_independent_executor_and_chdb_ownership(isolated_packa
         assert namespaces[0] is sys.modules["mcp_clickhouse.mcp_server"].__dict__
         assert namespaces[-1]["mcp"] is loaded
         assert len({id(namespace["mcp"]) for namespace in namespaces}) == count
-        assert len({id(pool) for pool in pools}) == 4 * count
+        assert len({id(pool) for pool in pools}) == 5 * count
         assert len(sessions) == count
-        assert [pool._max_workers for pool in pools] == [6, 4, 2, 1] * count
+        assert [pool._max_workers for pool in pools] == [6, 4, 2, 2, 1] * count
         for index, namespace in enumerate(namespaces):
             executors = namespace["_executors"]
             assert executors.max_workers == 6
-            assert [executors.query, executors.metadata, executors.cancellation, executors.health] == (
-                pools[index * 4:(index + 1) * 4]
+            assert [
+                executors.query,
+                executors.metadata,
+                executors.enrichment,
+                executors.cancellation,
+                executors.health,
+            ] == (
+                pools[index * 5:(index + 1) * 5]
             )
             assert namespace["_chdb_backend"].client is sessions[index]
             namespace["_clickhouse_clients"]._clear_client_cache = (
@@ -436,7 +443,7 @@ def test_entrypoint_keeps_independent_executor_and_chdb_ownership(isolated_packa
         expected = []
         for index in reversed(range(count)):
             expected.append(("chdb", index))
-            expected.extend(("pool", pool, True) for pool in range(index * 4, (index + 1) * 4))
+            expected.extend(("pool", pool, True) for pool in range(index * 5, (index + 1) * 5))
             expected.append(("cache", index))
         for callback in reversed(callbacks):
             callback()
