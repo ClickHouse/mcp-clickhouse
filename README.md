@@ -33,6 +33,7 @@ integers and booleans keep their JSON types.
   * Optional input: `params` (object): Named values for ClickHouse `{name:Type}` placeholders. See [Query parameters](#query-parameters).
   * Queries run in read-only mode by default (`CLICKHOUSE_ALLOW_WRITE_ACCESS=false`), but writes can be enabled explicitly if needed.
   * `DESCRIBE (<query>)` and `EXPLAIN ESTIMATE <query>` run here too and are optional ways to inspect a query's result schema or its estimated reads. See [Checking a query before running it](#checking-a-query-before-running-it).
+  * With `CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY=true`, results may include an `agents_schema_context` key containing governed model descriptions from the canonical, case-sensitive `AGENTS` database, an `AGENTS.ROOT` discovery hint, and warnings for ReplacingMergeTree or CollapsingMergeTree tables that may need `FINAL` or deduplication before aggregation. Context is best-effort reference data and never replaces the query result.
 
 * `list_databases`
   * List all databases on your ClickHouse cluster.
@@ -862,6 +863,11 @@ These variables control the MCP process itself, including transport, authenticat
   * Default: `"10"`
   * Increase if your workload requires many concurrent tool calls
   * Metadata tools use a separate pool with `min(4, CLICKHOUSE_MCP_MAX_WORKERS)` threads so schema discovery cannot delay queries
+* `CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY`: Enrich `run_query` results with Agents Schema and ClickHouse engine context
+  * Default: `"false"`, preserving the existing `run_query` response shape unless explicitly enabled
+  * Agents Schema uses the canonical, case-sensitive `AGENTS.ROOT` and `AGENTS.DBT_MODEL` objects. The connecting ClickHouse user needs `SELECT` access to receive governed metadata; missing access and an unpublished schema both degrade silently to the normal result
+  * Engine lookups use `system.tables`, and all enrichment lookups use the same resolved client configuration—including request-scoped role and settings overrides—as the original query
+  * dbt descriptions currently match `schema_name.name`. Models configured with a different physical alias may not match until [agents_schema#41](https://github.com/dbt-labs/agents_schema/issues/41) is resolved
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None
   * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `FASTMCP_SERVER_AUTH`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for HTTP/SSE transports

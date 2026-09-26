@@ -115,6 +115,13 @@
           "format": "number",
           "default": "10",
           "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY",
+          "description": "Add best-effort AGENTS metadata and ClickHouse engine context to query results",
+          "format": "boolean",
+          "default": "false",
+          "isRequired": false
         }
       ]
     },
@@ -220,6 +227,13 @@
           "description": "Maximum query worker thread pool size",
           "format": "number",
           "default": "10",
+          "isRequired": false
+        },
+        {
+          "name": "CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY",
+          "description": "Add best-effort AGENTS metadata and ClickHouse engine context to query results",
+          "format": "boolean",
+          "default": "false",
           "isRequired": false
         }
       ]
