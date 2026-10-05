@@ -1,5 +1,6 @@
 """Agents Schema SQL and public tool behavior against the CI ClickHouse service."""
 
+import asyncio
 import json
 import uuid
 
@@ -135,16 +136,16 @@ def test_description_is_truncated_before_transfer(published_context):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("session_in_settings", [False, True])
+@pytest.mark.parametrize("session_source", ["constructor", "settings", "generic_args"])
 async def test_temporary_table_does_not_inherit_permanent_table_context(
-    published_context, monkeypatch, session_in_settings
+    published_context, monkeypatch, session_source
 ):
     _, data_db, _ = published_context
     session_id = uuid.uuid4().hex
     overrides = (
-        {"settings": {"session_id": session_id}}
-        if session_in_settings
-        else {"session_id": session_id}
+        {"session_id": session_id}
+        if session_source == "constructor"
+        else {session_source: {"session_id": session_id}}
     )
     config = clients._resolve_client_config(overrides)
     session = clickhouse_connect.get_client(**config)
@@ -158,11 +159,7 @@ async def test_temporary_table_does_not_inherit_permanent_table_context(
                 "run_query", {"query": f"SELECT * FROM {data_db}.orders FINAL"}
             )
         assert json.loads(bare.content[0].text) == {"columns": ["id"], "rows": [[7]]}
-        payload = json.loads(qualified.content[0].text)
-        assert payload["rows"] == [[1]]
-        items = payload["agents_schema_context"]["items"]
-        assert f"dbt model `{data_db}`.`orders`: " + "\u00e9" * MAX_DESCRIPTION_CHARS in items
-        assert any("If the query does not already account for" in item for item in items)
+        assert json.loads(qualified.content[0].text) == {"columns": ["id"], "rows": [[1]]}
     finally:
         try:
             session.command("DROP TEMPORARY TABLE IF EXISTS orders")
@@ -210,3 +207,90 @@ async def test_restricted_user_context_respects_metadata_grants(
         _clickhouse_clients._clear_client_cache()
         if created:
             admin.command(f"DROP USER {username}")
+
+
+@pytest.mark.asyncio
+async def test_slow_metadata_cannot_block_the_next_query_in_a_stateful_session(
+    published_context, monkeypatch
+):
+    admin, data_db, metadata_db = published_context
+    username = "agents_reader_" + uuid.uuid4().hex
+    password = uuid.uuid4().hex
+    created = False
+    submitted = []
+    original_submit = _queries._submit_enrichment
+
+    def track_submit(*args):
+        future = original_submit(*args)
+        if future is not None:
+            submitted.append(future)
+        return future
+
+    monkeypatch.setattr(_queries, "_submit_enrichment", track_submit)
+    try:
+        # This deliberately exceeds the normal three-second enrichment wait.
+        # Only replace the fixture's unique metadata table, never canonical AGENTS.
+        admin.command(f"DROP TABLE {metadata_db}.DBT_MODEL")
+        admin.command(
+            f"CREATE VIEW {metadata_db}.DBT_MODEL AS SELECT 'orders' AS name, "
+            f"'{data_db}' AS schema_name, "
+            "concat('Slow description ', toString(sleep(5))) AS description"
+        )
+        admin.command(
+            f"CREATE USER {username} IDENTIFIED BY '{password}' SETTINGS readonly = 1, "
+            "function_sleep_max_microseconds_per_block = 10000000"
+        )
+        created = True
+        for database in (data_db, metadata_db):
+            admin.command(f"GRANT SELECT ON {database}.* TO {username}")
+        config = clients._resolve_client_config(
+            {"username": username, "password": password, "session_id": uuid.uuid4().hex}
+        )
+        monkeypatch.setattr(clients, "_resolve_client_config", lambda *args: config)
+        async with Client(mcp) as client:
+            first = await client.call_tool(
+                "run_query", {"query": f"SELECT * FROM {data_db}.orders"}
+            )
+            second = await client.call_tool("run_query", {"query": "SELECT 42 AS answer"})
+        assert json.loads(first.content[0].text) == {"columns": ["id"], "rows": [[1]]}
+        assert json.loads(second.content[0].text) == {"columns": ["answer"], "rows": [[42]]}
+        assert all(future.done() for future in submitted)
+        assert not _queries.agents_schema._probe_cache
+        assert not _queries.agents_schema._engine_cache
+    finally:
+        # Drain even a regressed, timed-out lookup before removing its fixtures.
+        try:
+            await asyncio.gather(
+                *(asyncio.wrap_future(future) for future in submitted), return_exceptions=True
+            )
+        finally:
+            _clickhouse_clients._clear_client_cache()
+            if created:
+                admin.command(f"DROP USER {username}")
+
+
+@pytest.mark.asyncio
+async def test_replacing_guidance_covers_deletion_markers(published_context):
+    admin, data_db, _ = published_context
+    admin.command(
+        f"CREATE TABLE {data_db}.deleted_orders (id UInt64, version UInt64, deleted UInt8) "
+        "ENGINE = ReplacingMergeTree(version, deleted) ORDER BY id"
+    )
+    admin.command(f"INSERT INTO {data_db}.deleted_orders VALUES (1, 1, 0), (1, 2, 1)")
+    latest = (
+        f"SELECT id, argMax(deleted, version) AS deleted FROM {data_db}.deleted_orders GROUP BY id"
+    )
+    assert admin.query(f"SELECT count() FROM ({latest})").result_rows == [(1,)]
+    assert admin.query(f"SELECT count() FROM ({latest}) WHERE deleted = 0").result_rows == [(0,)]
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "run_query", {"query": f"SELECT count() AS n FROM {data_db}.deleted_orders FINAL"}
+        )
+    payload = json.loads(result.content[0].text)
+    assert payload["rows"] == [[0]]
+    note = next(
+        item for item in payload["agents_schema_context"]["items"] if "ReplacingMergeTree" in item
+    )
+    assert "row versions and deletion markers" in note
+    assert "is_deleted" in note
+    assert "after selecting the latest version" in note

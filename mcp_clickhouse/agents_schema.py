@@ -234,6 +234,11 @@ class _AgentsSchema:
         if not discovery_enabled():
             return payload
         try:
+            # Optional work may outlive its caller's wait. A stateful HTTP session
+            # cannot run concurrent queries, so even a qualified lookup could
+            # make the caller's next query fail. Never use it for enrichment.
+            if client.get_client_setting("session_id"):
+                return payload
             if cache_scope is not None:
                 try:
                     hash(cache_scope)
@@ -249,9 +254,8 @@ class _AgentsSchema:
             )
             # Exact-case resolution: ClickHouse identifiers are case-sensitive, so
             # the query's spelling is the database name. Unqualified references
-            # resolve only without a stateful session, where temporary tables
-            # could shadow permanent tables. Skip ambiguous names instead of
-            # attaching another table's descriptions or warnings.
+            # require a known current database. Skip ambiguous names instead of
+            # attaching another database's descriptions or warnings.
             resolved = {
                 (db if db is not None else current_db, table)
                 for db, table in referenced
@@ -311,12 +315,6 @@ class _AgentsSchema:
         return payload
 
     def _current_database(self, client: Any, cache_scope: object | None) -> Optional[str]:
-        try:
-            if client.get_client_setting("session_id"):
-                return None
-        except Exception:
-            # Unknown session state is not evidence that a bare name is permanent.
-            return None
         database = getattr(client, "database", None)
         if isinstance(database, str) and database:
             return database
@@ -379,9 +377,11 @@ class _AgentsSchema:
                 continue
             if "Replacing" in engine:
                 remedy = (
-                    "If the query does not already account for row versions, use FINAL "
-                    "after the table name or explicitly select one row per "
-                    "sorting key using the configured version column when one exists."
+                    "If the query does not already account for row versions and deletion "
+                    "markers, use FINAL after the table name or explicitly select one row "
+                    "per sorting key using the configured version column when one exists. "
+                    "For explicit deduplication with an is_deleted engine parameter, "
+                    "exclude rows marked deleted after selecting the latest version."
                 )
             else:
                 remedy = (

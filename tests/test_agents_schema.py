@@ -55,7 +55,15 @@ class _FakeClient:
 
 
 @pytest.mark.parametrize("session_id", ["explicit-session", RuntimeError("unavailable")])
-def test_session_ambiguity_skips_bare_names_but_preserves_qualified(monkeypatch, session_id):
+@pytest.mark.parametrize(
+    "query",
+    [
+        "SELECT * FROM orders",
+        "SELECT * FROM analytics.orders",
+        "SELECT * FROM analytics.orders JOIN bare_table USING (id)",
+    ],
+)
+def test_stateful_or_unknown_sessions_skip_all_context(monkeypatch, session_id, query):
     monkeypatch.setenv("CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY", "true")
     client = _FakeClient(
         {"engine LIKE": [["analytics", "orders", "ReplacingMergeTree"]]}, database="analytics"
@@ -71,22 +79,11 @@ def test_session_ambiguity_skips_bare_names_but_preserves_qualified(monkeypatch,
     setting = MagicMock(side_effect=get_setting)
     monkeypatch.setattr(client, "get_client_setting", setting)
     owner = _AgentsSchema()
-    # Even a warm current-database cache must not resolve session-local names.
+    # Even warm caches must not cause enrichment to use a stateful session.
     owner._remember(owner._current_db_cache, ("test",), "analytics")
-    assert owner.enrich_result_payload(
-        client, "SELECT * FROM orders", {"rows": [[7]]}, ("test",)
-    ) == {"rows": [[7]]}
+    owner._remember(owner._probe_cache, ("test",), frozenset({"ROOT"}))
+    assert owner.enrich_result_payload(client, query, {"rows": [[7]]}, ("test",)) == {"rows": [[7]]}
     assert client.queries == []
-    result = owner.enrich_result_payload(
-        client,
-        "SELECT * FROM analytics.orders JOIN bare_table USING (id)",
-        {"rows": [[1]]},
-        ("test",),
-    )
-    assert any("ReplacingMergeTree" in item for item in result["agents_schema_context"]["items"])
-    engine_query = next(params for sql, params in client.queries if "engine LIKE" in sql)
-    assert engine_query["pairs"] == [("analytics", "orders")]
-    assert not any("currentDatabase" in sql for sql, _ in client.queries)
 
 
 @pytest.mark.parametrize("engine", ["ReplacingMergeTree", "CollapsingMergeTree"])
