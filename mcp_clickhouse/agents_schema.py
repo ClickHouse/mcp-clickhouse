@@ -72,6 +72,28 @@ _PLAIN_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _EXCLUDED_DATABASES = {"system", "information_schema"}
 # These cannot start a plain table reference in the supported SELECT grammar.
 _NON_TABLE_WORDS = {"SELECT", "FROM", "JOIN", "AS", "FINAL"}
+# ClickHouse permits keywords as column names. In `ON join BETWEEN ...`,
+# JOIN is an operand, not a clause. Operators and CASE continuations cannot
+# safely be treated as unquoted, unqualified table names by this scanner.
+_EXPRESSION_CONTINUATIONS = {
+    "AND",
+    "OR",
+    "BETWEEN",
+    "IS",
+    "IN",
+    "NOT",
+    "GLOBAL",
+    "LIKE",
+    "ILIKE",
+    "REGEXP",
+    "DIV",
+    "MOD",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+}
+_SET_OPERATORS = {"UNION", "EXCEPT", "INTERSECT"}
 _END_FROM_CLAUSE = {
     "PREWHERE",
     "WHERE",
@@ -137,22 +159,48 @@ def _referenced_tables(query: str) -> set[tuple[Optional[str], str]]:
             continue
         if kind != "word":
             continue
+        # Keywords used in qualified identifiers (e.g. first.join) are not
+        # clauses. Table references themselves are consumed by the code below.
+        if (i and tokens[i - 1] == ("symbol", ".")) or (
+            i + 1 < len(tokens) and tokens[i + 1] == ("symbol", ".")
+        ):
+            continue
         keyword = text.upper()
+        if keyword == "AS" and i + 1 < len(tokens) and tokens[i + 1][0] in {"word", "quoted"}:
+            # ClickHouse accepts keyword aliases, including AS join. Consume
+            # the alias without letting it change the enclosing clause state.
+            consumed = i + 2
+            continue
         if keyword == "SELECT":
+            if scopes[-1] is not None:
+                return set()  # A bare keyword operand, not a new SELECT scope.
             scopes[-1] = "select"
             continue
-        if keyword in _END_FROM_CLAUSE:
+        if keyword in _SET_OPERATORS:
             scopes[-1] = None
+        elif keyword in _END_FROM_CLAUSE and scopes[-1] is not None:
+            scopes[-1] = "tail"
+        if keyword == "FROM" and scopes[-1] in {"from", "tail"}:
+            # A second FROM at this level means the first may have been a
+            # column expression. Discard all candidate references, not just it.
+            return set()
         if keyword == "FROM" and scopes[-1] == "select":
             scopes[-1] = "from"
         elif keyword == "JOIN" and scopes[-1] == "from":
-            if i and tokens[i - 1][1].upper() == "ARRAY":
+            if i and tokens[i - 1] == ("symbol", ","):
+                return set()  # A keyword-named table in a comma-style FROM list.
+            # AS ARRAY JOIN names an alias followed by a real table join.
+            if i > consumed and tokens[i - 1][0] == "word" and tokens[i - 1][1].upper() == "ARRAY":
                 continue
         else:
             continue
 
         pos = i + 1
-        if pos >= len(tokens) or (table := _identifier(tokens[pos])) is None:
+        if pos >= len(tokens):
+            return set()
+        if (table := _identifier(tokens[pos])) is None:
+            if tokens[pos][0] == "word":
+                return set()  # Do not revisit an unsupported keyword as a clause.
             continue
         database = None
         pos += 1
@@ -163,6 +211,12 @@ def _referenced_tables(query: str) -> set[tuple[Optional[str], str]]:
                 continue
             pos += 1
         consumed = pos
+        if (
+            database is None
+            and tokens[i + 1][0] == "word"
+            and table.upper() in _EXPRESSION_CONTINUATIONS
+        ):
+            return set()
         # Function calls and multipart/unsupported references are not tables.
         if pos < len(tokens) and tokens[pos] in {("symbol", "("), ("symbol", ".")}:
             continue

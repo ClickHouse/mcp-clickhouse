@@ -97,6 +97,124 @@ async def test_quoted_table_receives_only_its_own_description(published_context)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "SELECT join.id FROM {db}.`orders-archive` AS join CROSS JOIN {db}.orders AS second",
+        "SELECT join.id FROM (SELECT id FROM {db}.`orders-archive`) AS join "
+        "CROSS JOIN {db}.orders AS second",
+        "SELECT join.number FROM numbers(1) AS join CROSS JOIN {db}.orders AS second",
+        "SELECT first.join FROM (SELECT id AS join FROM {db}.`orders-archive`) AS first "
+        "INNER JOIN {db}.orders AS second ON first.join BETWEEN 0 AND 10",
+        "SELECT * FROM {db}.`orders-archive` AS select CROSS JOIN {db}.orders AS second",
+        "SELECT ARRAY.id FROM {db}.`orders-archive` AS ARRAY JOIN {db}.orders AS second "
+        "ON ARRAY.id > second.id",
+        'SELECT "ARRAY".id FROM {db}.`orders-archive` AS "ARRAY" JOIN {db}.orders AS second '
+        'ON "ARRAY".id > second.id',
+    ],
+)
+async def test_keyword_aliases_cannot_attach_unrelated_context(published_context, query):
+    admin, data_db, metadata_db = published_context
+    # A false reference must not produce context just because that table exists.
+    for name in ("CROSS", "BETWEEN"):
+        admin.command(
+            f"CREATE TABLE {data_db}.{name} (id UInt64) ENGINE = ReplacingMergeTree ORDER BY id"
+        )
+    admin.insert(
+        f"{metadata_db}.DBT_MODEL",
+        [(name, data_db, "Unrelated model description.") for name in ("CROSS", "BETWEEN")],
+        column_names=["name", "schema_name", "description"],
+    )
+    sql = query.format(db=data_db)
+    expected = admin.query(sql)
+    async with Client(mcp) as client:
+        result = await client.call_tool("run_query", {"query": sql})
+    payload = json.loads(result.content[0].text)
+    assert payload["columns"] == list(expected.column_names)
+    assert payload["rows"] == [list(row) for row in expected.result_rows]
+    items = payload["agents_schema_context"]["items"]
+    assert all("Unrelated model description." not in item for item in items)
+    assert all(
+        f"`{data_db}`.`{name}`" not in item for item in items for name in ("CROSS", "BETWEEN")
+    )
+    assert any(f"dbt model `{data_db}`.`orders`: " in item for item in items)
+    assert any(f"`{data_db}`.`orders` uses ReplacingMergeTree" in item for item in items)
+    if "orders-archive" in sql:
+        assert any("Archived orders." in item for item in items)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query,unrelated_table",
+    [
+        ("SELECT orders.id FROM orders JOIN keyword_columns ON join BETWEEN 0 AND 2", "BETWEEN"),
+        ("SELECT orders.id FROM orders JOIN keyword_columns ON join AND orders.id", "AND"),
+        ("SELECT orders.id FROM orders JOIN keyword_columns ON join IS NOT NULL", "IS"),
+        ("SELECT orders.id FROM orders JOIN keyword_columns ON join GLOBAL IN (1)", "GLOBAL"),
+        (
+            "SELECT orders.id FROM orders JOIN keyword_columns ON CASE WHEN join THEN 1 ELSE 0 END",
+            "THEN",
+        ),
+        (
+            "SELECT orders.id FROM orders JOIN keyword_columns ON CASE join WHEN 1 THEN 1 ELSE 0 END",
+            "WHEN",
+        ),
+        (
+            "SELECT orders.id FROM orders JOIN keyword_columns "
+            "ON CASE WHEN orders.id = 1 THEN join ELSE 0 END",
+            "ELSE",
+        ),
+        (
+            "SELECT orders.id FROM orders JOIN keyword_columns ON CASE WHEN orders.id = 1 THEN join END",
+            "END",
+        ),
+        ("SELECT from BETWEEN 0 AND 2 AS flag FROM keyword_columns", "BETWEEN"),
+        ("SELECT from MOD 2 AS flag FROM keyword_columns", "MOD"),
+        ("SELECT from AS flag FROM keyword_columns", "unrelated"),
+        (
+            "SELECT * FROM (SELECT from AS flag FROM keyword_columns) AS sub CROSS JOIN orders",
+            "unrelated",
+        ),
+        ("SELECT * FROM join INNER JOIN orders ON join.id = orders.id", "INNER"),
+        ("SELECT * FROM orders, join second", "second"),
+    ],
+)
+async def test_ambiguous_keyword_expressions_return_only_query_results(
+    published_context, query, unrelated_table
+):
+    admin, data_db, metadata_db = published_context
+    admin.command(
+        f"CREATE TABLE {data_db}.keyword_columns (`from` UInt64, `join` UInt8) ENGINE = Memory"
+    )
+    admin.command(f"INSERT INTO {data_db}.keyword_columns VALUES (1, 1)")
+    admin.command(f"CREATE TABLE {data_db}.`join` (id UInt64) ENGINE = Memory")
+    admin.command(f"INSERT INTO {data_db}.`join` VALUES (1)")
+    admin.command(
+        f"CREATE TABLE {data_db}.`{unrelated_table}` (id UInt64) "
+        "ENGINE = ReplacingMergeTree ORDER BY id"
+    )
+    admin.insert(
+        f"{metadata_db}.DBT_MODEL",
+        [(unrelated_table, data_db, "Unrelated expression model.")],
+        column_names=["name", "schema_name", "description"],
+    )
+    original_database = admin.database
+    try:
+        admin.database = data_db
+        expected = admin.query(query)
+    finally:
+        admin.database = original_database
+    async with Client(mcp) as client:
+        result = await client.call_tool("run_query", {"query": query})
+    assert json.loads(result.content[0].text) == {
+        "columns": list(expected.column_names),
+        "rows": [list(row) for row in expected.result_rows],
+    }
+    assert not _queries.agents_schema._probe_cache
+    assert not _queries.agents_schema._engine_cache
+
+
+@pytest.mark.asyncio
 async def test_public_query_preserves_rows_and_adds_relevant_context(published_context):
     _, data_db, metadata_db = published_context
     async with Client(mcp) as client:

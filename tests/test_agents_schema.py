@@ -162,6 +162,135 @@ def test_reference_extraction_does_not_guess(query, expected):
     assert _referenced_tables(query) == expected
 
 
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        (
+            "SELECT join.id FROM a AS join CROSS JOIN b AS second",
+            {(None, "a"), (None, "b")},
+        ),
+        (
+            "SELECT * FROM a AS /* alias */ jOiN LEFT JOIN b ON jOiN.id = b.id",
+            {(None, "a"), (None, "b")},
+        ),
+        (
+            "SELECT * FROM (SELECT * FROM a) AS join CROSS JOIN b",
+            {(None, "a"), (None, "b")},
+        ),
+        ("SELECT * FROM numbers(1) AS join CROSS JOIN b", {(None, "b")}),
+        ("SELECT 1 AS from FROM a", {(None, "a")}),
+        ("SELECT * FROM a AS select CROSS JOIN b", {(None, "a"), (None, "b")}),
+        ("SELECT * FROM a AS where JOIN b ON a.id = b.id", {(None, "a"), (None, "b")}),
+        ("SELECT * FROM a AS AS JOIN b ON a.id = b.id", {(None, "a"), (None, "b")}),
+        ("SELECT * FROM a AS ARRAY JOIN b ON ARRAY.id = b.id", {(None, "a"), (None, "b")}),
+        ('SELECT * FROM a AS "ARRAY" JOIN b ON "ARRAY".id = b.id', {(None, "a"), (None, "b")}),
+        ("SELECT * FROM a ARRAY JOIN items AS join", {(None, "a")}),
+        (
+            "SELECT * FROM a AS ARRAY ARRAY JOIN items AS join",
+            {(None, "a")},
+        ),
+        ('SELECT * FROM db."AS" JOIN db.b ON "AS".id = b.id', {("db", "AS"), ("db", "b")}),
+        ('SELECT * FROM db."ARRAY" JOIN db.b ON "ARRAY".id = b.id', {("db", "ARRAY"), ("db", "b")}),
+        (
+            "SELECT * FROM a AS first JOIN b AS second ON first.join BETWEEN 0 AND 1",
+            {(None, "a"), (None, "b")},
+        ),
+        (
+            "SELECT * FROM a JOIN b ON a.select = b.id JOIN c ON c.id = b.id",
+            {(None, "a"), (None, "b"), (None, "c")},
+        ),
+    ],
+)
+def test_reference_extraction_distinguishes_aliases_and_identifiers(query, expected):
+    assert _referenced_tables(query) == expected
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "BETWEEN 0 AND 2",
+        "AND other",
+        "OR other",
+        "IS NULL",
+        "IS NOT NULL",
+        "IN (1)",
+        "NOT IN (1)",
+        "GLOBAL IN (1)",
+        "GLOBAL NOT IN (1)",
+        "LIKE 'one%'",
+        "NOT LIKE 'one%'",
+        "ILIKE 'ONE%'",
+        "REGEXP 'one'",
+        "DIV 2",
+        "MOD 2",
+    ],
+)
+@pytest.mark.parametrize(
+    "query",
+    [
+        "SELECT from {expression} AS flag FROM a",
+        "SELECT a.id FROM a JOIN b ON join {expression}",
+    ],
+)
+def test_keyword_expressions_skip_context(query, expression):
+    sql = query.format(expression=expression)
+    assert _referenced_tables(sql) == set()
+    assert not query_may_need_enrichment(sql)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "CASE WHEN join THEN 1 ELSE 0 END",
+        "CASE join WHEN 1 THEN 1 ELSE 0 END",
+        "CASE WHEN a.id = 1 THEN join ELSE 0 END",
+        "CASE WHEN a.id = 1 THEN join END",
+    ],
+)
+def test_case_keyword_expressions_skip_context(expression):
+    sql = f"SELECT a.id FROM a JOIN b ON {expression}"
+    assert _referenced_tables(sql) == set()
+    assert not query_may_need_enrichment(sql)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "SELECT from AS flag FROM a",
+        "SELECT from = 1 FROM a",
+        "SELECT from AS `flag` FROM a",
+        "SELECT * FROM (SELECT from AS flag FROM a) AS sub JOIN b ON sub.flag = b.id",
+        "SELECT select, from AS flag FROM a",
+        "SELECT * FROM join INNER JOIN b ON join.id = b.id",
+        "SELECT * FROM a, join b",
+    ],
+)
+def test_ambiguous_clause_keywords_skip_context(query):
+    assert _referenced_tables(query) == set()
+    assert not query_may_need_enrichment(query)
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("SELECT `from` BETWEEN 0 AND 2 FROM a", {(None, "a")}),
+        ("SELECT a.from BETWEEN 0 AND 2 FROM a", {(None, "a")}),
+        ("SELECT sum(from) FROM a", {(None, "a")}),
+        ("SELECT * FROM a JOIN b ON `join` BETWEEN 0 AND 2", {(None, "a"), (None, "b")}),
+        ("SELECT * FROM a JOIN b ON b.join BETWEEN 0 AND 2", {(None, "a"), (None, "b")}),
+        ("SELECT * FROM a UNION ALL SELECT * FROM b", {(None, "a"), (None, "b")}),
+        ("SELECT * FROM a WHERE id IN (SELECT id FROM b)", {(None, "a"), (None, "b")}),
+        ("SELECT * FROM db.BETWEEN", {("db", "BETWEEN")}),
+        ('SELECT * FROM "BETWEEN"', {(None, "BETWEEN")}),
+        ("SELECT * FROM db.WHEN", {("db", "WHEN")}),
+        ('SELECT * FROM "END"', {(None, "END")}),
+        ('SELECT * FROM "join" JOIN b ON "join".id = b.id', {(None, "join"), (None, "b")}),
+    ],
+)
+def test_unambiguous_queries_keep_their_table_context(query, expected):
+    assert _referenced_tables(query) == expected
+
+
 def test_reference_extraction_has_work_and_reference_bounds():
     query = "SELECT * FROM analytics.orders"
     assert not query_may_need_enrichment(query + " " * _MAX_QUERY_CHARS)
