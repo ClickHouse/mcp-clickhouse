@@ -339,6 +339,60 @@ class EnrichResultPayloadTests(unittest.TestCase):
         items = result["agents_schema_context"]["items"]
         self.assertTrue(any("`analytics`.`orders`" in item for item in items))
 
+    def test_failed_current_database_lookup_does_not_guess_default(self):
+        client = _FakeClient(
+            {
+                "currentDatabase": RuntimeError("lookup timed out"),
+                "database = {db:String}": [["ROOT"], ["DBT_MODEL"]],
+                "AGENTS.DBT_MODEL": [["orders", "default", "Unrelated model."]],
+                "engine LIKE": [["default", "orders", "ReplacingMergeTree"]],
+            }
+        )
+        payload = {"columns": ["c"], "rows": [[1]]}
+
+        result = enrich_result_payload(client, "SELECT count() FROM orders", payload)
+
+        self.assertEqual(result, {"columns": ["c"], "rows": [[1]]})
+        self.assertEqual(len(client.queries), 1)
+        self.assertFalse(_current_db_cache)
+
+    def test_failed_current_database_lookup_preserves_qualified_references(self):
+        client = _FakeClient(
+            {
+                "currentDatabase": RuntimeError("lookup timed out"),
+                "engine LIKE": [["analytics", "orders", "ReplacingMergeTree"]],
+            }
+        )
+
+        result = enrich_result_payload(
+            client, "SELECT 1 FROM analytics.orders JOIN bare_table USING (id)", {"rows": []}
+        )
+
+        self.assertTrue(any("FINAL" in item for item in result["agents_schema_context"]["items"]))
+        engine_queries = [(sql, params) for sql, params in client.queries if "engine LIKE" in sql]
+        self.assertEqual(engine_queries[0][1]["pairs"], [("analytics", "orders")])
+        self.assertEqual(sum("currentDatabase" in sql for sql, _ in client.queries), 1)
+
+    def test_qualified_references_do_not_need_current_database_lookup(self):
+        client = _FakeClient(
+            {"engine LIKE": [["analytics", "orders", "ReplacingMergeTree"]]}
+        )
+
+        result = enrich_result_payload(client, "SELECT count() FROM analytics.orders", {"rows": []})
+
+        self.assertTrue(any("FINAL" in item for item in result["agents_schema_context"]["items"]))
+        self.assertFalse(any("currentDatabase" in sql for sql, _ in client.queries))
+
+    def test_unqualified_agents_queries_are_not_enriched(self):
+        client = _FakeClient(
+            {"database = {db:String}": [["ROOT"]]}, database="AGENTS"
+        )
+
+        result = enrich_result_payload(client, "SELECT * FROM ROOT", {"rows": []})
+
+        self.assertEqual(result, {"rows": []})
+        self.assertEqual(client.queries, [])
+
     def test_disabled_by_env_flag(self):
         client = _FakeClient({"system.tables": [["ROOT"]]})
         payload = {"columns": ["c"], "rows": [[1]]}

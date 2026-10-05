@@ -867,6 +867,7 @@ These variables control the MCP process itself, including transport, authenticat
   * Default: `"false"`, preserving the existing `run_query` response shape unless explicitly enabled
   * Agents Schema uses the canonical, case-sensitive `AGENTS.ROOT` and `AGENTS.DBT_MODEL` objects. The connecting ClickHouse user needs `SELECT` access to receive governed metadata; missing access and an unpublished schema both degrade silently to the normal result
   * Engine lookups use `system.tables`, and all enrichment lookups use the same resolved client configuration—including request-scoped role and settings overrides—as the original query
+  * Unqualified table names are enriched only when the current database can be resolved. Queries referencing canonical `AGENTS` tables, including unqualified names when connected to `AGENTS`, are not enriched
   * dbt descriptions currently match `schema_name.name`. Models configured with a different physical alias may not match until [agents_schema#41](https://github.com/dbt-labs/agents_schema/issues/41) is resolved
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None

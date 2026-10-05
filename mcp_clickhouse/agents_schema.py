@@ -10,12 +10,12 @@ hint, and engine-safety notes (e.g. ReplacingMergeTree tables that need
 
 Prefetching context into the query result makes consultation a server
 guarantee instead of relying on the agent choosing to explore metadata
-tables first. Context queries run on the same client (and therefore the
-same ClickHouse user) as the original query, so callers only ever see
+tables first. Context queries use the same resolved client configuration
+(including the ClickHouse user and roles) as the original query, so callers only see
 metadata they are allowed to read. Enrichment runs only after the base
 result is complete, and each context query is capped with
 ``max_execution_time``, so a slow lookup can only cost the caller a small,
-bounded wait — never the query result.
+bounded wait, without losing the query result.
 
 Set ``CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY=true`` to enable.
 """
@@ -48,7 +48,7 @@ _MULTI_VERSION_ENGINE_PREDICATE = (
 
 # Keep enrichment cheap: cap every context query server-side so a stalled
 # lookup releases its enrichment worker quickly (the caller additionally
-# stops waiting after the enrichment wait budget in mcp_server).
+# stops waiting after the enrichment wait budget in queries.py).
 _CONTEXT_QUERY_SETTINGS = {"max_execution_time": 2}
 
 # Best-effort extraction: plain FROM/JOIN references only. CTE names and table
@@ -102,11 +102,23 @@ def enrich_result_payload(
         referenced = _referenced_tables(query)
         if not referenced or any(db == AGENTS_DATABASE for db, _ in referenced):
             return payload
-        current_db = _current_database(client, cache_scope)
+        current_db = (
+            _current_database(client, cache_scope)
+            if any(db is None for db, _ in referenced)
+            else None
+        )
         # Exact-case resolution: ClickHouse identifiers are case-sensitive, so
         # the query's spelling is the database name. Unqualified references
         # resolve to the session's current database.
-        resolved = {(db if db is not None else current_db, table) for db, table in referenced}
+        # If resolution fails, skip bare names instead of guessing "default"
+        # and potentially attaching another database's descriptions or warnings.
+        resolved = {
+            (db if db is not None else current_db, table)
+            for db, table in referenced
+            if db is not None or current_db is not None
+        }
+        if not resolved or any(db == AGENTS_DATABASE for db, _ in resolved):
+            return payload
 
         try:
             agents_tables = _agents_tables(client, cache_scope)
@@ -174,7 +186,7 @@ def _referenced_tables(query: str) -> set[tuple[Optional[str], str]]:
     }
 
 
-def _current_database(client: Any, cache_scope: object | None = None) -> str:
+def _current_database(client: Any, cache_scope: object | None = None) -> Optional[str]:
     database = getattr(client, "database", None)
     if isinstance(database, str) and database:
         return database
@@ -190,7 +202,9 @@ def _current_database(client: Any, cache_scope: object | None = None) -> str:
         result = client.query("SELECT currentDatabase()", settings=_CONTEXT_QUERY_SETTINGS)
         resolved = result.result_rows[0][0]
     except Exception:
-        return "default"
+        return None
+    if not isinstance(resolved, str) or not resolved:
+        return None
     with _cache_lock:
         if len(_current_db_cache) >= _CACHE_MAX_ENTRIES:
             _current_db_cache.clear()
@@ -199,7 +213,8 @@ def _current_database(client: Any, cache_scope: object | None = None) -> str:
 
 
 def _agents_tables(client: Any, cache_scope: object | None = None) -> frozenset[str]:
-    cache_key = _client_cache_key(client, cache_scope)
+    # The probe always targets canonical AGENTS, independent of currentDatabase().
+    cache_key = _client_base_key(client, cache_scope)
     now = time.monotonic()
     with _cache_lock:
         cached = _probe_cache.get(cache_key)
@@ -233,13 +248,6 @@ def _client_base_key(client: Any, cache_scope: object | None = None) -> object:
     return ("client", id(client))
 
 
-def _client_cache_key(client: Any, cache_scope: object | None = None) -> tuple[object, str]:
-    return (
-        _client_base_key(client, cache_scope),
-        _current_database(client, cache_scope),
-    )
-
-
 def _engine_safety_notes(
     client: Any,
     resolved: set[tuple[str, str]],
@@ -250,7 +258,7 @@ def _engine_safety_notes(
     pairs = sorted(resolved)
     # Keyed by the exact reference set: two queries can share table names
     # while referencing different table sets, and must not share cached notes.
-    cache_key = (_client_cache_key(client, cache_scope), tuple(pairs))
+    cache_key = (_client_base_key(client, cache_scope), tuple(pairs))
     now = time.monotonic()
     with _cache_lock:
         cached = _engine_cache.get(cache_key)

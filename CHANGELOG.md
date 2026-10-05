@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 ### Added
-- Optional Agents Schema enrichment for `run_query`, enabled with `CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY=true`. When the connected service publishes canonical `AGENTS.ROOT` metadata, results can include governed dbt model descriptions and a discovery hint; the same context block can also warn about ReplacingMergeTree and CollapsingMergeTree tables that may require `FINAL` or deduplication. Enrichment uses the caller's resolved ClickHouse configuration, runs after the base result on a dedicated worker pool, and returns the unmodified base result after any lookup failure or timeout. ([#231](https://github.com/ClickHouse/mcp-clickhouse/pull/231))
+- Optional Agents Schema enrichment for `run_query`, enabled with `CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY=true`. When the connected service publishes canonical `AGENTS.ROOT` metadata, results can include governed dbt model descriptions and a discovery hint; the same context block can also warn about ReplacingMergeTree and CollapsingMergeTree tables that may require `FINAL` or deduplication. Enrichment uses the caller's resolved ClickHouse configuration, runs after the base result on a dedicated worker pool, and skips unavailable context without changing query rows. Unqualified table names are skipped if the current database cannot be resolved. An enrichment timeout returns the unmodified base result. ([#231](https://github.com/ClickHouse/mcp-clickhouse/pull/231))
 
 ## 0.7.0 - 2026-09-18
 
