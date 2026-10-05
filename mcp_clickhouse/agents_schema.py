@@ -12,9 +12,10 @@ Optional context can help agents discover metadata without a separate
 exploration step. Context queries use the same resolved client configuration
 (including the ClickHouse user and roles) as the original query, so callers only see
 metadata they are allowed to read. Enrichment runs only after the base
-result is complete, and each context query is capped with
-``max_execution_time``, so a slow lookup can only cost the caller a small,
-bounded wait, without losing the query result.
+result is complete. Context queries use a short ``max_execution_time`` when
+the user's profile permits it, preserving stricter existing limits. The caller
+wait and number of in-flight enrichment jobs are bounded independently,
+without losing the query result.
 
 Set ``CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY=true`` to enable.
 """
@@ -47,7 +48,7 @@ _MULTI_VERSION_ENGINE_PREDICATE = (
 
 # Server-side limits complement the caller wait budget and admission control.
 # They cannot interrupt a stalled network read.
-_CONTEXT_QUERY_SETTINGS = {"max_execution_time": 2}
+_CONTEXT_QUERY_TIMEOUT_SECONDS = 2
 
 # This is deliberately a conservative scanner, not a SQL parser. Never match
 # keywords inside quoted text/comments or partial identifiers. Skip WITH queries
@@ -248,9 +249,9 @@ class _AgentsSchema:
             )
             # Exact-case resolution: ClickHouse identifiers are case-sensitive, so
             # the query's spelling is the database name. Unqualified references
-            # resolve to the session's current database.
-            # If resolution fails, skip bare names instead of guessing "default"
-            # and potentially attaching another database's descriptions or warnings.
+            # resolve only without a stateful session, where temporary tables
+            # could shadow permanent tables. Skip ambiguous names instead of
+            # attaching another table's descriptions or warnings.
             resolved = {
                 (db if db is not None else current_db, table)
                 for db, table in referenced
@@ -310,6 +311,12 @@ class _AgentsSchema:
         return payload
 
     def _current_database(self, client: Any, cache_scope: object | None) -> Optional[str]:
+        try:
+            if client.get_client_setting("session_id"):
+                return None
+        except Exception:
+            # Unknown session state is not evidence that a bare name is permanent.
+            return None
         database = getattr(client, "database", None)
         if isinstance(database, str) and database:
             return database
@@ -318,7 +325,9 @@ class _AgentsSchema:
         if cached is not None:
             return cached
         try:
-            result = client.query("SELECT currentDatabase()", settings=_CONTEXT_QUERY_SETTINGS)
+            result = client.query(
+                "SELECT currentDatabase()", settings=_context_query_settings(client)
+            )
             resolved = result.result_rows[0][0]
         except Exception:
             return None
@@ -335,7 +344,7 @@ class _AgentsSchema:
             "SELECT name FROM system.tables WHERE database = {db:String} "
             "AND name IN ('ROOT', 'DBT_MODEL') LIMIT 2",
             parameters={"db": AGENTS_DATABASE},
-            settings=_CONTEXT_QUERY_SETTINGS,
+            settings=_context_query_settings(client),
         )
         tables = frozenset(row[0] for row in result.result_rows)
         self._remember(self._probe_cache, cache_scope, tables)
@@ -362,7 +371,7 @@ class _AgentsSchema:
             f"AND {_MULTI_VERSION_ENGINE_PREDICATE} "
             "LIMIT 10",
             parameters={"pairs": pairs},
-            settings=_CONTEXT_QUERY_SETTINGS,
+            settings=_context_query_settings(client),
         )
         notes = []
         for database, name, engine in result.result_rows:
@@ -370,12 +379,14 @@ class _AgentsSchema:
                 continue
             if "Replacing" in engine:
                 remedy = (
-                    "Add FINAL after the table name or explicitly select one row per "
+                    "If the query does not already account for row versions, use FINAL "
+                    "after the table name or explicitly select one row per "
                     "sorting key using the configured version column when one exists."
                 )
             else:
                 remedy = (
-                    "Add FINAL after the table name or aggregate with the engine's "
+                    "If the query does not already account for collapsed rows, use FINAL "
+                    "after the table name or aggregate with the engine's "
                     "configured sign column before reading totals."
                 )
             notes.append(
@@ -384,6 +395,19 @@ class _AgentsSchema:
             )
         self._remember(self._engine_cache, cache_key, list(notes))
         return notes
+
+
+def _context_query_settings(client: Any) -> dict[str, int]:
+    """Cap lookups without overriding a readonly or already stricter timeout."""
+    setting = getattr(client, "server_settings", {}).get("max_execution_time")
+    if getattr(setting, "readonly", False):
+        return {}
+    timeout = client.get_client_setting("max_execution_time")
+    if timeout is None:
+        timeout = getattr(setting, "value", 0)
+    if 0 < float(timeout or 0) <= _CONTEXT_QUERY_TIMEOUT_SECONDS:
+        return {}
+    return {"max_execution_time": _CONTEXT_QUERY_TIMEOUT_SECONDS}
 
 
 def _dbt_model_notes(client: Any, resolved: set[tuple[str, str]]) -> list[str]:
@@ -399,7 +423,7 @@ def _dbt_model_notes(client: Any, resolved: set[tuple[str, str]]) -> list[str]:
         "AND description != '' "
         "ORDER BY schema_name, name LIMIT 5",
         parameters={"pairs": pairs},
-        settings=_CONTEXT_QUERY_SETTINGS,
+        settings=_context_query_settings(client),
     )
     notes = []
     for name, schema_name, description in result.result_rows:

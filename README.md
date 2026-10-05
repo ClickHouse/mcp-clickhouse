@@ -868,10 +868,11 @@ These variables control the MCP process itself, including transport, authenticat
   * Default: `"false"`, preserving the existing `run_query` response shape and tool description unless explicitly enabled
   * Set this before server startup and restart the server after changing it. Only enabled servers advertise the optional context in the tool description; the description does not include setup instructions for this flag
   * Agents Schema uses the canonical, case-sensitive `AGENTS.ROOT` and `AGENTS.DBT_MODEL` objects. The connecting ClickHouse user needs `SELECT` access to receive governed metadata; missing access and an unpublished schema both degrade silently to the normal result
-  * Engine lookups use `system.tables`, and all enrichment lookups use the same resolved client configuration—including request-scoped role and settings overrides—as the original query
-  * Unqualified table names are enriched only when the current database can be resolved. Queries referencing canonical `AGENTS` tables, including unqualified names when connected to `AGENTS`, are not enriched
+  * Engine lookups use `system.tables`, and all enrichment lookups use the same resolved client configuration, including request-scoped role and settings overrides, as the original query. Engine guidance is conditional: queries already handling row versions or collapsed rows may need no change
+  * Unqualified table names are enriched only when the current database can be resolved and the client has no stateful HTTP session. With an explicit `session_id`, temporary tables can shadow permanent tables, so only qualified references are enriched. Queries referencing canonical `AGENTS` tables, including unqualified names when connected to `AGENTS`, are not enriched
   * Table matching is conservative, not a full SQL parser. Comments and string literals are ignored; simple quoted identifiers are supported. Queries with `WITH` clauses, nested comments, or more than 65,536 characters are skipped, as are table functions and unsupported references. No more than 32 distinct table references are enriched
   * Enrichment admits at most two jobs per server, including jobs whose callers have timed out. When both slots are occupied, the original result returns immediately without queuing more work. Otherwise the caller waits up to three additional seconds; an already-started lookup may continue until its execution or network timeout
+  * Context queries request a two-second execution limit only when the user's profile permits changing it. Read-only timeout settings and stricter existing limits are preserved; the caller wait and admission bounds still apply when the server-side limit cannot be changed
   * Discovery, current-database, and engine caches are server-owned, bounded, and expire after five minutes. Custom configurations that cannot form a stable cache key bypass these caches. Model descriptions are limited to 300 Unicode characters in SQL before transfer
   * dbt descriptions currently match `schema_name.name`. Models configured with a different physical alias may not match until [agents_schema#41](https://github.com/dbt-labs/agents_schema/issues/41) is resolved
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
@@ -1143,11 +1144,15 @@ Note: The bind host and port settings are only used when transport is set to "ht
 uv sync --all-extras --dev # install dev dependencies
 uv run ruff check . # run linting
 
-docker compose up -d test_services # start ClickHouse
+docker compose -f test-services/docker-compose.yaml up -d # start ClickHouse
 uv run pytest -v tests
 uv run pytest -v tests/test_tool.py # ClickHouse only
 CHDB_ENABLED=true uv run --extra chdb pytest -v tests/test_chdb_tool.py # chDB only
 ```
+
+The local and CI test services enable user management to provision disposable
+restricted accounts for integration tests. This is test-only setup, not a
+production MCP user configuration.
 
 ## YouTube Overview
 

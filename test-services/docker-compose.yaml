@@ -10,6 +10,8 @@ services:
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=clickhouse
       - CLICKHOUSE_DB=default
+      # Test-only provisioning of restricted users in integration tests.
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
 
 volumes:
   clickhouse-data:

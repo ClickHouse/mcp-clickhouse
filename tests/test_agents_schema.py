@@ -18,6 +18,7 @@ from mcp_clickhouse.agents_schema import (
     _MAX_QUERY_CHARS,
     _MAX_REFERENCED_TABLES,
     _AgentsSchema,
+    _context_query_settings,
     _referenced_tables,
     query_may_need_enrichment,
 )
@@ -48,6 +49,83 @@ class _FakeClient:
                     raise rows
                 return _FakeResult(rows)
         return _FakeResult([])
+
+    def get_client_setting(self, key):
+        return None
+
+
+@pytest.mark.parametrize("session_id", ["explicit-session", RuntimeError("unavailable")])
+def test_session_ambiguity_skips_bare_names_but_preserves_qualified(monkeypatch, session_id):
+    monkeypatch.setenv("CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY", "true")
+    client = _FakeClient(
+        {"engine LIKE": [["analytics", "orders", "ReplacingMergeTree"]]}, database="analytics"
+    )
+
+    def get_setting(key):
+        if key == "session_id":
+            if isinstance(session_id, Exception):
+                raise session_id
+            return session_id
+        return None
+
+    setting = MagicMock(side_effect=get_setting)
+    monkeypatch.setattr(client, "get_client_setting", setting)
+    owner = _AgentsSchema()
+    # Even a warm current-database cache must not resolve session-local names.
+    owner._remember(owner._current_db_cache, ("test",), "analytics")
+    assert owner.enrich_result_payload(
+        client, "SELECT * FROM orders", {"rows": [[7]]}, ("test",)
+    ) == {"rows": [[7]]}
+    assert client.queries == []
+    result = owner.enrich_result_payload(
+        client,
+        "SELECT * FROM analytics.orders JOIN bare_table USING (id)",
+        {"rows": [[1]]},
+        ("test",),
+    )
+    assert any("ReplacingMergeTree" in item for item in result["agents_schema_context"]["items"])
+    engine_query = next(params for sql, params in client.queries if "engine LIKE" in sql)
+    assert engine_query["pairs"] == [("analytics", "orders")]
+    assert not any("currentDatabase" in sql for sql, _ in client.queries)
+
+
+@pytest.mark.parametrize("engine", ["ReplacingMergeTree", "CollapsingMergeTree"])
+def test_engine_guidance_is_conditional_even_when_query_already_uses_final(monkeypatch, engine):
+    monkeypatch.setenv("CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY", "true")
+    client = _FakeClient({"engine LIKE": [["analytics", "orders", engine]]})
+    payload = _AgentsSchema().enrich_result_payload(
+        client, "SELECT count() FROM analytics.orders FINAL", {"rows": [[1]]}
+    )
+    note = payload["agents_schema_context"]["items"][0]
+    assert "If the query does not already account for" in note
+    assert "Add FINAL" not in note
+
+
+@pytest.mark.parametrize(
+    "server_value,readonly,client_value,expected",
+    [
+        (None, False, None, {"max_execution_time": 2}),
+        ("0", False, None, {"max_execution_time": 2}),
+        ("10", False, None, {"max_execution_time": 2}),
+        ("1", False, None, {}),
+        ("2", False, None, {}),
+        ("0", True, None, {}),
+        ("1", True, None, {}),
+        ("10", True, None, {}),
+        ("0", False, "0.5", {}),
+        ("1", False, "0", {"max_execution_time": 2}),
+        ("1", False, "10", {"max_execution_time": 2}),
+    ],
+)
+def test_context_timeout_respects_effective_limits(server_value, readonly, client_value, expected):
+    client = _FakeClient({})
+    client.server_settings = (
+        {"max_execution_time": SimpleNamespace(value=server_value, readonly=readonly)}
+        if server_value is not None
+        else {}
+    )
+    client.get_client_setting = MagicMock(return_value=client_value)
+    assert _context_query_settings(client) == expected
 
 
 @pytest.mark.parametrize(
@@ -786,6 +864,9 @@ class _EnrichableFakeClient:
 
     server_version = "24.10"
     database = "default"
+
+    def get_client_setting(self, key):
+        return None
 
     def query(self, query, settings=None, parameters=None):
         if parameters and "db" in parameters:

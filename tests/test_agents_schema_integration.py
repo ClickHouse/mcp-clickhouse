@@ -7,7 +7,7 @@ import clickhouse_connect
 import pytest
 from fastmcp import Client
 
-from mcp_clickhouse import agents_schema
+from mcp_clickhouse import agents_schema, clients
 from mcp_clickhouse.agents_schema import MAX_DESCRIPTION_CHARS, _AgentsSchema, _dbt_model_notes
 from mcp_clickhouse.mcp_env import get_config
 from mcp_clickhouse.mcp_server import _clickhouse_clients, _queries, mcp
@@ -121,6 +121,9 @@ def test_description_is_truncated_before_transfer(published_context):
     received = []
 
     class ObservedClient:
+        server_settings = admin.server_settings
+        get_client_setting = admin.get_client_setting
+
         def query(self, *args, **kwargs):
             result = admin.query(*args, **kwargs)
             received.extend(result.result_rows)
@@ -129,3 +132,81 @@ def test_description_is_truncated_before_transfer(published_context):
     notes = _dbt_model_notes(ObservedClient(), {(data_db, "orders")})
     assert received == [("orders", data_db, "\u00e9" * MAX_DESCRIPTION_CHARS)]
     assert notes == [f"dbt model `{data_db}`.`orders`: " + "\u00e9" * MAX_DESCRIPTION_CHARS]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_in_settings", [False, True])
+async def test_temporary_table_does_not_inherit_permanent_table_context(
+    published_context, monkeypatch, session_in_settings
+):
+    _, data_db, _ = published_context
+    session_id = uuid.uuid4().hex
+    overrides = (
+        {"settings": {"session_id": session_id}}
+        if session_in_settings
+        else {"session_id": session_id}
+    )
+    config = clients._resolve_client_config(overrides)
+    session = clickhouse_connect.get_client(**config)
+    try:
+        session.command("CREATE TEMPORARY TABLE orders (id UInt64) ENGINE = Memory")
+        session.command("INSERT INTO orders VALUES (7)")
+        monkeypatch.setattr(clients, "_resolve_client_config", lambda *args: config)
+        async with Client(mcp) as client:
+            bare = await client.call_tool("run_query", {"query": "SELECT * FROM orders"})
+            qualified = await client.call_tool(
+                "run_query", {"query": f"SELECT * FROM {data_db}.orders FINAL"}
+            )
+        assert json.loads(bare.content[0].text) == {"columns": ["id"], "rows": [[7]]}
+        payload = json.loads(qualified.content[0].text)
+        assert payload["rows"] == [[1]]
+        items = payload["agents_schema_context"]["items"]
+        assert f"dbt model `{data_db}`.`orders`: " + "\u00e9" * MAX_DESCRIPTION_CHARS in items
+        assert any("If the query does not already account for" in item for item in items)
+    finally:
+        try:
+            session.command("DROP TEMPORARY TABLE IF EXISTS orders")
+        finally:
+            session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("readonly,metadata_grant", [(1, True), (1, False), (2, True)])
+async def test_restricted_user_context_respects_metadata_grants(
+    published_context, monkeypatch, readonly, metadata_grant
+):
+    admin, data_db, metadata_db = published_context
+    username = "agents_reader_" + uuid.uuid4().hex
+    password = uuid.uuid4().hex
+    created = False
+    try:
+        # Test-only admin provisioning; the MCP tool runs with SELECT grants only.
+        admin.command(
+            f"CREATE USER {username} IDENTIFIED BY '{password}' SETTINGS readonly = {readonly}"
+        )
+        created = True
+        admin.command(f"GRANT SELECT ON {data_db}.orders TO {username}")
+        if metadata_grant:
+            admin.command(f"GRANT SELECT ON {metadata_db}.* TO {username}")
+        # Warm the same owner's caches as the privileged account first. A later
+        # restricted caller must not inherit its discovery hint or descriptions.
+        async with Client(mcp) as client:
+            privileged = await client.call_tool("run_query", {"query": "SELECT * FROM orders"})
+        assert any(
+            "dbt model" in item
+            for item in json.loads(privileged.content[0].text)["agents_schema_context"]["items"]
+        )
+        config = clients._resolve_client_config({"username": username, "password": password})
+        monkeypatch.setattr(clients, "_resolve_client_config", lambda *args: config)
+        async with Client(mcp) as client:
+            result = await client.call_tool("run_query", {"query": "SELECT * FROM orders"})
+        payload = json.loads(result.content[0].text)
+        assert payload["rows"] == [[1]]
+        items = payload["agents_schema_context"]["items"]
+        assert any("ReplacingMergeTree" in item for item in items)
+        assert any("dbt model" in item for item in items) is metadata_grant
+        assert any(f"{metadata_db}.ROOT" in item for item in items) is metadata_grant
+    finally:
+        _clickhouse_clients._clear_client_cache()
+        if created:
+            admin.command(f"DROP USER {username}")
