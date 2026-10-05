@@ -475,6 +475,10 @@ def test_entrypoint_keeps_independent_executor_and_chdb_ownership(isolated_packa
         assert namespaces[0] is sys.modules["mcp_clickhouse.mcp_server"].__dict__
         assert namespaces[-1]["mcp"] is loaded
         assert len({id(namespace["mcp"]) for namespace in namespaces}) == count
+        assert len({id(namespace["_queries"].agents_schema) for namespace in namespaces}) == count
+        assert len({
+            id(namespace["_queries"].agents_schema._probe_cache) for namespace in namespaces
+        }) == count
         assert len({id(pool) for pool in pools}) == 5 * count
         assert len(sessions) == count
         assert [pool._max_workers for pool in pools] == [6, 4, 2, 2, 1] * count

@@ -13,11 +13,11 @@ from fastmcp.exceptions import ToolError
 
 from mcp_clickhouse import clients
 from mcp_clickhouse.agents_schema import (
+    _AgentsSchema,
     discovery_enabled,
-    enrich_result_payload,
     query_may_need_enrichment,
 )
-from mcp_clickhouse.executors import _Executors
+from mcp_clickhouse.executors import _ENRICHMENT_MAX_WORKERS, _Executors
 from mcp_clickhouse.mcp_env import get_config, get_mcp_config
 from mcp_clickhouse.serialization import _serialize_tool_result
 
@@ -25,6 +25,12 @@ logger = logging.getLogger("mcp-clickhouse")
 
 _QUERY_CANCELLATION_WAIT_SECONDS = 1.0
 _ENRICHMENT_WAIT_SECONDS = 3.0
+
+
+def _retrieve_enrichment_result(future: asyncio.Future) -> None:
+    """Consume late lookup errors after the caller has stopped waiting."""
+    if not future.cancelled():
+        future.exception()
 
 
 @dataclass
@@ -149,6 +155,8 @@ class _Queries:
     def __init__(self, executors: _Executors, clickhouse_clients: clients._ClickHouseClients):
         self.executors = executors
         self.clients = clickhouse_clients
+        self.agents_schema = _AgentsSchema()
+        self._enrichment_slots = threading.BoundedSemaphore(_ENRICHMENT_MAX_WORKERS)
         self.active_queries: Dict[str, _ActiveQueryState] = {}
         self.active_queries_lock = threading.Lock()
 
@@ -313,9 +321,7 @@ class _Queries:
         try:
             payload = json.loads(serialized)
             cache_scope = clients._config_to_cache_key(client_config)
-            if cache_scope is None:
-                cache_scope = ("client", id(entry.client))
-            payload = enrich_result_payload(
+            payload = self.agents_schema.enrich_result_payload(
                 entry.client,
                 query,
                 payload,
@@ -325,21 +331,34 @@ class _Queries:
         finally:
             self.clients._release_client_entry(entry)
 
+    def _submit_enrichment(self, serialized: str, query: str, client_config: dict):
+        # A slot stays occupied until the work actually completes, even after
+        # the caller times out or disconnects. Cancelling a queued Future does
+        # not remove its work item (and potentially large result) from the pool.
+        if not self._enrichment_slots.acquire(blocking=False):
+            return None
+        try:
+            future = self.executors.enrichment.submit(
+                self._enrichment_job, serialized, query, client_config
+            )
+        except BaseException:
+            self._enrichment_slots.release()
+            raise
+        future.add_done_callback(lambda _: self._enrichment_slots.release())
+        return future
+
     def _enrich_serialized_result(
         self, serialized: str, query: str, client_config: dict
     ) -> str:
         """Best-effort enrichment without spending query-worker capacity."""
         if not discovery_enabled() or not query_may_need_enrichment(query):
             return serialized
-        future = None
         try:
-            future = self.executors.enrichment.submit(
-                self._enrichment_job, serialized, query, client_config
-            )
+            future = self._submit_enrichment(serialized, query, client_config)
+            if future is None:
+                return serialized
             return future.result(timeout=_ENRICHMENT_WAIT_SECONDS)
         except Exception as err:
-            if future is not None:
-                future.cancel()
             logger.debug("Agents Schema enrichment skipped: %s", err)
             return serialized
 
@@ -349,22 +368,19 @@ class _Queries:
         """Async best-effort enrichment without blocking the event loop."""
         if not discovery_enabled() or not query_may_need_enrichment(query):
             return serialized
-        future = None
         try:
-            future = self.executors.enrichment.submit(
-                self._enrichment_job, serialized, query, client_config
-            )
+            future = self._submit_enrichment(serialized, query, client_config)
+            if future is None:
+                return serialized
+            wrapped = asyncio.wrap_future(future)
+            wrapped.add_done_callback(_retrieve_enrichment_result)
             return await asyncio.wait_for(
-                asyncio.shield(asyncio.wrap_future(future)),
+                asyncio.shield(wrapped),
                 timeout=_ENRICHMENT_WAIT_SECONDS,
             )
         except asyncio.CancelledError:
-            if future is not None:
-                future.cancel()
             raise
         except Exception as err:
-            if future is not None:
-                future.cancel()
             logger.debug("Agents Schema enrichment skipped: %s", err)
             return serialized
 

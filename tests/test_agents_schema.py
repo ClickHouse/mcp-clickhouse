@@ -1,8 +1,10 @@
 """Tests for Agents Schema discovery enrichment (no live server needed)."""
 
+import asyncio
 import concurrent.futures
 import json
 import os
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -12,16 +14,16 @@ from fastmcp import Client
 
 from mcp_clickhouse.agents_schema import (
     _CACHE_MAX_ENTRIES,
-    _current_db_cache,
-    _engine_cache,
-    _probe_cache,
+    _CACHE_TTL_SECONDS,
+    _MAX_QUERY_CHARS,
+    _MAX_REFERENCED_TABLES,
+    _AgentsSchema,
     _referenced_tables,
-    enrich_result_payload,
     query_may_need_enrichment,
 )
 from mcp_clickhouse.mcp_env import MCPServerConfig
-from mcp_clickhouse.mcp_server import _clickhouse_clients, mcp
-from mcp_clickhouse.queries import _Queries
+from mcp_clickhouse.mcp_server import _clickhouse_clients, _queries, mcp
+from mcp_clickhouse.queries import _Queries, _retrieve_enrichment_result
 
 
 class _FakeResult:
@@ -48,10 +50,253 @@ class _FakeClient:
         return _FakeResult([])
 
 
-def _clear_enrichment_caches():
-    _probe_cache.clear()
-    _engine_cache.clear()
-    _current_db_cache.clear()
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("SELECT 'FROM analytics.orders'", set()),
+        ("SELECT 1 -- FROM analytics.orders", set()),
+        ("SELECT 1 # JOIN analytics.orders", set()),
+        ("SELECT /* FROM analytics.orders */ 1", set()),
+        ("SELECT $sql$FROM analytics.orders$sql$", set()),
+        ("WITH orders AS (SELECT 1) SELECT * FROM orders", set()),
+        ("SELECT * FROM (WITH orders AS (SELECT 1) SELECT * FROM orders)", set()),
+        ("SELECT * FROM remote('host', 'analytics', 'orders')", set()),
+        ("SELECT * FROM analytics.orders(1)", set()),
+        ("SELECT * FROM `analytics`.`orders-archive`", {("analytics", "orders-archive")}),
+        ('SELECT * FROM "analytics" . "orders-archive"', {("analytics", "orders-archive")}),
+        ("SELECT * FROM analytics /* comment */ . orders", {("analytics", "orders")}),
+        ("SELECT extract(DAY FROM today())", set()),
+        ("SELECT * FROM analytics.orders ARRAY JOIN items", {("analytics", "orders")}),
+        ("SELECT * FROM analytics.orders\u00e9", set()),
+        ("SELECT * FROM {table:Identifier}", set()),
+        (
+            "SELECT * FROM analytics.where JOIN analytics.orders",
+            {("analytics", "where"), ("analytics", "orders")},
+        ),
+        ("SELECT * FROM (SELECT * FROM analytics.orders)", {("analytics", "orders")}),
+        ("SELECT 'it\\'s FROM fake.orders' FROM analytics.orders", {("analytics", "orders")}),
+        ("SELECT 'it''s FROM fake.orders' FROM analytics.orders", {("analytics", "orders")}),
+        ("SELECT * FROM `db``name`.`orders`", {("db`name", "orders")}),
+        ("SELECT * FROM `db\\name`.`orders`", set()),
+        ("SELECT /* nested /* FROM fake.orders */ comment */ 1", set()),
+        ("SELECT 'unterminated FROM fake.orders", set()),
+        ("SELECT * FROM db.table.more", set()),
+    ],
+)
+def test_reference_extraction_does_not_guess(query, expected):
+    assert _referenced_tables(query) == expected
+
+
+def test_reference_extraction_has_work_and_reference_bounds():
+    query = "SELECT * FROM analytics.orders"
+    assert not query_may_need_enrichment(query + " " * _MAX_QUERY_CHARS)
+    assert not query_may_need_enrichment(
+        "SELECT * FROM " + " JOIN ".join(f"db.t{i}" for i in range(_MAX_REFERENCED_TABLES + 1))
+    )
+
+
+@pytest.mark.parametrize("scope", [None, [], ("complete-config",)])
+def test_all_metadata_caches_require_a_stable_scope_and_expire(monkeypatch, scope):
+    monkeypatch.setenv("CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY", "true")
+    clock = [100.0]
+    monkeypatch.setattr(
+        "mcp_clickhouse.agents_schema.time", SimpleNamespace(monotonic=lambda: clock[0])
+    )
+    owner = _AgentsSchema()
+    client = _FakeClient({"currentDatabase": [["analytics"]]})
+    for _ in range(2):
+        owner.enrich_result_payload(client, "SELECT * FROM orders", {"rows": []}, scope)
+    assert len(client.queries) == (3 if scope else 6)
+    for cache in (owner._probe_cache, owner._engine_cache, owner._current_db_cache):
+        assert bool(cache) is bool(scope)
+    clock[0] += _CACHE_TTL_SECONDS + 1
+    owner.enrich_result_payload(client, "SELECT * FROM orders", {"rows": []}, scope)
+    assert len(client.queries) == (6 if scope else 9)
+
+
+def test_metadata_cache_is_owned_by_each_query_handler(monkeypatch):
+    monkeypatch.setenv("CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY", "true")
+    first = _Queries(MagicMock(), MagicMock())
+    second = _Queries(MagicMock(), MagicMock())
+    assert first.agents_schema is not second.agents_schema
+    first.clients._acquire_clickhouse_client.return_value = SimpleNamespace(
+        client=_FakeClient({"database = {db:String}": [["ROOT"]]})
+    )
+    second_client = _FakeClient({})
+    second.clients._acquire_clickhouse_client.return_value = SimpleNamespace(client=second_client)
+    args = ('{"rows":[]}', "SELECT * FROM analytics.orders", {"host": "same-host"})
+    assert "agents_schema_context" in json.loads(first._enrichment_job(*args))
+    assert "agents_schema_context" not in json.loads(second._enrichment_job(*args))
+    assert len(second_client.queries) == 2
+
+
+def test_uncacheable_requests_do_not_reuse_metadata(monkeypatch):
+    class UncacheablePool:
+        __hash__ = None
+
+    monkeypatch.setenv("CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY", "true")
+    # Deterministically model Python reusing an ID after a client is released.
+    monkeypatch.setattr("mcp_clickhouse.queries.id", lambda _: 123, raising=False)
+    clients = MagicMock()
+    clients._acquire_clickhouse_client.side_effect = [
+        SimpleNamespace(client=_FakeClient({"database = {db:String}": [["ROOT"]]})),
+        SimpleNamespace(client=_FakeClient({})),
+    ]
+    queries = _Queries(MagicMock(), clients)
+    results = [
+        json.loads(
+            queries._enrichment_job(
+                '{"rows":[]}',
+                "SELECT * FROM analytics.orders",
+                {"username": user, "pool_mgr": UncacheablePool()},
+            )
+        )
+        for user in ("first_account", "second_account")
+    ]
+    assert "agents_schema_context" in results[0]
+    assert "agents_schema_context" not in results[1]
+    assert clients._release_client_entry.call_count == 2
+    assert not queries.agents_schema._probe_cache
+    assert not queries.agents_schema._engine_cache
+    assert not queries.agents_schema._current_db_cache
+
+
+@pytest.mark.asyncio
+async def test_stalled_enrichment_does_not_build_a_queue(monkeypatch):
+    monkeypatch.setenv("CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY", "true")
+    monkeypatch.setattr("mcp_clickhouse.queries._ENRICHMENT_WAIT_SECONDS", 0.02)
+    release = threading.Event()
+    both_started = threading.Barrier(3)
+    serialized = '{"rows":[[1]]}'
+
+    def stalled(*args):
+        both_started.wait(timeout=5)
+        release.wait(timeout=5)
+        return serialized
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        queries = _Queries(SimpleNamespace(enrichment=pool), MagicMock())
+        monkeypatch.setattr(queries, "_enrichment_job", stalled)
+        calls = [
+            asyncio.create_task(
+                queries._enrich_serialized_result_async(
+                    serialized,
+                    "SELECT * FROM analytics.orders",
+                    {},
+                )
+            )
+            for _ in range(2)
+        ]
+        try:
+            await asyncio.to_thread(both_started.wait, 5)
+            assert await asyncio.gather(*calls) == [serialized, serialized]
+            # Both async and synchronous callers must skip rather than queue.
+            for _ in range(20):
+                assert (
+                    await queries._enrich_serialized_result_async(
+                        serialized,
+                        "SELECT * FROM analytics.orders",
+                        {},
+                    )
+                    == serialized
+                )
+                assert (
+                    queries._enrich_serialized_result(
+                        serialized,
+                        "SELECT * FROM analytics.orders",
+                        {},
+                    )
+                    == serialized
+                )
+            assert pool._work_queue.qsize() == 0
+        finally:
+            release.set()
+            await asyncio.gather(*calls)
+    # Completion, not caller timeout, makes both slots available again.
+    assert queries._enrichment_slots.acquire(blocking=False)
+    assert queries._enrichment_slots.acquire(blocking=False)
+    assert not queries._enrichment_slots.acquire(blocking=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_call", [False, True])
+async def test_failed_submission_releases_enrichment_capacity(monkeypatch, async_call):
+    monkeypatch.setenv("CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY", "true")
+    executors = MagicMock()
+    executors.enrichment.submit.side_effect = RuntimeError("pool shut down")
+    queries = _Queries(executors, MagicMock())
+    for _ in range(4):
+        args = ('{"rows":[]}', "SELECT * FROM analytics.orders", {})
+        if async_call:
+            result = await queries._enrich_serialized_result_async(*args)
+        else:
+            result = queries._enrich_serialized_result(*args)
+        assert result == args[0]
+    assert executors.enrichment.submit.call_count == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exit_reason", ["timeout", "cancel"])
+async def test_late_failure_keeps_capacity_until_done_and_consumes_error(monkeypatch, exit_reason):
+    monkeypatch.setenv("CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY", "true")
+    monkeypatch.setattr(
+        "mcp_clickhouse.queries._ENRICHMENT_WAIT_SECONDS", 0 if exit_reason == "timeout" else 5
+    )
+    future = concurrent.futures.Future()
+    future.set_running_or_notify_cancel()
+    executors = MagicMock()
+    executors.enrichment.submit.return_value = future
+    queries = _Queries(executors, MagicMock())
+    with patch(
+        "mcp_clickhouse.queries._retrieve_enrichment_result", wraps=_retrieve_enrichment_result
+    ) as retrieve:
+        task = asyncio.create_task(
+            queries._enrich_serialized_result_async(
+                '{"rows":[]}',
+                "SELECT * FROM analytics.orders",
+                {},
+            )
+        )
+        await asyncio.sleep(0)
+        if exit_reason == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            assert await task == '{"rows":[]}'
+        assert not future.cancelled()
+        assert queries._enrichment_slots.acquire(blocking=False)
+        assert not queries._enrichment_slots.acquire(blocking=False)
+        future.set_exception(RuntimeError("late connection failure"))
+        for _ in range(3):
+            await asyncio.sleep(0)
+        retrieve.assert_called_once()
+        assert queries._enrichment_slots.acquire(blocking=False)
+
+
+@pytest.mark.asyncio
+async def test_successful_enrichment_reuses_capacity(monkeypatch):
+    monkeypatch.setenv("CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY", "true")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        queries = _Queries(SimpleNamespace(enrichment=pool), MagicMock())
+        monkeypatch.setattr(queries, "_enrichment_job", lambda *args: "enriched")
+        for _ in range(10):
+            assert (
+                await queries._enrich_serialized_result_async(
+                    '{"rows":[]}',
+                    "SELECT * FROM analytics.orders",
+                    {},
+                )
+                == "enriched"
+            )
+            assert (
+                queries._enrich_serialized_result(
+                    '{"rows":[]}',
+                    "SELECT * FROM analytics.orders",
+                    {},
+                )
+                == "enriched"
+            )
 
 
 class ReferencedTablesTests(unittest.TestCase):
@@ -86,7 +331,7 @@ class ReferencedTablesTests(unittest.TestCase):
 
 class EnrichResultPayloadTests(unittest.TestCase):
     def setUp(self):
-        _clear_enrichment_caches()
+        self.agents_schema = _AgentsSchema()
         # Hermetic against an ambient kill-switch value in the host environment.
         env_patcher = patch.dict("os.environ", {"CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY": "true"})
         env_patcher.start()
@@ -96,7 +341,9 @@ class EnrichResultPayloadTests(unittest.TestCase):
         client = _FakeClient({})
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        result = enrich_result_payload(client, "SELECT c FROM analytics.fct_revenue", payload)
+        result = self.agents_schema.enrich_result_payload(
+            client, "SELECT c FROM analytics.fct_revenue", payload
+        )
 
         self.assertNotIn("agents_schema_context", result)
 
@@ -104,7 +351,9 @@ class EnrichResultPayloadTests(unittest.TestCase):
         client = _FakeClient({"system.tables": [["ROOT"]]})
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        result = enrich_result_payload(client, "SELECT * FROM AGENTS.ROOT", payload)
+        result = self.agents_schema.enrich_result_payload(
+            client, "SELECT * FROM AGENTS.ROOT", payload
+        )
 
         self.assertNotIn("agents_schema_context", result)
         self.assertEqual(client.queries, [])
@@ -113,15 +362,13 @@ class EnrichResultPayloadTests(unittest.TestCase):
         client = _FakeClient(
             {
                 "database = {db:String}": [["ROOT"], ["DBT_MODEL"]],
-                "AGENTS.DBT_MODEL": [
-                    ["fct_revenue", "analytics", "Governed revenue fact table."]
-                ],
+                "AGENTS.DBT_MODEL": [["fct_revenue", "analytics", "Governed revenue fact table."]],
                 "engine LIKE": [],
             }
         )
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        result = enrich_result_payload(
+        result = self.agents_schema.enrich_result_payload(
             client, "SELECT sum(amount_usd) FROM analytics.fct_revenue", payload
         )
 
@@ -142,7 +389,9 @@ class EnrichResultPayloadTests(unittest.TestCase):
         )
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        result = enrich_result_payload(client, "SELECT count() FROM analytics.orders_cdc", payload)
+        result = self.agents_schema.enrich_result_payload(
+            client, "SELECT count() FROM analytics.orders_cdc", payload
+        )
 
         items = result["agents_schema_context"]["items"]
         self.assertTrue(any("FINAL" in item for item in items))
@@ -151,15 +400,13 @@ class EnrichResultPayloadTests(unittest.TestCase):
         client = _FakeClient(
             {
                 "database = {db:String}": [["DBT_MODEL"]],
-                "AGENTS.DBT_MODEL": [
-                    ["fct_revenue", "analytics", "Governed revenue fact table."]
-                ],
+                "AGENTS.DBT_MODEL": [["fct_revenue", "analytics", "Governed revenue fact table."]],
                 "engine LIKE": [],
             }
         )
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        result = enrich_result_payload(
+        result = self.agents_schema.enrich_result_payload(
             client, "SELECT sum(amount_usd) FROM analytics.fct_revenue", payload
         )
 
@@ -176,7 +423,9 @@ class EnrichResultPayloadTests(unittest.TestCase):
         )
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        result = enrich_result_payload(client, "SELECT count() FROM analytics.events", payload)
+        result = self.agents_schema.enrich_result_payload(
+            client, "SELECT count() FROM analytics.events", payload
+        )
 
         items = result["agents_schema_context"]["items"]
         self.assertTrue(any("sign column" in item for item in items))
@@ -187,10 +436,10 @@ class EnrichResultPayloadTests(unittest.TestCase):
         readonly = (("settings", ("mapping", (("role", ("value", "reader")),))),)
         privileged = (("settings", ("mapping", (("role", ("value", "analyst")),))),)
 
-        enrich_result_payload(
+        self.agents_schema.enrich_result_payload(
             client, "SELECT 1 FROM analytics.t", {"rows": []}, cache_scope=readonly
         )
-        enrich_result_payload(
+        self.agents_schema.enrich_result_payload(
             client, "SELECT 1 FROM analytics.t", {"rows": []}, cache_scope=privileged
         )
 
@@ -200,9 +449,7 @@ class EnrichResultPayloadTests(unittest.TestCase):
     def test_engine_warnings_and_hint_survive_dbt_note_cap(self):
         # Five dbt descriptions alone would fill MAX_CONTEXT_ITEMS; correctness
         # notes and the discovery hint must not be truncated away by them.
-        dbt_rows = [
-            [f"model_{i}", "analytics", f"Description {i}."] for i in range(5)
-        ]
+        dbt_rows = [[f"model_{i}", "analytics", f"Description {i}."] for i in range(5)]
         client = _FakeClient(
             {
                 "database = {db:String}": [["ROOT"], ["DBT_MODEL"]],
@@ -212,7 +459,7 @@ class EnrichResultPayloadTests(unittest.TestCase):
         )
         query = "SELECT 1 FROM " + " JOIN ".join(f"analytics.model_{i}" for i in range(5))
 
-        result = enrich_result_payload(client, query, {"rows": []})
+        result = self.agents_schema.enrich_result_payload(client, query, {"rows": []})
 
         items = result["agents_schema_context"]["items"]
         self.assertTrue(any("FINAL" in item for item in items))
@@ -227,7 +474,9 @@ class EnrichResultPayloadTests(unittest.TestCase):
             }
         )
 
-        result = enrich_result_payload(client, "SELECT count() FROM analytics.orders", {"rows": []})
+        result = self.agents_schema.enrich_result_payload(
+            client, "SELECT count() FROM analytics.orders", {"rows": []}
+        )
 
         items = result["agents_schema_context"]["items"]
         self.assertTrue(any("FINAL" in item for item in items))
@@ -241,7 +490,9 @@ class EnrichResultPayloadTests(unittest.TestCase):
             }
         )
 
-        result = enrich_result_payload(client, "SELECT count() FROM analytics.orders", {"rows": []})
+        result = self.agents_schema.enrich_result_payload(
+            client, "SELECT count() FROM analytics.orders", {"rows": []}
+        )
 
         self.assertTrue(any("FINAL" in item for item in result["agents_schema_context"]["items"]))
 
@@ -258,8 +509,12 @@ class EnrichResultPayloadTests(unittest.TestCase):
         }
         client = _FakeClient(responses, database="c")
 
-        with_bare = enrich_result_payload(client, "SELECT 1 FROM a.t JOIN b.t JOIN t", {"rows": []})
-        without_bare = enrich_result_payload(client, "SELECT 1 FROM a.t JOIN b.t", {"rows": []})
+        with_bare = self.agents_schema.enrich_result_payload(
+            client, "SELECT 1 FROM a.t JOIN b.t JOIN t", {"rows": []}, cache_scope=("test",)
+        )
+        without_bare = self.agents_schema.enrich_result_payload(
+            client, "SELECT 1 FROM a.t JOIN b.t", {"rows": []}, cache_scope=("test",)
+        )
 
         self.assertEqual(len(with_bare["agents_schema_context"]["items"]), 3)
         self.assertEqual(len(without_bare["agents_schema_context"]["items"]), 2)
@@ -273,10 +528,14 @@ class EnrichResultPayloadTests(unittest.TestCase):
         )
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        result = enrich_result_payload(client, "SELECT count() FROM analytics.orders_cdc", payload)
+        result = self.agents_schema.enrich_result_payload(
+            client, "SELECT count() FROM analytics.orders_cdc", payload
+        )
 
         items = result["agents_schema_context"]["items"]
-        self.assertTrue(any("SharedReplacingMergeTree" in item and "FINAL" in item for item in items))
+        self.assertTrue(
+            any("SharedReplacingMergeTree" in item and "FINAL" in item for item in items)
+        )
 
     def test_unqualified_reference_only_matches_current_database(self):
         client = _FakeClient(
@@ -288,7 +547,9 @@ class EnrichResultPayloadTests(unittest.TestCase):
         )
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        result = enrich_result_payload(client, "SELECT count() FROM orders", payload)
+        result = self.agents_schema.enrich_result_payload(
+            client, "SELECT count() FROM orders", payload
+        )
 
         self.assertNotIn("agents_schema_context", result)
 
@@ -296,7 +557,9 @@ class EnrichResultPayloadTests(unittest.TestCase):
         client = _FakeClient({"database = {db:String}": [], "engine LIKE": []}, database="mydb")
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        enrich_result_payload(client, "SELECT c FROM analytics.fct_revenue JOIN bare_table", payload)
+        self.agents_schema.enrich_result_payload(
+            client, "SELECT c FROM analytics.fct_revenue JOIN bare_table", payload
+        )
 
         engine_queries = [(sql, params) for sql, params in client.queries if "engine LIKE" in sql]
         self.assertEqual(len(engine_queries), 1)
@@ -312,10 +575,10 @@ class EnrichResultPayloadTests(unittest.TestCase):
             "database = {db:String}": [],
             "engine LIKE": [["CaseReview3", "t", "ReplacingMergeTree"]],
         }
-        exact = enrich_result_payload(
+        exact = self.agents_schema.enrich_result_payload(
             _FakeClient(responses, database="default"), "SELECT 1 FROM CaseReview3.t", {"rows": []}
         )
-        folded = enrich_result_payload(
+        folded = self.agents_schema.enrich_result_payload(
             _FakeClient(responses, database="default"), "SELECT 1 FROM casereview3.t", {"rows": []}
         )
 
@@ -334,7 +597,9 @@ class EnrichResultPayloadTests(unittest.TestCase):
         )
         client.uri = "http://host:8123"
 
-        result = enrich_result_payload(client, "SELECT count() FROM orders", {"rows": []})
+        result = self.agents_schema.enrich_result_payload(
+            client, "SELECT count() FROM orders", {"rows": []}
+        )
 
         items = result["agents_schema_context"]["items"]
         self.assertTrue(any("`analytics`.`orders`" in item for item in items))
@@ -350,11 +615,13 @@ class EnrichResultPayloadTests(unittest.TestCase):
         )
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        result = enrich_result_payload(client, "SELECT count() FROM orders", payload)
+        result = self.agents_schema.enrich_result_payload(
+            client, "SELECT count() FROM orders", payload
+        )
 
         self.assertEqual(result, {"columns": ["c"], "rows": [[1]]})
         self.assertEqual(len(client.queries), 1)
-        self.assertFalse(_current_db_cache)
+        self.assertFalse(self.agents_schema._current_db_cache)
 
     def test_failed_current_database_lookup_preserves_qualified_references(self):
         client = _FakeClient(
@@ -364,7 +631,7 @@ class EnrichResultPayloadTests(unittest.TestCase):
             }
         )
 
-        result = enrich_result_payload(
+        result = self.agents_schema.enrich_result_payload(
             client, "SELECT 1 FROM analytics.orders JOIN bare_table USING (id)", {"rows": []}
         )
 
@@ -374,21 +641,21 @@ class EnrichResultPayloadTests(unittest.TestCase):
         self.assertEqual(sum("currentDatabase" in sql for sql, _ in client.queries), 1)
 
     def test_qualified_references_do_not_need_current_database_lookup(self):
-        client = _FakeClient(
-            {"engine LIKE": [["analytics", "orders", "ReplacingMergeTree"]]}
-        )
+        client = _FakeClient({"engine LIKE": [["analytics", "orders", "ReplacingMergeTree"]]})
 
-        result = enrich_result_payload(client, "SELECT count() FROM analytics.orders", {"rows": []})
+        result = self.agents_schema.enrich_result_payload(
+            client, "SELECT count() FROM analytics.orders", {"rows": []}
+        )
 
         self.assertTrue(any("FINAL" in item for item in result["agents_schema_context"]["items"]))
         self.assertFalse(any("currentDatabase" in sql for sql, _ in client.queries))
 
     def test_unqualified_agents_queries_are_not_enriched(self):
-        client = _FakeClient(
-            {"database = {db:String}": [["ROOT"]]}, database="AGENTS"
-        )
+        client = _FakeClient({"database = {db:String}": [["ROOT"]]}, database="AGENTS")
 
-        result = enrich_result_payload(client, "SELECT * FROM ROOT", {"rows": []})
+        result = self.agents_schema.enrich_result_payload(
+            client, "SELECT * FROM ROOT", {"rows": []}
+        )
 
         self.assertEqual(result, {"rows": []})
         self.assertEqual(client.queries, [])
@@ -398,7 +665,9 @@ class EnrichResultPayloadTests(unittest.TestCase):
         payload = {"columns": ["c"], "rows": [[1]]}
 
         with patch.dict("os.environ", {"CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY": "false"}):
-            result = enrich_result_payload(client, "SELECT c FROM analytics.fct_revenue", payload)
+            result = self.agents_schema.enrich_result_payload(
+                client, "SELECT c FROM analytics.fct_revenue", payload
+            )
 
         self.assertNotIn("agents_schema_context", result)
         self.assertEqual(client.queries, [])
@@ -406,11 +675,16 @@ class EnrichResultPayloadTests(unittest.TestCase):
     def test_probe_cache_stays_bounded(self):
         client = _FakeClient({"database = {db:String}": []})
         for i in range(_CACHE_MAX_ENTRIES):
-            _probe_cache[f"stale-key-{i}"] = (0.0, frozenset())
+            self.agents_schema._probe_cache[f"stale-key-{i}"] = (0.0, frozenset())
 
-        enrich_result_payload(client, "SELECT c FROM analytics.fct_revenue", payload={"rows": []})
+        self.agents_schema.enrich_result_payload(
+            client,
+            "SELECT c FROM analytics.fct_revenue",
+            payload={"rows": []},
+            cache_scope=("test",),
+        )
 
-        self.assertLessEqual(len(_probe_cache), 1)
+        self.assertLessEqual(len(self.agents_schema._probe_cache), 1)
 
     def test_engine_notes_are_cached_per_client_and_tables(self):
         client = _FakeClient(
@@ -420,8 +694,12 @@ class EnrichResultPayloadTests(unittest.TestCase):
             }
         )
 
-        enrich_result_payload(client, "SELECT 1 FROM analytics.orders_cdc", {"rows": []})
-        enrich_result_payload(client, "SELECT 2 FROM analytics.orders_cdc", {"rows": []})
+        self.agents_schema.enrich_result_payload(
+            client, "SELECT 1 FROM analytics.orders_cdc", {"rows": []}, cache_scope=("test",)
+        )
+        self.agents_schema.enrich_result_payload(
+            client, "SELECT 2 FROM analytics.orders_cdc", {"rows": []}, cache_scope=("test",)
+        )
 
         engine_queries = [sql for sql, _ in client.queries if "engine LIKE" in sql]
         self.assertEqual(len(engine_queries), 1)
@@ -433,7 +711,9 @@ class EnrichResultPayloadTests(unittest.TestCase):
 
         payload = {"columns": ["c"], "rows": [[1]]}
 
-        result = enrich_result_payload(_BrokenClient(), "SELECT c FROM analytics.t", payload)
+        result = self.agents_schema.enrich_result_payload(
+            _BrokenClient(), "SELECT c FROM analytics.t", payload
+        )
 
         self.assertEqual(result, {"columns": ["c"], "rows": [[1]]})
 
@@ -454,11 +734,10 @@ class AgentsSchemaDiscoveryConfigTests(unittest.TestCase):
 
 
 class QueryEnrichmentExecutionTests(unittest.IsolatedAsyncioTestCase):
-    def test_sync_timeout_returns_base_result_and_cancels_queued_job(self):
+    def test_sync_timeout_returns_base_result_and_retains_job_slot(self):
         executors = MagicMock()
         clients = MagicMock()
-        future = MagicMock()
-        future.result.side_effect = concurrent.futures.TimeoutError
+        future = concurrent.futures.Future()
         executors.enrichment.submit.return_value = future
         queries = _Queries(executors, clients)
         serialized = '{"columns":["n"],"rows":[[1]]}'
@@ -466,13 +745,18 @@ class QueryEnrichmentExecutionTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("mcp_clickhouse.queries.discovery_enabled", return_value=True),
             patch("mcp_clickhouse.queries.query_may_need_enrichment", return_value=True),
+            patch("mcp_clickhouse.queries._ENRICHMENT_WAIT_SECONDS", 0),
         ):
             result = queries._enrich_serialized_result(serialized, "SELECT 1 FROM db.t", {})
 
         self.assertEqual(result, serialized)
-        future.cancel.assert_called_once_with()
+        self.assertFalse(future.cancelled())
+        self.assertTrue(queries._enrichment_slots.acquire(blocking=False))
+        self.assertFalse(queries._enrichment_slots.acquire(blocking=False))
+        future.set_result(serialized)
+        self.assertTrue(queries._enrichment_slots.acquire(blocking=False))
 
-    async def test_async_timeout_returns_base_result_and_cancels_queued_job(self):
+    async def test_async_timeout_returns_base_result_and_retains_job_slot(self):
         executors = MagicMock()
         clients = MagicMock()
         future = concurrent.futures.Future()
@@ -490,7 +774,11 @@ class QueryEnrichmentExecutionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result, serialized)
-        self.assertTrue(future.cancelled())
+        self.assertFalse(future.cancelled())
+        self.assertTrue(queries._enrichment_slots.acquire(blocking=False))
+        self.assertFalse(queries._enrichment_slots.acquire(blocking=False))
+        future.set_result(serialized)
+        self.assertTrue(queries._enrichment_slots.acquire(blocking=False))
 
 
 class _EnrichableFakeClient:
@@ -510,9 +798,9 @@ class _EnrichableFakeClient:
 
 
 @pytest.mark.asyncio
-async def test_run_query_tool_payload_includes_agents_schema_context():
+async def test_run_query_tool_payload_includes_agents_schema_context(monkeypatch):
     """MCP boundary check: the registered tool returns the enriched JSON."""
-    _clear_enrichment_caches()
+    monkeypatch.setattr(_queries, "agents_schema", _AgentsSchema())
     _clickhouse_clients._clear_client_cache()
     env = {
         "CLICKHOUSE_HOST": "localhost",
@@ -528,10 +816,7 @@ async def test_run_query_tool_payload_includes_agents_schema_context():
                     result = await client.call_tool(
                         "run_query",
                         {
-                            "query": (
-                                "SELECT c FROM analytics.orders_cdc "
-                                "WHERE id = {id:UInt32}"
-                            ),
+                            "query": ("SELECT c FROM analytics.orders_cdc WHERE id = {id:UInt32}"),
                             "params": {"id": 13},
                         },
                     )
@@ -540,7 +825,6 @@ async def test_run_query_tool_payload_includes_agents_schema_context():
         context = payload["agents_schema_context"]
         assert any("SharedReplacingMergeTree" in item for item in context["items"])
     finally:
-        _clear_enrichment_caches()
         _clickhouse_clients._clear_client_cache()
 
 

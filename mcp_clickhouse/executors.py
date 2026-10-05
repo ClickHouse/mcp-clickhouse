@@ -1,5 +1,7 @@
 import concurrent.futures
 
+_ENRICHMENT_MAX_WORKERS = 2
+
 
 class _Executors:
     """Worker pools owned by one server assembly."""
@@ -9,7 +11,7 @@ class _Executors:
         self.query = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         metadata_max_workers = max(1, min(4, max_workers))
         self.metadata = concurrent.futures.ThreadPoolExecutor(max_workers=metadata_max_workers)
-        self.enrichment = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        self.enrichment = concurrent.futures.ThreadPoolExecutor(max_workers=_ENRICHMENT_MAX_WORKERS)
         self.cancellation = concurrent.futures.ThreadPoolExecutor(max_workers=2)
         self.health = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 

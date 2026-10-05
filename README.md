@@ -699,6 +699,7 @@ for server assembly and registration, then follow the implementation into its ow
 | [mcp_server.py](mcp_clickhouse/mcp_server.py), [main.py](mcp_clickhouse/main.py) | Startup assembly, tool and prompt registration, shutdown coordination, and CLI startup |
 | [clients.py](mcp_clickhouse/clients.py) | Request configuration, cached ClickHouse connections, and client leases |
 | [queries.py](mcp_clickhouse/queries.py) | Query execution, cancellation, and destructive-operation guards |
+| [agents_schema.py](mcp_clickhouse/agents_schema.py) | Optional query-result context and server-owned metadata caches |
 | [metadata.py](mcp_clickhouse/metadata.py) | Database and table discovery, metadata models, and pagination |
 | [chdb_backend.py](mcp_clickhouse/chdb_backend.py), [chdb_prompt.py](mcp_clickhouse/chdb_prompt.py) | Optional chDB initialization, query execution, and prompt content |
 | [health.py](mcp_clickhouse/health.py), [executors.py](mcp_clickhouse/executors.py) | Health probes and caching, and the worker pools used by server operations |
@@ -706,7 +707,7 @@ for server assembly and registration, then follow the implementation into its ow
 | [mcp_env.py](mcp_clickhouse/mcp_env.py), [serialization.py](mcp_clickhouse/serialization.py) | Environment configuration and JSON result encoding |
 | [mcp_middleware_hook.py](mcp_clickhouse/mcp_middleware_hook.py), [skills_advisor.py](mcp_clickhouse/skills_advisor.py) | Custom middleware loading and server instructions |
 
-Each server assembly owns its worker pools, client cache, active queries, pagination cache,
+Each server assembly owns its worker pools, client and enrichment caches, active queries, pagination cache,
 health state, and chDB backend. Worker and client cleanup runs at process exit. Package imports
 initialize the default server, including when first importing an extracted module.
 
@@ -869,6 +870,9 @@ These variables control the MCP process itself, including transport, authenticat
   * Agents Schema uses the canonical, case-sensitive `AGENTS.ROOT` and `AGENTS.DBT_MODEL` objects. The connecting ClickHouse user needs `SELECT` access to receive governed metadata; missing access and an unpublished schema both degrade silently to the normal result
   * Engine lookups use `system.tables`, and all enrichment lookups use the same resolved client configuration—including request-scoped role and settings overrides—as the original query
   * Unqualified table names are enriched only when the current database can be resolved. Queries referencing canonical `AGENTS` tables, including unqualified names when connected to `AGENTS`, are not enriched
+  * Table matching is conservative, not a full SQL parser. Comments and string literals are ignored; simple quoted identifiers are supported. Queries with `WITH` clauses, nested comments, or more than 65,536 characters are skipped, as are table functions and unsupported references. No more than 32 distinct table references are enriched
+  * Enrichment admits at most two jobs per server, including jobs whose callers have timed out. When both slots are occupied, the original result returns immediately without queuing more work. Otherwise the caller waits up to three additional seconds; an already-started lookup may continue until its execution or network timeout
+  * Discovery, current-database, and engine caches are server-owned, bounded, and expire after five minutes. Custom configurations that cannot form a stable cache key bypass these caches. Model descriptions are limited to 300 Unicode characters in SQL before transfer
   * dbt descriptions currently match `schema_name.name`. Models configured with a different physical alias may not match until [agents_schema#41](https://github.com/dbt-labs/agents_schema/issues/41) is resolved
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None
