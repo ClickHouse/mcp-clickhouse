@@ -864,7 +864,8 @@ These variables control the MCP process itself, including transport, authenticat
   * Increase if your workload requires many concurrent tool calls
   * Metadata tools use a separate pool with `min(4, CLICKHOUSE_MCP_MAX_WORKERS)` threads so schema discovery cannot delay queries
 * `CLICKHOUSE_MCP_AGENTS_SCHEMA_DISCOVERY`: Enrich `run_query` results with Agents Schema and ClickHouse engine context
-  * Default: `"false"`, preserving the existing `run_query` response shape unless explicitly enabled
+  * Default: `"false"`, preserving the existing `run_query` response shape and tool description unless explicitly enabled
+  * Set this before server startup and restart the server after changing it. Only enabled servers advertise the optional context in the tool description; the description does not include setup instructions for this flag
   * Agents Schema uses the canonical, case-sensitive `AGENTS.ROOT` and `AGENTS.DBT_MODEL` objects. The connecting ClickHouse user needs `SELECT` access to receive governed metadata; missing access and an unpublished schema both degrade silently to the normal result
   * Engine lookups use `system.tables`, and all enrichment lookups use the same resolved client configuration—including request-scoped role and settings overrides—as the original query
   * Unqualified table names are enriched only when the current database can be resolved. Queries referencing canonical `AGENTS` tables, including unqualified names when connected to `AGENTS`, are not enriched
