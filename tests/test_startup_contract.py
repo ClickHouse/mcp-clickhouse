@@ -151,9 +151,11 @@ def test_fresh_submodule_import_preserves_registration_and_exports(
                 expected_prompts.add("chdb_initial_prompt")
 
             async def check_registration():
-                async with Client(server.mcp) as client:
-                    assert {tool.name for tool in await client.list_tools()} == expected_tools
-                    assert {prompt.name for prompt in await client.list_prompts()} == expected_prompts
+                for mode in ("auto", "legacy"):
+                    async with Client(server.mcp, mode=mode) as client:
+                        assert client.instructions == server.mcp.instructions
+                        assert {tool.name for tool in await client.list_tools()} == expected_tools
+                        assert {prompt.name for prompt in await client.list_prompts()} == expected_prompts
 
             asyncio.run(check_registration())
             os.environ["CLICKHOUSE_ENABLED"] = str(not clickhouse_enabled).lower()

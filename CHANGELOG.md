@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Added
+
+- A server-instruction hint to read `AGENTS.ROOT` through `run_query` when `list_databases` reveals an `AGENTS` database, before writing analytical SQL. This adds discovery guidance only; no automatic metadata queries or tool-result changes.
+
 ## 0.7.0 - 2026-09-18
 
 ### Added

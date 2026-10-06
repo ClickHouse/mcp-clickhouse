@@ -50,6 +50,15 @@ integers and booleans keep their JSON types.
     * `next_page_token`: Pass this single-use value back before it expires to fetch the next page, or `null` when there are no more tables.
     * `total_tables`: Total count of tables that match the supplied filters.
 
+#### Agents Schema discovery
+
+The server instructions suggest reading [Agents Schema](https://github.com/dbt-labs/agents_schema)'s
+canonical `AGENTS.ROOT` through `run_query` when `list_databases` reveals an `AGENTS`
+database, before writing analytical SQL. This is guidance for the agent: no metadata
+is fetched automatically, tool results are unchanged, and existing ClickHouse
+permissions still apply. If `AGENTS.ROOT` is missing or inaccessible, normal discovery
+and queries remain available.
+
 #### Query parameters
 
 Pass values separately from SQL through the optional `params` object:
