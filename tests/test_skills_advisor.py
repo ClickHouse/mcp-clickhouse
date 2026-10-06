@@ -14,5 +14,12 @@ class TestSkillsAdvisorInstructions(unittest.TestCase):
         self.assertIn("github.com/ClickHouse/agent-skills", mcp.instructions)
         self.assertIn("skills add clickhouse/agent-skills", mcp.instructions)
 
+    def test_agents_schema_hint_follows_database_discovery(self):
+        instructions = " ".join(mcp.instructions.split())
+        self.assertIn("If `list_databases` reveals an `AGENTS` database", instructions)
+        self.assertIn("use `run_query` to read `AGENTS.ROOT`", instructions)
+        self.assertIn("before writing analytical SQL", instructions)
+
+
 if __name__ == "__main__":
     unittest.main()
