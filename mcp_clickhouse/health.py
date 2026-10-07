@@ -13,7 +13,8 @@ from starlette.responses import PlainTextResponse
 from mcp_clickhouse import clients
 from mcp_clickhouse.chdb_backend import _ChDBBackend
 from mcp_clickhouse.executors import _Executors
-from mcp_clickhouse.mcp_env import get_chdb_config
+from mcp_clickhouse.mcp_env import get_chdb_config, get_postgres_config
+from mcp_clickhouse.postgres_backend import _PostgresBackend
 
 logger = logging.getLogger("mcp-clickhouse")
 
@@ -51,6 +52,7 @@ class _Health:
     """Keep health probes and cached results local to one server assembly."""
 
     chdb_backend: _ChDBBackend
+    postgres_backend: _PostgresBackend
 
     def __init__(self, executors: _Executors, clickhouse_clients: clients._ClickHouseClients):
         self.executors = executors
@@ -140,23 +142,29 @@ class _Health:
             clickhouse_enabled = os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true"
 
             if not clickhouse_enabled:
-                # If ClickHouse is disabled, check chDB status
-                chdb_config = get_chdb_config()
-                if chdb_config.enabled and self.chdb_backend.client is not None:
-                    return PlainTextResponse("OK")
-                elif chdb_config.enabled and self.chdb_backend.error_message:
+                # If ClickHouse is disabled, report whether the other backends initialized.
+                # Postgres is not probed; each tool call opens its own connection.
+                chdb_enabled = get_chdb_config().enabled
+                postgres_enabled = get_postgres_config().enabled
+                if chdb_enabled and self.chdb_backend.client is None and self.chdb_backend.error_message:
                     return PlainTextResponse(
                         "ERROR. chDB initialization failed. Check server logs for details.",
                         status_code=503,
                     )
-                else:
-                    logger.error(
-                        "Health check failed: both CLICKHOUSE_ENABLED=false and CHDB_ENABLED=false"
-                    )
+                if postgres_enabled and self.postgres_backend.psycopg is None:
                     return PlainTextResponse(
-                        "ERROR. Server misconfigured. Check server logs for details.",
+                        "ERROR. Postgres initialization failed. Check server logs for details.",
                         status_code=503,
                     )
+                if (chdb_enabled and self.chdb_backend.client is not None) or postgres_enabled:
+                    return PlainTextResponse("OK")
+                logger.error(
+                    "Health check failed: CLICKHOUSE_ENABLED=false and no other backend is enabled"
+                )
+                return PlainTextResponse(
+                    "ERROR. Server misconfigured. Check server logs for details.",
+                    status_code=503,
+                )
 
             cached_result = self._cached_health_result()
             if cached_result is not None:

@@ -48,6 +48,18 @@ jobs:
         ports:
           - 9000:9000
           - 8123:8123
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
 
     steps:
       - name: Checkout repository
@@ -79,6 +91,11 @@ jobs:
           CLICKHOUSE_SECURE: "false"
           CLICKHOUSE_VERIFY: "false"
           CHDB_ENABLED: "true"
+          POSTGRES_ENABLED: "true"
+          POSTGRES_HOST: "localhost"
+          POSTGRES_USER: "postgres"
+          POSTGRES_PASSWORD: "postgres"
+          POSTGRES_SSLMODE: "disable"
         run: |
           uv run --python "${{ matrix.python_version }}" --no-sync pytest tests
 

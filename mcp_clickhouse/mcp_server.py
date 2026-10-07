@@ -17,12 +17,14 @@ from mcp_clickhouse.health import _Health
 from mcp_clickhouse.mcp_env import (
     get_chdb_config,
     get_mcp_config,
+    get_postgres_config,
 )
 from mcp_clickhouse.metadata import (
     _Metadata,
     fetch_table_names_from_system as fetch_table_names_from_system,
     get_paginated_table_data as get_paginated_table_data,
 )
+from mcp_clickhouse.postgres_backend import _PostgresBackend
 from mcp_clickhouse.queries import _Queries
 from mcp_clickhouse.skills_advisor import CLICKHOUSE_SERVER_INSTRUCTIONS
 from mcp_clickhouse.transport import ClickHouseFastMCP as ClickHouseFastMCP
@@ -63,9 +65,11 @@ mcp = ClickHouseFastMCP(
     instructions=CLICKHOUSE_SERVER_INSTRUCTIONS,
 )
 _chdb_backend = _ChDBBackend(_executors)
+_postgres_backend = _PostgresBackend(_executors)
 
 
 _health.chdb_backend = _chdb_backend
+_health.postgres_backend = _postgres_backend
 health_check = mcp.custom_route("/health", methods=["GET"])(_health.health_check)
 
 
@@ -133,6 +137,54 @@ def _register_chdb_tools():
     logger.info("chDB tools and prompts registered")
 
 
+def _register_postgres_tools():
+    """Register Postgres tools when the feature is enabled and the driver is available.
+
+    Note: This function is not idempotent. Calling it multiple times will
+    register duplicate tools. It is intended to be called once at module load.
+    """
+    if not get_postgres_config().enabled:
+        return
+
+    if not _postgres_backend._init_driver():
+        logger.warning("Postgres is enabled but unavailable; skipping Postgres tool registration")
+        return
+
+    mcp.add_tool(
+        Tool.from_function(
+            _postgres_backend.list_postgres_schemas_async, name="list_postgres_schemas"
+        )
+    )
+    mcp.add_tool(
+        Tool.from_function(
+            _postgres_backend.list_postgres_tables_async, name="list_postgres_tables"
+        )
+    )
+    mcp.add_tool(
+        Tool.from_function(
+            _postgres_backend.run_postgres_query_async,
+            name="run_postgres_query",
+            description=(
+                "Execute one SQL statement in Postgres, using Postgres SQL syntax. This is a "
+                "separate database from ClickHouse; use run_query for ClickHouse. Each call "
+                "runs in its own transaction on a fresh connection, so SET and temporary "
+                "tables do not persist between calls. A string holding several statements, "
+                "and transaction control such as COMMIT, is rejected. Statements run in a "
+                "READ ONLY transaction by default, which Postgres enforces for data changes "
+                "and DDL but not for maintenance commands such as ANALYZE or LOCK. Set POSTGRES_ALLOW_WRITE_ACCESS=true to commit DDL "
+                "and DML. Set POSTGRES_ALLOW_DROP=true to additionally allow destructive "
+                "statements (DROP, TRUNCATE, DELETE, UPDATE, CREATE OR REPLACE). That gate is "
+                "a best-effort accident guard, not a security boundary. Use EXPLAIN <query> "
+                "to see the plan and estimated rows without running the query body. The "
+                "server cancels statements that exceed the tool timeout. Integers outside "
+                "[-9007199254740991, 9007199254740991] and numeric values are returned as "
+                "strings."
+            ),
+        )
+    )
+    logger.info("Postgres tools registered")
+
+
 if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
     mcp.add_tool(Tool.from_function(list_databases_async, name="list_databases"))
     mcp.add_tool(Tool.from_function(list_tables_async, name="list_tables"))
@@ -170,3 +222,4 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
 
 
 _register_chdb_tools()
+_register_postgres_tools()
