@@ -28,7 +28,7 @@ def _run_python(isolated_package, script, env=None):
         name: value
         for name, value in os.environ.items()
         if not name.casefold().startswith(
-            ("clickhouse_", "chdb_", "fastmcp_", "mcp_", "python_dotenv")
+            ("clickhouse_", "chdb_", "fastmcp_", "mcp_", "postgres_", "python_dotenv")
         )
     }
     child_env.update(

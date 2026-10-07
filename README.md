@@ -4,7 +4,7 @@
 
 [![PyPI - Version](https://img.shields.io/pypi/v/mcp-clickhouse)](https://pypi.org/project/mcp-clickhouse)
 
-An MCP server for ClickHouse.
+An MCP server for ClickHouse, with optional tools for chDB and Postgres.
 
 <a href="https://glama.ai/mcp/servers/yvjy4csvo1"><img width="380" height="200" src="https://glama.ai/mcp/servers/yvjy4csvo1/badge" alt="mcp-clickhouse MCP server" /></a>
 
@@ -152,6 +152,40 @@ Neither statement runs the query body, but analysis is not always free: `DESCRIB
   * Query data directly from various sources (files, URLs, databases) without ETL processes.
   * Requires the optional `chdb` extra: `pip install 'mcp-clickhouse[chdb]'`
 
+### Postgres Tools
+
+Optional tools for querying a Postgres database alongside ClickHouse, using Postgres SQL
+directly rather than through ClickHouse's `postgresql()` table function. They are
+registered when `POSTGRES_ENABLED=true` and require the optional `postgres` extra:
+`pip install 'mcp-clickhouse[postgres]'`. See [Postgres Variables](#postgres-variables).
+
+Responses use the same JSON encoding as the ClickHouse tools. Integers outside
+`[-9007199254740991, 9007199254740991]` and `numeric` values are returned as strings.
+`json` and `jsonb` values are returned as JSON, and timestamps as strings.
+
+* `run_postgres_query`
+  * Execute one SQL statement in Postgres.
+  * Input: `query` (string): The SQL statement to execute.
+  * Response shape: `{"columns": [...], "rows": [[...], ...]}`. Statements without a result set, such as DDL, return empty `columns` and `rows`.
+  * Each call opens a new connection and runs in its own transaction, so `SET`, temporary tables, and prepared statements do not carry over to the next call.
+  * A string holding several statements is rejected, as are transaction control statements such as `COMMIT` and `PREPARE TRANSACTION`. The statement runs in a `READ ONLY` transaction by default, which Postgres enforces. See [Postgres read-only mode and write access](#postgres-read-only-mode-and-write-access).
+  * `statement_timeout` is set to `CLICKHOUSE_MCP_QUERY_TIMEOUT` for the transaction, and a statement still running when the tool times out or is cancelled is cancelled on the server.
+  * `EXPLAIN <query>` shows the plan and estimated rows without running the query body. `EXPLAIN ANALYZE` runs the query.
+
+* `list_postgres_schemas`
+  * List schemas the configured role has `USAGE` on, excluding `pg_catalog`, `information_schema`, and the toast and temporary schemas.
+
+* `list_postgres_tables`
+  * List tables, partitioned tables, views, materialized views, and foreign tables in a schema with pagination. Partitions are omitted; their partitioned parent is listed.
+  * Required input: `schema` (string).
+  * Optional inputs:
+    * `like` / `not_like` (string): Apply `LIKE` or `NOT LIKE` filters to table names.
+    * `page_token` (string): Token returned by a previous call. Pass the same `schema`, `like`, and `not_like` with it. Tokens are stateless and do not expire.
+    * `page_size` (int, default `50`): Number of tables returned per page; must be greater than `0`.
+    * `include_detailed_columns` (bool, default `true`): When `false`, omits column metadata.
+  * Each table has `schema`, `name`, `kind`, `comment`, `estimated_rows` (from planner statistics, `null` if never analyzed), `total_bytes`, `primary_key` (column names or `null`), and `columns`. Each column has `name`, `column_type`, `nullable`, `default_kind` (`default`, `identity`, `generated`, or `null`), `default_expression`, and `comment`.
+  * Response shape: `tables`, `next_page_token` (`null` when there are no more tables), and `total_tables`, as for `list_tables`.
+
 ### Health Check Endpoint
 
 When running with HTTP or SSE transport, a health check endpoint is available at `/health`. This endpoint:
@@ -159,6 +193,8 @@ When running with HTTP or SSE transport, a health check endpoint is available at
 - Returns `503 Service Unavailable` with a generic error message if the server cannot connect to ClickHouse
 - Returns `503` if a ClickHouse probe does not finish within two seconds. Concurrent requests share one in-flight probe
 - Reuses a completed probe result for one second, so probes that arrive in quick succession do not each connect to ClickHouse. A failure or a recovery can therefore be reported up to a second late
+
+When `CLICKHOUSE_ENABLED=false`, the endpoint does not probe a database. It returns `200 OK` when chDB initialized or the Postgres tools are enabled and their driver loaded, and `503` when an enabled chDB or Postgres backend failed to initialize. Postgres is never probed, because each Postgres tool call opens its own connection.
 
 GET and HEAD requests to the endpoint are intentionally unauthenticated and exempt from Host and Origin validation so orchestrator probes (e.g. Kubernetes liveness/readiness, load balancers) can use runtime-assigned pod or target IPs without extra configuration. `/health` is reserved and cannot be used as the MCP transport path. The response body is deliberately minimal to avoid leaking backend version strings or error details; debug failures via the server logs.
 
@@ -298,7 +334,7 @@ export CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000
 
 ## Configuration
 
-This MCP server supports both ClickHouse and chDB. You can enable either or both depending on your needs.
+This MCP server supports ClickHouse, chDB, and Postgres. You can enable any combination depending on your needs.
 Python 3.10 through 3.14 are supported. Python 3.12 is recommended for local launches.
 
 1. Open the Claude Desktop configuration file located at:
@@ -422,6 +458,36 @@ You can also enable both ClickHouse and chDB simultaneously:
 }
 ```
 
+To query Postgres alongside ClickHouse, install the `postgres` extra and add the Postgres variables:
+
+```json
+{
+  "mcpServers": {
+    "mcp-clickhouse": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp-clickhouse[postgres]",
+        "--python",
+        "3.12",
+        "mcp-clickhouse"
+      ],
+      "env": {
+        "CLICKHOUSE_HOST": "<clickhouse-host>",
+        "CLICKHOUSE_USER": "<clickhouse-user>",
+        "CLICKHOUSE_PASSWORD": "<clickhouse-password>",
+        "POSTGRES_ENABLED": "true",
+        "POSTGRES_HOST": "<postgres-host>",
+        "POSTGRES_USER": "<postgres-user>",
+        "POSTGRES_PASSWORD": "<postgres-password>",
+        "POSTGRES_DATABASE": "<postgres-database>"
+      }
+    }
+  }
+}
+```
+
 3. Locate the command entry for `uv` and replace it with the absolute path to the `uv` executable. This ensures that the correct version of `uv` is used when starting the server. On a mac, you can find this path using `which uv`.
 
 4. Restart Claude Desktop to apply the changes.
@@ -456,6 +522,25 @@ To enable destructive operations, set both flags:
 This two-tier approach makes accidental deletion difficult:
 - **Write operations** (INSERT, CREATE, ALTER ADD COLUMN) require `CLICKHOUSE_ALLOW_WRITE_ACCESS=true`
 - **Destructive operations** (DROP, TRUNCATE, DELETE, UPDATE, and the rest of the list above) additionally require `CLICKHOUSE_ALLOW_DROP=true`
+
+### Postgres read-only mode and write access
+
+`run_postgres_query` runs each statement in a `BEGIN READ ONLY` transaction and rolls it back. Postgres then rejects data changes and DDL, including those made from functions. The statement is sent with the extended query protocol, which rejects a string holding several statements. Transaction control statements (`BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `ABORT`, `START TRANSACTION`, `PREPARE TRANSACTION`) are rejected in every mode, so a call cannot end its transaction early or leave a prepared transaction behind. Metadata tools always use read-only transactions.
+
+`READ ONLY` does not block everything. Maintenance commands and functions such as `ANALYZE`, `REINDEX`, `CLUSTER`, `LOCK TABLE`, `CHECKPOINT`, `NOTIFY`, advisory locks, `pg_cancel_backend`, and `pg_terminate_backend` still run when the role has the privilege for them. Several need only table ownership, and `REINDEX` or `LOCK TABLE` can block other sessions until the tool timeout. Connect as a role that owns no objects.
+
+Set `POSTGRES_ALLOW_WRITE_ACCESS=true` to commit statements instead. Write mode starts transactions in the server's default mode rather than forcing `READ WRITE`, so reads keep working against a standby. Destructive statements additionally require `POSTGRES_ALLOW_DROP=true`. That check matches `DROP` (including `ALTER TABLE ... DROP COLUMN`), `TRUNCATE`, `DELETE`, `UPDATE` (including `ON CONFLICT DO UPDATE`, `MERGE ... UPDATE`, and `SELECT ... FOR UPDATE`), and `CREATE OR REPLACE`. Keywords inside string literals, quoted identifiers, and comments are ignored, and so are foreign key `ON DELETE` / `ON UPDATE` actions, trigger events such as `BEFORE UPDATE`, and `GRANT` / `REVOKE` privilege lists. Dollar-quoted text is checked, so a `DROP` inside a `DO` block or function body is caught. If a write-mode call times out or is cancelled, its transaction is rolled back rather than committed. Like the ClickHouse check, it runs in the MCP server and is a best-effort accident guard, not a security boundary.
+
+The security boundary is the Postgres role. Use a dedicated role with only the privileges it needs that owns no objects, and avoid superusers and roles with `pg_write_server_files`, `pg_execute_server_program`, or access to extensions such as `dblink` and `postgres_fdw` that open other connections:
+
+```sql
+CREATE ROLE mcp_reader LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE app TO mcp_reader;
+GRANT USAGE ON SCHEMA public TO mcp_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_reader;
+```
+
+The `pg_read_all_data` predefined role (Postgres 14 and later) grants read access to every table instead.
 
 ### Running Without uv (Using System Python)
 
@@ -668,7 +753,7 @@ and grants.
 
 ## Development
 
-1. In `test-services` directory run `docker compose up -d` to start the ClickHouse cluster.
+1. In `test-services` directory run `docker compose up -d` to start the ClickHouse and Postgres servers.
 
 2. Add the following variables to a `.env` file in the root of the repository.
 
@@ -709,13 +794,14 @@ for server assembly and registration, then follow the implementation into its ow
 | [queries.py](mcp_clickhouse/queries.py) | Query execution, cancellation, and destructive-operation guards |
 | [metadata.py](mcp_clickhouse/metadata.py) | Database and table discovery, metadata models, and pagination |
 | [chdb_backend.py](mcp_clickhouse/chdb_backend.py), [chdb_prompt.py](mcp_clickhouse/chdb_prompt.py) | Optional chDB initialization, query execution, and prompt content |
+| [postgres_backend.py](mcp_clickhouse/postgres_backend.py) | Optional Postgres driver loading, guarded query execution, cancellation, and catalog discovery |
 | [health.py](mcp_clickhouse/health.py), [executors.py](mcp_clickhouse/executors.py) | Health probes and caching, and the worker pools used by server operations |
 | [auth.py](mcp_clickhouse/auth.py), [transport.py](mcp_clickhouse/transport.py), [http_security.py](mcp_clickhouse/http_security.py) | Dotenv loading, authentication, HTTP/SSE app construction, and Host/Origin validation |
 | [mcp_env.py](mcp_clickhouse/mcp_env.py), [serialization.py](mcp_clickhouse/serialization.py) | Environment configuration and JSON result encoding |
 | [mcp_middleware_hook.py](mcp_clickhouse/mcp_middleware_hook.py), [skills_advisor.py](mcp_clickhouse/skills_advisor.py) | Custom middleware loading and server instructions |
 
 Each server assembly owns its worker pools, client cache, active queries, pagination cache,
-health state, and chDB backend. Worker and client cleanup runs at process exit. Package imports
+health state, chDB backend, and Postgres backend. Worker and client cleanup runs at process exit. Package imports
 initialize the default server, including when first importing an extracted module.
 
 In tests, patch the module or owner instance where the code reads a dependency. For example,
@@ -730,7 +816,7 @@ Configuration is split into **independent** groups. Mixing them up is a common c
 |-------|-----------|----------|
 | **ClickHouse database connection** | `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_SECURE`, `CLICKHOUSE_VERIFY`, certificate variables | How **this MCP server** connects to your ClickHouse cluster over the **HTTP interface** |
 | **MCP server / transport** | `CLICKHOUSE_MCP_*`, `FASTMCP_SERVER_AUTH`, `FASTMCP_SERVER_AUTH_*`, `FASTMCP_ENV_FILE` | MCP transport, authentication, and query-tool execution limits |
-| **Middleware / chDB** | `MCP_MIDDLEWARE_MODULE`, `CHDB_*` | Optional extensions |
+| **Middleware / chDB / Postgres** | `MCP_MIDDLEWARE_MODULE`, `CHDB_*`, `POSTGRES_*` | Optional extensions |
 
 > [!IMPORTANT]
 > `CLICKHOUSE_SECURE`, `CLICKHOUSE_VERIFY`, `CLICKHOUSE_CA_CERT`, `CLICKHOUSE_CLIENT_CERT`, `CLICKHOUSE_CLIENT_CERT_KEY`, `CLICKHOUSE_TLS_MODE`, and `CLICKHOUSE_PORT` apply to the outbound **ClickHouse database** connection only. They do **not** configure TLS, client certificates, ports, or authentication for the inbound MCP HTTP/SSE endpoint.
@@ -816,7 +902,7 @@ mcp-clickhouse requires clickhouse-connect 1.x, starting with 1.0.0.
   * Set this to automatically connect to a specific database
 * `CLICKHOUSE_ENABLED`: Enable/disable ClickHouse database tools
   * Default: `"true"`
-  * Set to `"false"` to disable ClickHouse tools when using chDB only
+  * Set to `"false"` to disable ClickHouse tools when using only chDB or Postgres
 * `CLICKHOUSE_ALLOW_WRITE_ACCESS`: Allow write operations (DDL and DML) against ClickHouse
   * Default: `"false"`
   * Set to `"true"` to allow non-destructive DDL and DML (CREATE, INSERT, ALTER ADD COLUMN). Destructive statements additionally need `CLICKHOUSE_ALLOW_DROP=true`
@@ -975,6 +1061,34 @@ On an IPv6 or dual-stack bind, IPv4 proxies may appear as IPv4-mapped addresses 
   * Use `:memory:` for in-memory database
   * Use a file path for persistent storage (e.g., `/path/to/chdb/data`)
 
+#### Postgres Variables
+
+These configure the outbound connection to Postgres. They are independent of the ClickHouse variables, and the `CLICKHOUSE_MCP_*` transport variables apply to the Postgres tools too. `CLICKHOUSE_MCP_QUERY_TIMEOUT` bounds Postgres statements.
+
+* `POSTGRES_ENABLED`: Enable/disable the Postgres tools
+  * Default: `"false"`
+  * Requires installing the optional extra: `mcp-clickhouse[postgres]`
+  * When `true`, `POSTGRES_HOST` and `POSTGRES_USER` are required and the server fails to start without them
+* `POSTGRES_HOST`: The hostname of the Postgres server
+* `POSTGRES_USER`: The role to connect as
+* `POSTGRES_PASSWORD`: The password for the role
+  * Default: unset, so libpq falls back to its own sources such as a password file
+* `POSTGRES_PORT`: The port number
+  * Default: `"5432"`
+* `POSTGRES_DATABASE`: The database to connect to
+  * Default: unset, so libpq uses a database with the same name as the user
+* `POSTGRES_SSLMODE`: libpq `sslmode`: `disable`, `allow`, `prefer`, `require`, `verify-ca`, or `verify-full`
+  * Default: `"verify-full"`, which requires TLS and checks the certificate and host name
+  * Set to `"disable"` for a local server without TLS
+* `POSTGRES_SSLROOTCERT`: Path to a PEM CA bundle used to verify the server certificate
+  * Default: the [certifi](https://pypi.org/project/certifi/) bundle when `POSTGRES_SSLMODE` is `verify-ca` or `verify-full`. Set this for a private CA
+* `POSTGRES_CONNECT_TIMEOUT`: Connection timeout in seconds
+  * Default: `"30"`
+* `POSTGRES_ALLOW_WRITE_ACCESS`: Commit statements instead of running them in read-only transactions
+  * Default: `"false"`
+* `POSTGRES_ALLOW_DROP`: Allow destructive statements when write access is also enabled
+  * Default: `"false"`
+
 #### Common configuration pitfalls
 
 * **`CLICKHOUSE_SECURE` vs MCP / ingress TLS** — Turning off `CLICKHOUSE_SECURE` because the MCP server sits behind Kubernetes ingress, a reverse proxy, or is reached over plain HTTP does not disable database TLS; it only changes how this process connects to ClickHouse. Configure ingress TLS separately from the database client settings.
@@ -1075,6 +1189,18 @@ CLICKHOUSE_ENABLED=false
 CHDB_DATA_PATH=/path/to/chdb/data
 ```
 
+For Postgres only:
+
+```env
+CLICKHOUSE_ENABLED=false
+POSTGRES_ENABLED=true
+POSTGRES_HOST=db.example.com
+POSTGRES_USER=mcp_reader
+POSTGRES_PASSWORD=your-password
+POSTGRES_DATABASE=app
+# POSTGRES_SSLMODE defaults to verify-full
+```
+
 For MCP Inspector or remote access with HTTP transport:
 
 ```env
@@ -1140,10 +1266,21 @@ Note: The bind host and port settings are only used when transport is set to "ht
 uv sync --all-extras --dev # install dev dependencies
 uv run ruff check . # run linting
 
-docker compose up -d test_services # start ClickHouse
+docker compose -f test-services/docker-compose.yaml up -d # start ClickHouse and Postgres
 uv run pytest -v tests
 uv run pytest -v tests/test_tool.py # ClickHouse only
 CHDB_ENABLED=true uv run --extra chdb pytest -v tests/test_chdb_tool.py # chDB only
+```
+
+The Postgres integration tests in `tests/test_postgres_tool.py` are skipped unless the
+Postgres tools are registered. Set these before running the suite to include them:
+
+```bash
+POSTGRES_ENABLED=true
+POSTGRES_HOST=localhost
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_SSLMODE=disable
 ```
 
 ## YouTube Overview

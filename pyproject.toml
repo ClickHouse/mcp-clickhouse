@@ -22,6 +22,7 @@ dependencies = [
      "cachetools>=5.5.0",
      "uvicorn>=0.31.0",
      "simplejson>=3.17.2,<5",
+     "certifi",
 ]
 
 [project.scripts]
@@ -38,6 +39,9 @@ dev = [
     "ruff",
     "pytest",
     "pytest-asyncio"
+]
+postgres = [
+    "psycopg[binary]>=3.2,<4",
 ]
 
 [tool.hatch.build.targets.wheel]

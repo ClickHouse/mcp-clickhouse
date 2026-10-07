@@ -6,7 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Optional Postgres tools: `run_postgres_query`, `list_postgres_schemas`, and `list_postgres_tables`, enabled with `POSTGRES_ENABLED=true` and the new `mcp-clickhouse[postgres]` extra. Connections are configured with `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE`, `POSTGRES_SSLMODE` (default `verify-full`), `POSTGRES_SSLROOTCERT`, and `POSTGRES_CONNECT_TIMEOUT`. Statements run one at a time in Postgres-enforced `READ ONLY` transactions by default, and transaction control statements are rejected. `POSTGRES_ALLOW_WRITE_ACCESS=true` commits them, and destructive statements additionally require `POSTGRES_ALLOW_DROP=true`. Statements are bounded by `CLICKHOUSE_MCP_QUERY_TIMEOUT` and cancelled on the server when the tool times out. A write-mode call that times out is rolled back. ClickHouse tools and ClickHouse-only installs are unchanged.
 - A server-instruction hint to read `AGENTS.ROOT` through `run_query` when `list_databases` reveals an `AGENTS` database, before writing analytical SQL. This adds discovery guidance only; no automatic metadata queries or tool-result changes.
+
+### Changed
+
+- With `CLICKHOUSE_ENABLED=false`, `/health` now also reports `OK` when the Postgres tools are enabled and `503` when the Postgres driver failed to load.
 
 ## 0.7.0 - 2026-09-18
 
