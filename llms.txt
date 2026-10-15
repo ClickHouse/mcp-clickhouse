@@ -1,0 +1,18 @@
+# mcp-clickhouse
+
+> An MCP server for ClickHouse that exposes tools for running SQL queries, listing databases, and listing tables, with read-only access by default.
+
+Implements MCP 2026-07-28 with legacy handshake support back to 2024-11-05. Tools include run_query (with optional params for ClickHouse {name:Type} placeholders), list_databases, and paginated list_tables. Queries run read-only unless CLICKHOUSE_ALLOW_WRITE_ACCESS is enabled; run_query also supports DESCRIBE and EXPLAIN ESTIMATE for checking queries before execution.
+
+## Docs
+
+- [mcp-clickhouse README](https://raw.githubusercontent.com/ClickHouse/mcp-clickhouse/main/README.md): MCP server for ClickHouse: protocol versions, legacy handshakes, and JSON-encoded tool responses.
+- [Features](https://github.com/ClickHouse/mcp-clickhouse/blob/main/README.md#features): ClickHouse tools like run_query, list_databases, and list_tables with pagination, filters, and read-only defaults.
+- [Security](https://github.com/ClickHouse/mcp-clickhouse/blob/main/README.md#security): Authentication for HTTP/SSE transports: bearer tokens, OAuth/OIDC via FastMCP, and verifying unauthenticated requests fail.
+- [Configuration](https://github.com/ClickHouse/mcp-clickhouse/blob/main/README.md#configuration): Setting up Claude Desktop config for ClickHouse or chDB, uv paths, and optional write access.
+- [Custom Middleware](https://github.com/ClickHouse/mcp-clickhouse/blob/main/README.md#custom-middleware): Adding custom FastMCP middleware via MCP_MIDDLEWARE_MODULE, with hooks and an example module.
+- [Development](https://github.com/ClickHouse/mcp-clickhouse/blob/main/README.md#development): Local development setup with docker compose, .env variables, MCP Inspector, code layout, and environment variables.
+
+## Optional
+
+- [Changelog](https://raw.githubusercontent.com/ClickHouse/mcp-clickhouse/main/CHANGELOG.md): Notable changes per release, including new TLS certificate settings, query parameter binding, and health endpoint caching.
