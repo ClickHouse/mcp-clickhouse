@@ -430,6 +430,8 @@ You can also enable both ClickHouse and chDB simultaneously:
 
 By default, this MCP enforces read-only queries so that accidental mutations cannot happen during exploration. To allow DDL or INSERT statements, set the `CLICKHOUSE_ALLOW_WRITE_ACCESS` environment variable to `true`. The server keeps enforcing read-only mode if the ClickHouse instance itself disallows writes.
 
+Read-only mode still permits the ClickHouse user to cancel its own queries, including queries from other connections using the same user. Use a dedicated ClickHouse user even in read-only mode. Use separate ClickHouse users for workloads that must not cancel each other's queries.
+
 ### Destructive Operation Protection
 
 Even when write access is enabled (`CLICKHOUSE_ALLOW_WRITE_ACCESS=true`), destructive operations require an additional opt-in flag for safety. The check covers any `DROP` statement (including the `ALTER TABLE ... DROP PARTITION` / `DROP PART` / `DROP COLUMN` clauses), any `TRUNCATE`, `DELETE` and `UPDATE` (both the lightweight statements and the `ALTER TABLE ... DELETE` / `ALTER TABLE ... UPDATE` mutations), `REPLACE TABLE`, `CREATE OR REPLACE`, `ALTER TABLE ... REPLACE PARTITION`, `ALTER TABLE ... CLEAR COLUMN` / `CLEAR INDEX` / `CLEAR PROJECTION`, and `DETACH ... PERMANENTLY`. Keywords inside string literals, quoted identifiers, SQL comments, and `{name:Type}` parameter names are ignored, so they neither trigger the check nor hide a statement from it.
@@ -443,7 +445,7 @@ CREATE USER mcp_agent IDENTIFIED BY '...';
 GRANT SELECT, INSERT, CREATE TABLE, ALTER ADD COLUMN ON mydb.* TO mcp_agent;
 ```
 
-Every statement outside these grants then fails server-side with `ACCESS_DENIED`, regardless of MCP flags. The server settings `max_table_size_to_drop` and `max_partition_size_to_drop` can also cap blast radius if pinned with settings constraints.
+Data-changing operations that require privileges outside these grants fail server-side with `ACCESS_DENIED`, regardless of MCP flags. The server settings `max_table_size_to_drop` and `max_partition_size_to_drop` can also cap blast radius if pinned with settings constraints.
 
 To enable destructive operations, set both flags:
 ```json
