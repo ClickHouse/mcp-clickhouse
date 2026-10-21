@@ -26,12 +26,15 @@ _CONTENT_HEADERS = {
     "content-type": "application/json",
 }
 _CLICKHOUSE_TOOL_NAMES = ["list_databases", "list_tables", "run_query"]
+_POSTGRES_TOOL_NAMES = ["list_postgres_schemas", "list_postgres_tables", "run_postgres_query"]
 
 
 def _assert_registered_tool_names(tool_names: list[str]) -> None:
     expected = list(_CLICKHOUSE_TOOL_NAMES)
     if "run_chdb_select_query" in tool_names:
         expected.append("run_chdb_select_query")
+    if "run_postgres_query" in tool_names:
+        expected.extend(_POSTGRES_TOOL_NAMES)
     assert tool_names == expected
 
 

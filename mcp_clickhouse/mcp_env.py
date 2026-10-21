@@ -11,6 +11,8 @@ from typing import List, Optional
 from enum import Enum
 from urllib.parse import parse_qs, urlparse
 
+import certifi
+
 
 _IPV4_MAPPED_IPV6 = ip_network("::ffff:0:0/96")
 _TLS_MODES = frozenset({"mutual", "proxy", "strict"})
@@ -475,9 +477,167 @@ class ChDBConfig:
         pass
 
 
+_POSTGRES_SSL_MODES = (
+    "disable",
+    "allow",
+    "prefer",
+    "require",
+    "verify-ca",
+    "verify-full",
+)
+
+
+@dataclass
+class PostgresConfig:
+    """Configuration for the optional Postgres backend.
+
+    Required environment variables (only when POSTGRES_ENABLED=true):
+        POSTGRES_HOST: The hostname of the Postgres server
+        POSTGRES_USER: The username for authentication
+
+    Optional environment variables (with defaults):
+        POSTGRES_ENABLED: Enable the Postgres tools (default: false)
+        POSTGRES_PORT: The port number (default: 5432)
+        POSTGRES_PASSWORD: The password for authentication (default: None, so libpq
+            falls back to its own sources such as a password file)
+        POSTGRES_DATABASE: Database to connect to (default: None, so libpq uses the user name)
+        POSTGRES_SSLMODE: libpq sslmode (default: verify-full)
+        POSTGRES_SSLROOTCERT: CA bundle for verify-ca and verify-full (default: the
+            certifi bundle)
+        POSTGRES_CONNECT_TIMEOUT: Connection timeout in seconds (default: 30)
+        POSTGRES_ALLOW_WRITE_ACCESS: Run statements in read-write transactions (default: false)
+        POSTGRES_ALLOW_DROP: Allow destructive statements when writes are also enabled
+            (default: false)
+    """
+
+    def __init__(self):
+        """Initialize the configuration from environment variables."""
+        if self.enabled:
+            self._validate_required_vars()
+
+    @property
+    def enabled(self) -> bool:
+        """Get whether the Postgres tools are enabled.
+
+        Default: False
+        """
+        return os.getenv("POSTGRES_ENABLED", "false").lower() == "true"
+
+    @property
+    def host(self) -> str:
+        """Get the Postgres host."""
+        return os.environ["POSTGRES_HOST"]
+
+    @property
+    def port(self) -> int:
+        """Get the Postgres port.
+
+        Default: 5432
+        """
+        return int(os.getenv("POSTGRES_PORT", "5432"))
+
+    @property
+    def username(self) -> str:
+        """Get the Postgres username."""
+        return os.environ["POSTGRES_USER"]
+
+    @property
+    def password(self) -> Optional[str]:
+        """Get the Postgres password, if set."""
+        return os.getenv("POSTGRES_PASSWORD")
+
+    @property
+    def database(self) -> Optional[str]:
+        """Get the database to connect to, if set."""
+        return os.getenv("POSTGRES_DATABASE")
+
+    @property
+    def sslmode(self) -> str:
+        """Get the libpq sslmode.
+
+        Default: verify-full
+        """
+        value = os.getenv("POSTGRES_SSLMODE", "verify-full").strip().lower()
+        if value not in _POSTGRES_SSL_MODES:
+            raise ValueError(f"POSTGRES_SSLMODE must be one of: {', '.join(_POSTGRES_SSL_MODES)}")
+        return value
+
+    @property
+    def sslrootcert(self) -> Optional[str]:
+        """Get the CA bundle used to verify the server certificate, if set."""
+        return os.getenv("POSTGRES_SSLROOTCERT") or None
+
+    @property
+    def connect_timeout(self) -> int:
+        """Get the connection timeout in seconds.
+
+        Default: 30
+        """
+        return int(os.getenv("POSTGRES_CONNECT_TIMEOUT", "30"))
+
+    @property
+    def allow_write_access(self) -> bool:
+        """Get whether statements run in read-write transactions.
+
+        Default: False
+        """
+        return os.getenv("POSTGRES_ALLOW_WRITE_ACCESS", "false").lower() == "true"
+
+    @property
+    def allow_drop(self) -> bool:
+        """Get whether destructive statements are allowed when writes are enabled.
+
+        Default: False
+        """
+        return os.getenv("POSTGRES_ALLOW_DROP", "false").lower() == "true"
+
+    def get_connect_kwargs(self) -> dict:
+        """Get keyword arguments for psycopg.connect()."""
+        kwargs = {
+            "host": self.host,
+            "port": self.port,
+            "user": self.username,
+            "sslmode": self.sslmode,
+            "connect_timeout": self.connect_timeout,
+            "application_name": "mcp_clickhouse",
+        }
+        if self.password is not None:
+            kwargs["password"] = self.password
+        if self.database:
+            kwargs["dbname"] = self.database
+        if self.sslrootcert:
+            kwargs["sslrootcert"] = self.sslrootcert
+        elif self.sslmode in ("verify-ca", "verify-full"):
+            # libpq's default root store is ~/.postgresql/root.crt, and the OpenSSL
+            # bundled with psycopg-binary may not find the platform store, so verify
+            # against the certifi bundle instead.
+            kwargs["sslrootcert"] = certifi.where()
+        return kwargs
+
+    def _validate_required_vars(self) -> None:
+        """Validate that all required environment variables are set.
+
+        Raises:
+            ValueError: If any required environment variable is missing or invalid.
+        """
+        missing_vars = [var for var in ("POSTGRES_HOST", "POSTGRES_USER") if var not in os.environ]
+        if missing_vars:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+        self.sslmode
+        for name, read in (
+            ("POSTGRES_PORT", lambda: self.port),
+            ("POSTGRES_CONNECT_TIMEOUT", lambda: self.connect_timeout),
+        ):
+            try:
+                read()
+            except ValueError:
+                raise ValueError(f"{name} must be an integer") from None
+
+
 # Global instance placeholders for the singleton pattern
 _CONFIG_INSTANCE = None
 _CHDB_CONFIG_INSTANCE = None
+_POSTGRES_CONFIG_INSTANCE = None
 
 
 def get_config():
@@ -504,6 +664,17 @@ def get_chdb_config() -> ChDBConfig:
     if _CHDB_CONFIG_INSTANCE is None:
         _CHDB_CONFIG_INSTANCE = ChDBConfig()
     return _CHDB_CONFIG_INSTANCE
+
+
+def get_postgres_config() -> PostgresConfig:
+    """
+    Gets the singleton instance of PostgresConfig.
+    Instantiates it on the first call.
+    """
+    global _POSTGRES_CONFIG_INSTANCE
+    if _POSTGRES_CONFIG_INSTANCE is None:
+        _POSTGRES_CONFIG_INSTANCE = PostgresConfig()
+    return _POSTGRES_CONFIG_INSTANCE
 
 
 def _split_env_list(name: str) -> List[str]:

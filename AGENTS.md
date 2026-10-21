@@ -20,6 +20,7 @@ Act like an experienced maintainer of a public Python MCP server and database in
 - `mcp_clickhouse/transport.py`: FastMCP HTTP/SSE app construction and trusted proxy integration.
 - `mcp_clickhouse/executors.py`: Per-server query, metadata, cancellation, and health worker pools.
 - `mcp_clickhouse/chdb_backend.py`: Per-server chDB state, lazy client initialization, query execution, and result processing.
+- `mcp_clickhouse/postgres_backend.py`: Optional Postgres driver loading, read-only transaction enforcement, destructive-statement guard, cancellation, and catalog discovery.
 - `mcp_clickhouse/clients.py`: Request configuration, connection diagnostics, readonly settings, and per-server ClickHouse client caches and leases.
 - `mcp_clickhouse/queries.py`: Per-server ClickHouse query execution, active-query state, cancellation, and destructive-operation guards.
 - `mcp_clickhouse/metadata.py`: Database and table discovery, metadata models, and per-server pagination state.
@@ -32,7 +33,7 @@ Act like an experienced maintainer of a public Python MCP server and database in
 - `mcp_clickhouse/chdb_prompt.py`: the public chDB prompt content.
 - `mcp_clickhouse/skills_advisor.py`: server-level instructions advertised to MCP clients.
 - `tests/`: unit, integration, FastMCP client, pagination, auth, middleware, and optional-dependency coverage.
-- `test-services/docker-compose.yaml`: local ClickHouse service for integration tests.
+- `test-services/docker-compose.yaml`: local ClickHouse and Postgres services for integration tests.
 - `.github/workflows/ci.yaml`: authoritative CI commands and CI ClickHouse version.
 
 ## Working Rules
@@ -59,7 +60,7 @@ This module has meaningful import-time behavior. `mcp_server.py` loads `.env`, c
 - Test public tool behavior through `fastmcp.Client` when the MCP boundary matters. Direct helper tests alone do not validate registration, serialization, or protocol errors.
 - Pagination tokens are stateful, single-use cache entries with expiry. Preserve filter and option validation, expiry behavior, and cleanup when changing pagination.
 - Context-state client configuration overrides are request-scoped. Do not let one MCP session's overrides leak into another session or mutate the base configuration.
-- chDB initialization and registration are conditional. A missing optional dependency must not prevent ClickHouse-only startup.
+- chDB and Postgres initialization and registration are conditional. A missing optional dependency must not prevent ClickHouse-only startup. Keep the `psycopg` import lazy for the same reason.
 
 ## Security And Operational Safety
 
@@ -67,6 +68,7 @@ Security defaults are part of the product contract, not incidental implementatio
 
 - ClickHouse queries are read-only by default. Do not weaken `CLICKHOUSE_ALLOW_WRITE_ACCESS=false` behavior.
 - Destructive operations require the separate `CLICKHOUSE_ALLOW_DROP=true` opt-in in addition to write access. Preserve this two-step protection and add regression tests for any changes in this area.
+- Postgres statements run in `READ ONLY` transactions unless `POSTGRES_ALLOW_WRITE_ACCESS=true`, with `POSTGRES_ALLOW_DROP=true` as the second step. Keep sending them through pipeline mode or another extended-protocol path, because the simple query protocol accepts several statements and `COMMIT; ...` would escape the read-only transaction.
 - HTTP and SSE transports require exactly one authentication mode: a static token, a FastMCP auth provider, or the explicit development-only auth disable flag. Stdio behavior is intentionally different.
 - Keep `/health` unauthenticated for orchestrator probes, but keep its response minimal. Never expose connection errors, hostnames, credentials, filesystem paths, tokens, or backend version details in the response body.
 - Never log passwords, auth tokens, or full sensitive configuration values. When logging overrides, log keys rather than values.
@@ -128,6 +130,8 @@ CLICKHOUSE_PASSWORD=clickhouse
 CLICKHOUSE_SECURE=false
 CLICKHOUSE_VERIFY=false
 ```
+
+The Postgres integration tests also need `POSTGRES_ENABLED=true`, `POSTGRES_HOST=localhost`, `POSTGRES_USER=postgres`, `POSTGRES_PASSWORD=postgres`, and `POSTGRES_SSLMODE=disable` against the same compose file; without them they are skipped.
 
 Use `CHDB_ENABLED=true` only when the chDB extra is installed and chDB coverage is intended. If a required service or optional native dependency is unavailable, report that clearly and still run every relevant test that does not require it.
 
