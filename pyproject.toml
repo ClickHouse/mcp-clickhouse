@@ -15,7 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-     "fastmcp>=4.0.0,<4.1.0",
+     "fastmcp>=4.0.0,<4.2.0",
      "python-dotenv>=1.0.1",
      "clickhouse-connect>=1.0.0,<2",
      "truststore>=0.10",
