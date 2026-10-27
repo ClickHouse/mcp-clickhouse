@@ -2,6 +2,7 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import sys
 from typing import Optional
 
 from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
@@ -129,10 +130,17 @@ class _ChDBBackend:
             return client
         except ModuleNotFoundError as e:
             if e.name in {"chdb", "chdb.session"}:
-                self.error_message = (
-                    "chDB support requires the optional dependency. "
-                    "Install mcp-clickhouse[chdb] to enable chDB features."
-                )
+                if sys.version_info >= (3, 15):
+                    self.error_message = (
+                        "chDB is not installed. The mcp-clickhouse[chdb] extra skips chDB on "
+                        f"Python {sys.version_info[0]}.{sys.version_info[1]}. "
+                        "Use Python 3.10 through 3.14 for chDB features."
+                    )
+                else:
+                    self.error_message = (
+                        "chDB support requires the optional dependency. "
+                        "Install mcp-clickhouse[chdb] to enable chDB features."
+                    )
                 logger.warning(self.error_message)
                 return None
             self.error_message = f"Failed to initialize chDB client: {e}"

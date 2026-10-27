@@ -2,6 +2,7 @@ import asyncio
 import builtins
 import gc
 import logging
+import sys
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -20,7 +21,8 @@ def restore_chdb_state(monkeypatch):
     )
 
 
-def test_init_chdb_client_surfaces_optional_dependency_message():
+@pytest.mark.parametrize("python_version", [(3, 10), (3, 14), (3, 15), (3, 16)])
+def test_init_chdb_client_surfaces_optional_dependency_message(python_version, caplog):
     real_import = builtins.__import__
 
     def raising_import(name, globals=None, locals=None, fromlist=(), level=0):
@@ -33,11 +35,24 @@ def test_init_chdb_client_surfaces_optional_dependency_message():
     with (
         patch.dict("os.environ", {"CHDB_ENABLED": "true"}, clear=False),
         patch("builtins.__import__", side_effect=raising_import),
+        patch.object(sys, "version_info", python_version),
     ):
         client = mcp_server._chdb_backend._init_chdb_client()
 
     assert client is None
     assert "mcp-clickhouse[chdb]" in mcp_server._chdb_backend.error_message
+    assert mcp_server._chdb_backend.error_message in caplog.messages
+    if python_version >= (3, 15):
+        version = ".".join(map(str, python_version))
+        assert mcp_server._chdb_backend.error_message == (
+            "chDB is not installed. The mcp-clickhouse[chdb] extra skips chDB on "
+            f"Python {version}. Use Python 3.10 through 3.14 for chDB features."
+        )
+    else:
+        assert mcp_server._chdb_backend.error_message == (
+            "chDB support requires the optional dependency. "
+            "Install mcp-clickhouse[chdb] to enable chDB features."
+        )
 
 
 def test_init_chdb_client_treats_other_import_errors_as_init_failures():
