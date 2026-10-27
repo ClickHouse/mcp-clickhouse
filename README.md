@@ -299,7 +299,11 @@ export CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000
 ## Configuration
 
 This MCP server supports both ClickHouse and chDB. You can enable either or both depending on your needs.
-Python 3.10 through 3.14 are supported. Python 3.12 is recommended for local launches.
+Python 3.10 through 3.15 are supported. Python 3.12 is recommended for local launches.
+chDB supports Python 3.10 through 3.14. On Python 3.15, the `chdb` extra skips
+installing chDB through a dependency marker. Python 3.15 installs currently build
+`lz4` and `PyYAML` from source, with or without the `chdb` extra. A C compiler is
+required for `lz4`.
 
 1. Open the Claude Desktop configuration file located at:
    * On macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -683,7 +687,7 @@ CLICKHOUSE_USER=default
 CLICKHOUSE_PASSWORD=clickhouse
 ```
 
-3. Run `uv sync` to install the dependencies. To install `uv` follow the instructions [here](https://docs.astral.sh/uv/). Then do `source .venv/bin/activate`.
+3. Run `uv sync --locked --extra dev` to install the dependencies. On Python 3.10 through 3.14, add `--extra chdb` for chDB development. To install `uv` follow the instructions [here](https://docs.astral.sh/uv/). Then do `source .venv/bin/activate`.
 
 4. For easy testing with the MCP Inspector, run `uv run fastmcp dev inspector mcp_clickhouse/mcp_server.py:mcp` to start the MCP server.
 
@@ -972,6 +976,7 @@ On an IPv6 or dual-stack bind, IPv4 proxies may appear as IPv4-mapped addresses 
   * Default: `"false"`
   * Set to `"true"` to enable chDB tools
   * Requires installing the optional extra: `mcp-clickhouse[chdb]`
+  * On Python 3.15, an independently installed chDB can terminate the process when `CHDB_ENABLED=true`.
 * `CHDB_DATA_PATH`: The path to the chDB data directory
   * Default: `":memory:"` (in-memory database)
   * Use `:memory:` for in-memory database
@@ -1139,12 +1144,13 @@ Note: The bind host and port settings are only used when transport is set to "ht
 ### Running tests
 
 ```bash
-uv sync --all-extras --dev # install dev dependencies
+uv sync --locked --extra dev # install dev dependencies
 uv run ruff check . # run linting
 
-docker compose up -d test_services # start ClickHouse
+docker compose -f test-services/docker-compose.yaml up -d # start ClickHouse
 uv run pytest -v tests
 uv run pytest -v tests/test_tool.py # ClickHouse only
+# Python 3.10 through 3.14 only:
 CHDB_ENABLED=true uv run --extra chdb pytest -v tests/test_chdb_tool.py # chDB only
 ```
 
