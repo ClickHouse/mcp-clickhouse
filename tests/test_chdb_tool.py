@@ -11,7 +11,7 @@ from mcp_clickhouse import mcp_server
 load_dotenv()
 
 
-@unittest.skipUnless(importlib.util.find_spec("chdb") is not None, "requires chdb extra")
+@unittest.skipUnless(importlib.util.find_spec("chdb") is not None, "requires chdb")
 class TestChDBTools(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

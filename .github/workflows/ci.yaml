@@ -38,6 +38,10 @@ jobs:
             python_version: "3.14"
             dependency_mode: locked
             lint: false
+          - test_name: Python 3.15 / locked dependencies
+            python_version: "3.15"
+            dependency_mode: locked
+            lint: false
 
     services:
       clickhouse:

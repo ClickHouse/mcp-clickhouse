@@ -6,7 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Python 3.15 support, with locked dependencies and CI coverage. The `chdb` extra skips installing chDB on Python 3.15. chDB remains supported on Python 3.10 through 3.14.
 - A server-instruction hint to read `AGENTS.ROOT` through `run_query` when `list_databases` reveals an `AGENTS` database, before writing analytical SQL. This adds discovery guidance only; no automatic metadata queries or tool-result changes.
+
+### Changed
+
+- Locked development and container environments now use clickhouse-connect 1.11.0, Pydantic 2.14.1, and cffi 2.1.1.
+- The missing-chDB warning on Python 3.15 explains that the extra skips installation and points to Python 3.10 through 3.14.
 
 ## 0.7.0 - 2026-09-18
 
