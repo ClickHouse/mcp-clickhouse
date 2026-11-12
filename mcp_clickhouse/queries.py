@@ -48,7 +48,9 @@ _SQL_COMMENTS_AND_QUOTED_TEXT = re.compile(
 # parenthesis is the rounding function, as is replace() after OR. Bare DELETE
 # and UPDATE cover both the lightweight and ALTER mutation forms. REPLACE
 # TABLE/PARTITION and OR REPLACE overwrite existing data. Bare CLEAR is
-# reversible, so only CLEAR COLUMN/INDEX/PROJECTION is flagged.
+# reversible, so only CLEAR COLUMN/INDEX/PROJECTION is flagged. OPTIMIZE ...
+# DEDUPLICATE removes duplicate rows, and MODIFY TTL or MATERIALIZE TTL deletes
+# every row the new TTL has expired. A TTL in CREATE TABLE stays allowed.
 _DESTRUCTIVE_KEYWORDS = re.compile(
     r"""
       \bDROP\b
@@ -58,6 +60,8 @@ _DESTRUCTIVE_KEYWORDS = re.compile(
     | \bREPLACE\s+(?:TABLE|PARTITION)\b
     | \bOR\s+REPLACE\b(?!\s*\()
     | \bCLEAR\s+(?:COLUMN|INDEX|PROJECTION)\b
+    | \bDEDUPLICATE\b
+    | \b(?:MODIFY|MATERIALIZE)\s+TTL\b
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -130,7 +134,7 @@ def _validate_query_for_destructive_ops(query: str) -> None:
         raise ToolError(
             "Destructive operations are not allowed (DROP, TRUNCATE, DELETE, UPDATE, "
             "REPLACE TABLE/PARTITION, CREATE OR REPLACE, CLEAR COLUMN/INDEX/PROJECTION, "
-            "DETACH PERMANENTLY). Set CLICKHOUSE_ALLOW_DROP=true to enable them. "
+            "OPTIMIZE DEDUPLICATE, MODIFY/MATERIALIZE TTL, DETACH PERMANENTLY). Set CLICKHOUSE_ALLOW_DROP=true to enable them. "
             "This gate is a best-effort accident guard, not a security boundary. "
             "Restrict the ClickHouse user's grants for real enforcement."
         )
