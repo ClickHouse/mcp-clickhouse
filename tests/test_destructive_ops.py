@@ -66,6 +66,13 @@ DESTRUCTIVE_QUERIES = [
     "REPLACE TABLE d.t (a UInt8) ENGINE = MergeTree ORDER BY a",
     "ALTER TABLE d.t REPLACE PARTITION 'p' FROM d.s",
     "CREATE OR REPLACE VIEW d.v AS SELECT 1",
+    # DEDUPLICATE removes duplicate rows.
+    "OPTIMIZE TABLE d.t FINAL DEDUPLICATE",
+    "OPTIMIZE TABLE d.t DEDUPLICATE BY a",
+    # A new or materialized TTL deletes the rows it has already expired.
+    "ALTER TABLE d.t MODIFY TTL ts + INTERVAL 1 DAY",
+    "ALTER TABLE d.t MATERIALIZE TTL",
+    "ALTER TABLE d.t MATERIALIZE TTL IN PARTITION 'p'",
     # DETACH is only destructive with PERMANENTLY.
     "DETACH TABLE d.t PERMANENTLY",
     "DETACH TABLE d.t SYNC PERMANENTLY",
@@ -119,6 +126,10 @@ ALLOWED_QUERIES = [
     "SELECT dropped, undropped FROM d.t",
     "SELECT truncated FROM d.t",
     "SELECT updated_at, deleted_at FROM d.t",
+    # OPTIMIZE without DEDUPLICATE only merges parts, and a TTL on a new table has no old rows.
+    "OPTIMIZE TABLE d.t FINAL",
+    "CREATE TABLE d.t (ts DateTime) ENGINE = MergeTree ORDER BY ts TTL ts + INTERVAL 1 DAY",
+    "ALTER TABLE d.t REMOVE TTL",
     # Plain DETACH is reversible with ATTACH.
     "DETACH TABLE d.t",
     "ATTACH TABLE d.t",
