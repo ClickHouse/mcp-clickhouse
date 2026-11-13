@@ -37,6 +37,8 @@ leading `v`.
   git checkout main
   git pull
   ```
+- Re-read the version from `pyproject.toml` now that `main` is current. Re-run the Step 1 default
+  and the "strictly greater" check against it. If it changed, stop and ask.
 - Create a local release branch off the now-current `main`:
   ```bash
   git checkout -b release/X.Y.Z
@@ -74,7 +76,11 @@ Docker images to GHCR (`ghcr.io/clickhouse/mcp-clickhouse:X.Y.Z`, `:X.Y`, `:late
 **Confirm with the user before running any of this** — pushing a tag and publishing a GitHub
 release are visible, hard-to-reverse actions.
 
+Tag the merged commit on `main`, not the local release branch:
+
 ```bash
+git checkout main
+git pull
 git tag vX.Y.Z
 git push origin vX.Y.Z
 gh release create vX.Y.Z --title vX.Y.Z --notes "<paste the new CHANGELOG.md section>"
@@ -87,7 +93,7 @@ Manual only — `publish.yml` has no automatic trigger.
 **Confirm with the user before running** — this publishes an immutable artifact to PyPI.
 
 ```bash
-gh workflow run publish.yml
+gh workflow run publish.yml --ref vX.Y.Z
 ```
 
 Wait for it to succeed (`gh run list --workflow=publish.yml`) before moving on.
@@ -97,6 +103,9 @@ Wait for it to succeed (`gh run list --workflow=publish.yml`) before moving on.
 Must run **last** — `publish-mcp.yml` verifies both the PyPI package and the GHCR image exist
 for this version before publishing, and it rewrites `server.json`'s version fields from
 `pyproject.toml` automatically.
+
+Check the `release-docker.yml` run for `vX.Y.Z` has succeeded first
+(`gh run list --workflow=release-docker.yml`).
 
 **Confirm with the user before running.**
 
