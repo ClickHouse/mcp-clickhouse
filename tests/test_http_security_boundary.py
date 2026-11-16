@@ -5,6 +5,8 @@ from pathlib import Path
 import fastmcp
 import pytest
 from fastmcp import FastMCP, settings as fastmcp_settings
+from fastmcp.server.auth import AccessToken, TokenVerifier
+from fastmcp.server.auth.providers.azure import AzureProvider
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from fastmcp.settings import Settings as FastMCPSettings
 from fastmcp.utilities.mcp_server_config import MCPServerConfig as FastMCPFileConfig
@@ -50,6 +52,7 @@ def _clear_http_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "CLICKHOUSE_MCP_BIND_HOST",
         "CLICKHOUSE_MCP_BIND_PORT",
         "FASTMCP_SERVER_AUTH",
+        "FASTMCP_SERVER_AUTH_VERIFIERS",
         "FASTMCP_HTTP_HOST_ORIGIN_PROTECTION",
         "FASTMCP_HTTP_ALLOWED_HOSTS",
         "FASTMCP_HTTP_ALLOWED_ORIGINS",
@@ -507,6 +510,144 @@ def test_http_app_restores_auth_between_static_and_oauth_construction(
         )
 
     assert response.status_code == 200
+
+
+def test_additional_verifier_tokens_are_accepted_alongside_the_primary_provider(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_http_env(monkeypatch)
+    providers = {
+        "example.PrimaryVerifier": StaticTokenVerifier(
+            tokens={"primary-token": {"client_id": "primary-client", "scopes": ["mcp.read"]}},
+            required_scopes=["mcp.read"],
+        ),
+        "example.PortalVerifier": StaticTokenVerifier(
+            tokens={
+                "portal-token": {"client_id": "portal-client", "scopes": ["mcp.read"]},
+                "unscoped-token": {"client_id": "portal-client", "scopes": []},
+            },
+            required_scopes=["mcp.read"],
+        ),
+    }
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH", "example.PrimaryVerifier")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_VERIFIERS", "example.PortalVerifier")
+    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
+    monkeypatch.setattr(
+        auth_module,
+        "_load_fastmcp_auth_provider",
+        lambda provider_path, **_kwargs: providers[provider_path],
+    )
+    app = ClickHouseFastMCP("test").http_app(transport="http")
+
+    def initialize(client, token=None):
+        headers = dict(_MCP_HEADERS)
+        if token is not None:
+            headers["authorization"] = f"Bearer {token}"
+        return client.post("/mcp", json=_INITIALIZE_REQUEST, headers=headers).status_code
+
+    with TestClient(app) as client:
+        statuses = {
+            token: initialize(client, token)
+            for token in (None, "primary-token", "portal-token", "unknown-token", "unscoped-token")
+        }
+
+    assert statuses == {
+        None: 401,
+        "primary-token": 200,
+        "portal-token": 200,
+        "unknown-token": 401,
+        "unscoped-token": 401,
+    }
+
+
+def test_primary_verifier_required_scopes_are_enforced_with_additional_verifiers(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_http_env(monkeypatch)
+
+    class PrimaryVerifier(TokenVerifier):
+        async def verify_token(self, token: str) -> AccessToken | None:
+            if token == "primary-token":
+                return AccessToken(token=token, client_id="primary-client", scopes=[])
+            return None
+
+    providers = {
+        "example.PrimaryVerifier": PrimaryVerifier(required_scopes=["mcp.read"]),
+        "example.PortalVerifier": StaticTokenVerifier(tokens={}),
+    }
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH", "example.PrimaryVerifier")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_VERIFIERS", "example.PortalVerifier")
+    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
+    monkeypatch.setattr(
+        auth_module,
+        "_load_fastmcp_auth_provider",
+        lambda provider_path, **_kwargs: providers[provider_path],
+    )
+    app = ClickHouseFastMCP("test").http_app(transport="http")
+
+    with TestClient(app) as client:
+        unscoped = client.post(
+            "/mcp",
+            json=_INITIALIZE_REQUEST,
+            headers={**_MCP_HEADERS, "authorization": "Bearer primary-token"},
+        )
+        unauthorized = client.post("/mcp", json=_INITIALIZE_REQUEST, headers=_MCP_HEADERS)
+
+    assert unscoped.status_code == 403
+    assert unauthorized.status_code == 401
+    assert 'scope="mcp.read"' in unauthorized.headers["www-authenticate"]
+
+
+def test_oauth_primary_keeps_scope_enforcement_and_discovery_with_additional_verifiers(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_http_env(monkeypatch)
+    providers = {
+        "example.AzureProvider": AzureProvider(
+            client_id="client-id",
+            client_secret="client-secret",
+            tenant_id="tenant-id",
+            base_url="https://testserver",
+            required_scopes=["mcp.read"],
+        ),
+        "example.PortalVerifier": StaticTokenVerifier(
+            tokens={
+                "portal-token": {"client_id": "portal-client", "scopes": ["mcp.read"]},
+                "unscoped-token": {"client_id": "portal-client", "scopes": []},
+            },
+        ),
+    }
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH", "example.AzureProvider")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_VERIFIERS", "example.PortalVerifier")
+    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
+    monkeypatch.setattr(
+        auth_module,
+        "_load_fastmcp_auth_provider",
+        lambda provider_path, **_kwargs: providers[provider_path],
+    )
+    app = ClickHouseFastMCP("test").http_app(transport="http")
+
+    with TestClient(app, base_url="https://testserver") as client:
+        unauthorized = client.post("/mcp", json=_INITIALIZE_REQUEST, headers=_MCP_HEADERS)
+        responses = {
+            token: client.post(
+                "/mcp",
+                json=_INITIALIZE_REQUEST,
+                headers={**_MCP_HEADERS, "authorization": f"Bearer {token}"},
+            )
+            for token in ("portal-token", "unscoped-token", "unknown-token")
+        }
+        discovery = client.get("/.well-known/oauth-protected-resource/mcp")
+
+    assert unauthorized.status_code == 401
+    assert 'scope="mcp.read"' in unauthorized.headers["www-authenticate"]
+    assert "resource_metadata=" in unauthorized.headers["www-authenticate"]
+    assert {token: response.status_code for token, response in responses.items()} == {
+        "portal-token": 200,
+        "unscoped-token": 403,
+        "unknown-token": 401,
+    }
+    assert discovery.status_code == 200
 
 
 def test_oauth_cannot_reuse_temporary_static_provider(monkeypatch: pytest.MonkeyPatch):

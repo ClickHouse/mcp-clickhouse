@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import Any, Dict, Optional
 
 from dotenv import dotenv_values, load_dotenv
-from fastmcp.server.auth import AuthProvider
+from fastmcp.server.auth import AuthProvider, MultiAuth, TokenVerifier
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from fastmcp.utilities.auth import parse_scopes
 from pydantic import TypeAdapter
@@ -65,6 +65,10 @@ _LEGACY_AUTH_PROVIDER_ENV: dict[str, tuple[str, tuple[str, ...]]] = {
             "jwt_signing_key",
             "base_authority",
         ),
+    ),
+    "fastmcp.server.auth.providers.azure.AzureJWTVerifier": (
+        "AZUREJWT_",
+        ("client_id", "tenant_id", "required_scopes", "identifier_uri", "base_authority"),
     ),
     "fastmcp.server.auth.providers.descope.DescopeProvider": (
         "DESCOPEPROVIDER_",
@@ -182,6 +186,10 @@ _AUTH_SCOPE_FIELDS = frozenset({"required_scopes", "additional_authorize_scopes"
 _AUTH_JSON_LIST_FIELDS = frozenset({"allowed_client_redirect_uris"})
 _AUTH_INT_FIELDS = frozenset({"timeout_seconds"})
 _AUTH_INT_ADAPTER: TypeAdapter[int]
+_AUTH_VERIFIERS_ENV = "FASTMCP_SERVER_AUTH_VERIFIERS"
+# Selectors decide which trust sources exist, so the working-directory .env
+# fallback may supply provider fields but never these.
+_AUTH_SELECTOR_NAMES = frozenset({"fastmcp_server_auth", _AUTH_VERIFIERS_ENV.casefold()})
 _LEGACY_AUTH_SCOPE_DEFAULTS = {
     "fastmcp.server.auth.providers.auth0.Auth0Provider": ["openid"],
     "fastmcp.server.auth.providers.aws.AWSCognitoProvider": ["openid"],
@@ -268,7 +276,7 @@ def _get_legacy_auth_file_values() -> dict[str, Optional[str]]:
         name: value
         for name, value in values.items()
         if _is_legacy_auth_name(name)
-        and (explicit_env_file or name.casefold() != "fastmcp_server_auth")
+        and (explicit_env_file or name.casefold() not in _AUTH_SELECTOR_NAMES)
     }
 
 
@@ -346,6 +354,8 @@ def _load_fastmcp_auth_provider(
     provider_path: str,
     *,
     auth_file_values: Optional[Mapping[str, Optional[str]]] = None,
+    selector_env: str = "FASTMCP_SERVER_AUTH",
+    required_type: type[AuthProvider] = AuthProvider,
 ) -> AuthProvider:
     """Load a FastMCP 2 style auth provider configuration under FastMCP 4."""
     if auth_file_values is None:
@@ -353,13 +363,15 @@ def _load_fastmcp_auth_provider(
 
     module_name, separator, class_name = provider_path.rpartition(".")
     if not separator:
-        raise ValueError("FASTMCP_SERVER_AUTH must be a full AuthProvider class path")
+        raise ValueError(f"{selector_env} must be a full {required_type.__name__} class path")
     try:
         provider_class = getattr(importlib.import_module(module_name), class_name)
     except (AttributeError, ImportError):
-        raise ValueError(f"Could not import FASTMCP_SERVER_AUTH provider {provider_path}") from None
-    if not inspect.isclass(provider_class) or not issubclass(provider_class, AuthProvider):
-        raise ValueError(f"FASTMCP_SERVER_AUTH provider {provider_path} is not an AuthProvider")
+        raise ValueError(f"Could not import {selector_env} provider {provider_path}") from None
+    if not inspect.isclass(provider_class) or not issubclass(provider_class, required_type):
+        raise ValueError(
+            f"{selector_env} provider {provider_path} is not {_type_label(required_type)}"
+        )
 
     provider_config = _LEGACY_AUTH_PROVIDER_ENV.get(provider_path)
     kwargs: dict[str, Any] = {}
@@ -411,10 +423,59 @@ def _load_fastmcp_auth_provider(
         provider = provider_class(**kwargs)
     except Exception as exc:
         raise ValueError(
-            f"Invalid FASTMCP_SERVER_AUTH configuration for provider {provider_path} "
+            f"Invalid {selector_env} configuration for provider {provider_path} "
             f"({type(exc).__name__})"
         ) from None
     return provider
+
+
+def _type_label(required_type: type[AuthProvider]) -> str:
+    return "a TokenVerifier" if required_type is TokenVerifier else "an AuthProvider"
+
+
+def _parse_auth_verifier_paths(value: str, provider_path: str) -> list[str]:
+    """Parse the comma-separated FASTMCP_SERVER_AUTH_VERIFIERS class paths."""
+    verifier_paths = [path.strip() for path in value.split(",")]
+    if not all(verifier_paths):
+        raise ValueError(
+            f"{_AUTH_VERIFIERS_ENV} must be a comma-separated list of TokenVerifier "
+            "class paths without empty entries"
+        )
+    # Each class is configured from one environment prefix, so a repeated
+    # class would be the same trust source twice.
+    seen = {provider_path}
+    for verifier_path in verifier_paths:
+        if verifier_path in seen:
+            raise ValueError(
+                f"{_AUTH_VERIFIERS_ENV} lists {verifier_path} more than once or repeats "
+                "FASTMCP_SERVER_AUTH. Each provider class can be configured only once."
+            )
+        seen.add(verifier_path)
+    return verifier_paths
+
+
+def _compose_multi_auth(
+    provider_path: str,
+    provider: AuthProvider,
+    verifier_paths: list[str],
+    auth_file_values: Mapping[str, Optional[str]],
+) -> AuthProvider:
+    """Combine the primary provider with additional token verifiers."""
+    verifiers: dict[str, TokenVerifier] = {}
+    for verifier_path in verifier_paths:
+        verifier = _load_fastmcp_auth_provider(
+            verifier_path,
+            auth_file_values=auth_file_values,
+            selector_env=_AUTH_VERIFIERS_ENV,
+            required_type=TokenVerifier,
+        )
+        assert isinstance(verifier, TokenVerifier)
+        verifiers[verifier_path] = verifier
+    return MultiAuth(
+        server=provider,
+        verifiers=verifiers,
+        server_source_id=provider_path,
+    )
 
 
 def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]:
@@ -430,6 +491,7 @@ def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]
 
     auth_file_values = _get_legacy_auth_file_values()
     provider_path = _get_legacy_auth_env("FASTMCP_SERVER_AUTH", auth_file_values)
+    verifiers_value = _get_legacy_auth_env(_AUTH_VERIFIERS_ENV, auth_file_values)
 
     configured = {
         "CLICKHOUSE_MCP_AUTH_DISABLED": mcp_config.auth_disabled,
@@ -453,6 +515,13 @@ def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]
             "  - CLICKHOUSE_MCP_AUTH_DISABLED=true   (disables auth; development only)"
         )
 
+    if verifiers_value and not provider_path:
+        raise ValueError(
+            f"{_AUTH_VERIFIERS_ENV} adds token verifiers to the FASTMCP_SERVER_AUTH "
+            "provider and cannot be combined with another authentication mode. "
+            "Set FASTMCP_SERVER_AUTH or unset it."
+        )
+
     if mcp_config.auth_disabled:
         logger.warning("WARNING: MCP SERVER AUTHENTICATION IS DISABLED")
         logger.warning("Only use this for local development/testing.")
@@ -468,10 +537,23 @@ def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]
         return {"auth": verifier}
 
     assert provider_path is not None
-    logger.info("Authentication delegated to FastMCP provider: %s", provider_path)
+    verifier_paths = (
+        _parse_auth_verifier_paths(verifiers_value, provider_path) if verifiers_value else []
+    )
+    provider = _load_fastmcp_auth_provider(
+        provider_path,
+        auth_file_values=auth_file_values,
+    )
+    if not verifier_paths:
+        logger.info("Authentication delegated to FastMCP provider: %s", provider_path)
+        return {"auth": provider}
+
+    logger.info(
+        "Authentication delegated to FastMCP provider: %s, with additional token "
+        "verifiers: %s",
+        provider_path,
+        ", ".join(verifier_paths),
+    )
     return {
-        "auth": _load_fastmcp_auth_provider(
-            provider_path,
-            auth_file_values=auth_file_values,
-        )
+        "auth": _compose_multi_auth(provider_path, provider, verifier_paths, auth_file_values)
     }

@@ -8,11 +8,15 @@ All notable changes to this project will be documented in this file.
 
 - Python 3.15 support, with locked dependencies and CI coverage. The `chdb` extra skips installing chDB on Python 3.15. chDB remains supported on Python 3.10 through 3.14.
 - A server-instruction hint to read `AGENTS.ROOT` through `run_query` when `list_databases` reveals an `AGENTS` database, before writing analytical SQL. This adds discovery guidance only; no automatic metadata queries or tool-result changes.
+- `FASTMCP_SERVER_AUTH_VERIFIERS` accepts tokens from additional FastMCP token verifiers alongside the `FASTMCP_SERVER_AUTH` provider, combined through FastMCP's `MultiAuth`. One HTTP endpoint can now serve, for example, an OAuth proxy for interactive clients and a JWT verifier for backend-issued tokens. The variable is rejected with the static token or auth-disabled modes and is not read from the working-directory `.env` fallback.
+- `fastmcp.server.auth.providers.azure.AzureJWTVerifier` can be configured from `FASTMCP_SERVER_AUTH_AZUREJWT_*` environment variables.
 
 ### Changed
 
 - Locked development and container environments now use clickhouse-connect 1.11.0, Pydantic 2.14.1, and cffi 2.1.1.
 - The missing-chDB warning on Python 3.15 explains that the extra skips installation and points to Python 3.10 through 3.14.
+- The minimum FastMCP version is now 4.1.2. It fixes GHSA-7xgj-8392-5q4r and GHSA-vqqp-x5qm-5qp4, and `FASTMCP_SERVER_AUTH_VERIFIERS` needs its `MultiAuth` API.
+- Locked environments on Python 3.11 and later now use dnspython 2.9.2, which fixes GHSA-vvf4-9x63-8xvv and GHSA-45c3-73f7-pv4m. dnspython 2.9 does not support Python 3.10, so the Python 3.10 lock stays on 2.8.0.
 
 ### Fixed
 
