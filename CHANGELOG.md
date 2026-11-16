@@ -14,6 +14,10 @@ All notable changes to this project will be documented in this file.
 - Locked development and container environments now use clickhouse-connect 1.11.0, Pydantic 2.14.1, and cffi 2.1.1.
 - The missing-chDB warning on Python 3.15 explains that the extra skips installation and points to Python 3.10 through 3.14.
 
+### Fixed
+
+- The destructive-operation guard now blocks `OPTIMIZE ... DEDUPLICATE`, `ALTER TABLE ... MODIFY TTL` / `MATERIALIZE TTL`, and `MODIFY/ALTER COLUMN` with `TTL` when `CLICKHOUSE_ALLOW_DROP` is unset. These could delete rows or reset expired column values with only write access enabled. This also blocks `MODIFY COLUMN c REMOVE TTL`. ([#259](https://github.com/ClickHouse/mcp-clickhouse/issues/259))
+
 ## 0.7.0 - 2026-09-18
 
 ### Added
