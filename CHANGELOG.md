@@ -16,7 +16,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- The destructive-operation guard now blocks `OPTIMIZE ... DEDUPLICATE` and `ALTER TABLE ... MODIFY TTL` / `MATERIALIZE TTL` when `CLICKHOUSE_ALLOW_DROP` is unset. Both deleted rows with only write access enabled. ([#259](https://github.com/ClickHouse/mcp-clickhouse/issues/259))
+- The destructive-operation guard now blocks `OPTIMIZE ... DEDUPLICATE`, `ALTER TABLE ... MODIFY TTL` / `MATERIALIZE TTL`, and `MODIFY/ALTER COLUMN` with `TTL` when `CLICKHOUSE_ALLOW_DROP` is unset. These could delete rows or reset expired column values with only write access enabled. This also blocks `MODIFY COLUMN c REMOVE TTL`. ([#259](https://github.com/ClickHouse/mcp-clickhouse/issues/259))
 
 ## 0.7.0 - 2026-09-18
 

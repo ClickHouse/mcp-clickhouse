@@ -73,6 +73,14 @@ DESTRUCTIVE_QUERIES = [
     "ALTER TABLE d.t MODIFY TTL ts + INTERVAL 1 DAY",
     "ALTER TABLE d.t MATERIALIZE TTL",
     "ALTER TABLE d.t MATERIALIZE TTL IN PARTITION 'p'",
+    # Column TTL resets expired values.
+    "ALTER TABLE d.t MODIFY COLUMN c String TTL ts + INTERVAL 1 DAY",
+    "ALTER TABLE d.t MODIFY COLUMN c TTL ts + INTERVAL 1 DAY",
+    "ALTER TABLE d.t MODIFY\n/* comment */ COLUMN c String\nTTL ts + INTERVAL 1 DAY",
+    "ALTER TABLE d.t ALTER COLUMN c TTL ts + INTERVAL 1 DAY",
+    "ALTER TABLE d.t ALTER COLUMN c TYPE String TTL ts + INTERVAL 1 DAY",
+    # The conservative column TTL check also gates removal.
+    "ALTER TABLE d.t MODIFY COLUMN c REMOVE TTL",
     # DETACH is only destructive with PERMANENTLY.
     "DETACH TABLE d.t PERMANENTLY",
     "DETACH TABLE d.t SYNC PERMANENTLY",
@@ -101,6 +109,12 @@ ALLOWED_QUERIES = [
     "CREATE TABLE d.t (a UInt8) ENGINE = MergeTree ORDER BY a",
     "ALTER TABLE d.t ADD COLUMN b UInt8",
     "INSERT INTO d.t (a) VALUES (1)",
+    "INSERT INTO d.t SETTINGS insert_deduplicate = 0 VALUES (1)",
+    "ALTER TABLE d.t MODIFY SETTING merge_with_ttl_timeout = 3600",
+    "ALTER TABLE d.t ADD COLUMN c String TTL ts + INTERVAL 1 DAY",
+    "ALTER TABLE d.t MODIFY COLUMN c UInt64",
+    "ALTER TABLE d.t MODIFY COLUMN ttl_seconds UInt64",
+    "ALTER TABLE d.t MODIFY COLUMN `ttl` UInt64",
     # `truncate` is also a rounding function, `replace` a string function.
     "SELECT truncate(3.7)",
     "SELECT truncate(1.234, 2)",
@@ -126,8 +140,9 @@ ALLOWED_QUERIES = [
     "SELECT dropped, undropped FROM d.t",
     "SELECT truncated FROM d.t",
     "SELECT updated_at, deleted_at FROM d.t",
-    # OPTIMIZE without DEDUPLICATE only merges parts, and a TTL on a new table has no old rows.
+    # Plain OPTIMIZE can collapse superseded Replacing engine versions but deletes no live data.
     "OPTIMIZE TABLE d.t FINAL",
+    # A TTL on a new table has no old rows.
     "CREATE TABLE d.t (ts DateTime) ENGINE = MergeTree ORDER BY ts TTL ts + INTERVAL 1 DAY",
     "ALTER TABLE d.t REMOVE TTL",
     # Plain DETACH is reversible with ATTACH.
@@ -214,4 +229,15 @@ def test_pathological_detach_input_is_fast(write_mode_without_drop):
     _validate_query_for_destructive_ops(pathological)
     with pytest.raises(ToolError):
         _validate_query_for_destructive_ops(pathological + "PERMANENTLY")
+    assert time.monotonic() - start < 3.0
+
+
+def test_pathological_modify_column_input_is_fast(write_mode_without_drop):
+    """Repeated MODIFY COLUMN tokens are checked in linear time."""
+    pathological = "MODIFY COLUMN " * 20000
+
+    start = time.monotonic()
+    _validate_query_for_destructive_ops(pathological)
+    with pytest.raises(ToolError):
+        _validate_query_for_destructive_ops(pathological + "TTL")
     assert time.monotonic() - start < 3.0
