@@ -15,7 +15,7 @@ All notable changes to this project will be documented in this file.
 
 - Locked development and container environments now use clickhouse-connect 1.11.0, Pydantic 2.14.1, and cffi 2.1.1.
 - The missing-chDB warning on Python 3.15 explains that the extra skips installation and points to Python 3.10 through 3.14.
-- The minimum FastMCP version is now 4.1.2, which fixes GHSA-7xgj-8392-5q4r and GHSA-vqqp-x5qm-5qp4.
+- The minimum FastMCP version is now 4.1.2. It fixes GHSA-7xgj-8392-5q4r and GHSA-vqqp-x5qm-5qp4, and `FASTMCP_SERVER_AUTH_VERIFIERS` needs its `MultiAuth` API.
 - Locked environments on Python 3.11 and later now use dnspython 2.9.2, which fixes GHSA-vvf4-9x63-8xvv and GHSA-45c3-73f7-pv4m. dnspython 2.9 does not support Python 3.10, so the Python 3.10 lock stays on 2.8.0.
 
 ### Fixed

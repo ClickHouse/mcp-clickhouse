@@ -255,7 +255,8 @@ built-in providers:
 
 mcp-clickhouse also configures `fastmcp.server.auth.providers.azure.AzureJWTVerifier`
 from the `FASTMCP_SERVER_AUTH_AZUREJWT_` prefix. FastMCP 2 had no environment contract
-for this verifier.
+for this verifier. A `TENANT_ID` of `common`, `organizations`, or `consumers` skips the
+issuer check, so tokens issued for the app by any Entra tenant are accepted.
 
 Append the uppercase provider field name to the prefix. See the
 [FastMCP docs](https://gofastmcp.com/servers/auth) for each provider's configuration
@@ -290,10 +291,10 @@ export FASTMCP_SERVER_AUTH_AZUREJWT_REQUIRED_SCOPES="mcp.read"
 - The `FASTMCP_SERVER_AUTH` provider is tried first, then each verifier in the listed
   order. The first one that accepts the token wins, so every entry is a trust source:
   a token valid for any of them reaches the tools.
-- When the `FASTMCP_SERVER_AUTH` provider is an OAuth provider, it keeps its routes and
-  discovery metadata, and its required scopes apply to tokens from every source. When
-  it is itself a token verifier, it becomes the first verifier and no OAuth routes are
-  served.
+- The `FASTMCP_SERVER_AUTH` provider's required scopes apply to tokens from every
+  source, whether the primary provider is an OAuth provider or a token verifier.
+  An OAuth primary keeps its routes and discovery metadata. A token-verifier primary
+  serves no OAuth routes.
 - Each entry must be a `TokenVerifier` subclass and is configured from its own prefix,
   exactly as it would be under `FASTMCP_SERVER_AUTH`. A class can therefore appear only
   once across `FASTMCP_SERVER_AUTH` and `FASTMCP_SERVER_AUTH_VERIFIERS`.

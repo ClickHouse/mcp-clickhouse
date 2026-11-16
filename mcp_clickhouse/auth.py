@@ -370,7 +370,7 @@ def _load_fastmcp_auth_provider(
         raise ValueError(f"Could not import {selector_env} provider {provider_path}") from None
     if not inspect.isclass(provider_class) or not issubclass(provider_class, required_type):
         raise ValueError(
-            f"{selector_env} provider {provider_path} is not a {_type_label(required_type)}"
+            f"{selector_env} provider {provider_path} is not {_type_label(required_type)}"
         )
 
     provider_config = _LEGACY_AUTH_PROVIDER_ENV.get(provider_path)
@@ -430,7 +430,7 @@ def _load_fastmcp_auth_provider(
 
 
 def _type_label(required_type: type[AuthProvider]) -> str:
-    return "TokenVerifier" if required_type is TokenVerifier else "an AuthProvider"
+    return "a TokenVerifier" if required_type is TokenVerifier else "an AuthProvider"
 
 
 def _parse_auth_verifier_paths(value: str, provider_path: str) -> list[str]:
@@ -460,16 +460,8 @@ def _compose_multi_auth(
     verifier_paths: list[str],
     auth_file_values: Mapping[str, Optional[str]],
 ) -> AuthProvider:
-    """Combine the primary provider with additional token verifiers.
-
-    A primary OAuth provider keeps its routes and metadata and is tried first.
-    A primary token verifier simply becomes the first verifier in the list.
-    """
+    """Combine the primary provider with additional token verifiers."""
     verifiers: dict[str, TokenVerifier] = {}
-    server: Optional[AuthProvider] = provider
-    if isinstance(provider, TokenVerifier):
-        verifiers[provider_path] = provider
-        server = None
     for verifier_path in verifier_paths:
         verifier = _load_fastmcp_auth_provider(
             verifier_path,
@@ -479,16 +471,11 @@ def _compose_multi_auth(
         )
         assert isinstance(verifier, TokenVerifier)
         verifiers[verifier_path] = verifier
-    try:
-        return MultiAuth(
-            server=server,
-            verifiers=verifiers,
-            server_source_id=provider_path if server is not None else None,
-        )
-    except Exception as exc:
-        raise ValueError(
-            f"Invalid {_AUTH_VERIFIERS_ENV} configuration ({type(exc).__name__})"
-        ) from None
+    return MultiAuth(
+        server=provider,
+        verifiers=verifiers,
+        server_source_id=provider_path,
+    )
 
 
 def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]:

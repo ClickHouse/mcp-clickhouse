@@ -1188,8 +1188,8 @@ def test_resolve_auth_composes_primary_verifier_with_additional_verifiers(
     auth = _resolve_auth(MCPServerConfig())["auth"]
 
     assert isinstance(auth, MultiAuth)
-    assert auth.server is None
-    assert [type(verifier) for verifier in auth.verifiers] == [JWTVerifier, AzureJWTVerifier]
+    assert isinstance(auth.server, JWTVerifier)
+    assert [type(verifier) for verifier in auth.verifiers] == [AzureJWTVerifier]
 
 
 def test_resolve_auth_without_verifiers_returns_bare_provider(
@@ -1252,6 +1252,19 @@ def test_resolve_auth_rejects_invalid_verifier_lists(
 
     with pytest.raises(ValueError, match=message):
         _resolve_auth(MCPServerConfig())
+
+
+@pytest.mark.parametrize(
+    ("provider_path", "message"),
+    [
+        ("builtins.dict", "FASTMCP_SERVER_AUTH provider builtins.dict is not an AuthProvider$"),
+        ("JWTVerifier", "FASTMCP_SERVER_AUTH must be a full AuthProvider class path$"),
+        ("missing.module.Provider", "Could not import FASTMCP_SERVER_AUTH provider"),
+    ],
+)
+def test_load_auth_provider_error_text_is_unchanged(provider_path, message):
+    with pytest.raises(ValueError, match=message):
+        _load_fastmcp_auth_provider(provider_path, auth_file_values={})
 
 
 def test_verifier_constructor_error_reports_type_without_secret(
