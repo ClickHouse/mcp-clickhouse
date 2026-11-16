@@ -7,8 +7,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from fastmcp.server.auth import AuthProvider
-from fastmcp.server.auth.providers.azure import AzureProvider
+from fastmcp.server.auth import AuthProvider, MultiAuth
+from fastmcp.server.auth.providers.azure import AzureJWTVerifier, AzureProvider
+from fastmcp.server.auth.providers.jwt import JWTVerifier
 
 import mcp_clickhouse.auth as auth_module
 import mcp_clickhouse.mcp_server as mcp_server_module
@@ -32,6 +33,7 @@ _EXPECTED_LEGACY_AUTH_PROVIDER_PATHS = {
     "fastmcp.server.auth.providers.auth0.Auth0Provider",
     "fastmcp.server.auth.providers.aws.AWSCognitoProvider",
     "fastmcp.server.auth.providers.azure.AzureProvider",
+    "fastmcp.server.auth.providers.azure.AzureJWTVerifier",
     "fastmcp.server.auth.providers.descope.DescopeProvider",
     "fastmcp.server.auth.providers.discord.DiscordProvider",
     "fastmcp.server.auth.providers.github.GitHubProvider",
@@ -775,7 +777,7 @@ def test_legacy_timeout_rejects_fractional_decimal_without_exposing_value():
 
 def test_legacy_auth_provider_map_matches_fastmcp4_signatures():
     assert set(_LEGACY_AUTH_PROVIDER_ENV) == _EXPECTED_LEGACY_AUTH_PROVIDER_PATHS
-    assert sum(len(fields) for _, fields in _LEGACY_AUTH_PROVIDER_ENV.values()) == 110
+    assert sum(len(fields) for _, fields in _LEGACY_AUTH_PROVIDER_ENV.values()) == 115
 
     for provider_path, (_, fields) in _LEGACY_AUTH_PROVIDER_ENV.items():
         module_name, _, class_name = provider_path.rpartition(".")
@@ -1121,3 +1123,169 @@ def test_resolve_auth_http_without_any_mode_raises(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(ValueError):
         _resolve_auth(MCPServerConfig())
+
+
+_AZURE_PROVIDER_PATH = "fastmcp.server.auth.providers.azure.AzureProvider"
+_AZURE_JWT_VERIFIER_PATH = "fastmcp.server.auth.providers.azure.AzureJWTVerifier"
+_JWT_VERIFIER_PATH = "fastmcp.server.auth.providers.jwt.JWTVerifier"
+
+
+def _set_azure_jwt_verifier_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_AZUREJWT_CLIENT_ID", "client-id")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_AZUREJWT_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_AZUREJWT_REQUIRED_SCOPES", "mcp.read")
+
+
+def test_azure_jwt_verifier_environment_constructs_real_verifier(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_auth_env(monkeypatch)
+    _set_azure_jwt_verifier_env(monkeypatch)
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_AZUREJWT_IDENTIFIER_URI", "api://custom")
+
+    verifier = _load_fastmcp_auth_provider(_AZURE_JWT_VERIFIER_PATH)
+
+    assert isinstance(verifier, AzureJWTVerifier)
+    assert verifier.issuer == "https://login.microsoftonline.com/tenant-id/v2.0"
+    assert verifier.audience == ["client-id", "api://custom"]
+    assert verifier.required_scopes == ["mcp.read"]
+
+
+def test_resolve_auth_composes_oauth_proxy_with_additional_verifier(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH", _AZURE_PROVIDER_PATH)
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_AZURE_CLIENT_ID", "client-id")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_AZURE_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_AZURE_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_AZURE_BASE_URL", "https://mcp.example.com")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_AZURE_REQUIRED_SCOPES", "mcp.read")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_VERIFIERS", f" {_AZURE_JWT_VERIFIER_PATH} ")
+    _set_azure_jwt_verifier_env(monkeypatch)
+
+    auth = _resolve_auth(MCPServerConfig())["auth"]
+
+    assert isinstance(auth, MultiAuth)
+    assert isinstance(auth.server, AzureProvider)
+    assert [type(verifier) for verifier in auth.verifiers] == [AzureJWTVerifier]
+    assert auth.required_scopes == ["mcp.read"]
+    assert str(auth.base_url).rstrip("/") == "https://mcp.example.com"
+
+
+def test_resolve_auth_composes_primary_verifier_with_additional_verifiers(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH", _JWT_VERIFIER_PATH)
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_JWT_JWKS_URI", "https://idp.example/jwks.json")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_JWT_ISSUER", "https://idp.example")
+    monkeypatch.setenv("fastmcp_server_auth_verifiers", _AZURE_JWT_VERIFIER_PATH)
+    _set_azure_jwt_verifier_env(monkeypatch)
+
+    auth = _resolve_auth(MCPServerConfig())["auth"]
+
+    assert isinstance(auth, MultiAuth)
+    assert auth.server is None
+    assert [type(verifier) for verifier in auth.verifiers] == [JWTVerifier, AzureJWTVerifier]
+
+
+def test_resolve_auth_without_verifiers_returns_bare_provider(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH", _AZURE_JWT_VERIFIER_PATH)
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_VERIFIERS", "")
+    _set_azure_jwt_verifier_env(monkeypatch)
+
+    auth = _resolve_auth(MCPServerConfig())["auth"]
+
+    assert type(auth) is AzureJWTVerifier
+
+
+@pytest.mark.parametrize(
+    ("mode_env", "mode_value"),
+    [
+        ("CLICKHOUSE_MCP_AUTH_TOKEN", "secret"),
+        ("CLICKHOUSE_MCP_AUTH_DISABLED", "true"),
+    ],
+)
+def test_resolve_auth_rejects_verifiers_without_provider_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    mode_env,
+    mode_value,
+):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    monkeypatch.setenv(mode_env, mode_value)
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_VERIFIERS", _AZURE_JWT_VERIFIER_PATH)
+
+    with pytest.raises(ValueError, match="cannot be combined with another authentication mode"):
+        _resolve_auth(MCPServerConfig())
+
+
+@pytest.mark.parametrize(
+    ("verifiers", "message"),
+    [
+        (f"{_AZURE_JWT_VERIFIER_PATH},", "without empty entries"),
+        (f"{_AZURE_JWT_VERIFIER_PATH},{_AZURE_JWT_VERIFIER_PATH}", "more than once"),
+        (_JWT_VERIFIER_PATH, "more than once or repeats FASTMCP_SERVER_AUTH"),
+        (_AZURE_PROVIDER_PATH, "is not a TokenVerifier"),
+        ("JWTVerifier", "must be a full TokenVerifier class path"),
+        ("missing.module.Verifier", "Could not import FASTMCP_SERVER_AUTH_VERIFIERS"),
+    ],
+)
+def test_resolve_auth_rejects_invalid_verifier_lists(
+    monkeypatch: pytest.MonkeyPatch,
+    verifiers,
+    message,
+):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH", _JWT_VERIFIER_PATH)
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_JWT_JWKS_URI", "https://idp.example/jwks.json")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_VERIFIERS", verifiers)
+    _set_azure_jwt_verifier_env(monkeypatch)
+
+    with pytest.raises(ValueError, match=message):
+        _resolve_auth(MCPServerConfig())
+
+
+def test_verifier_constructor_error_reports_type_without_secret(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH", _JWT_VERIFIER_PATH)
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_JWT_JWKS_URI", "https://idp.example/jwks.json")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_VERIFIERS", _AZURE_JWT_VERIFIER_PATH)
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_AZUREJWT_CLIENT_ID", "sensitive-client-id")
+
+    with pytest.raises(ValueError, match="Invalid FASTMCP_SERVER_AUTH_VERIFIERS") as exc_info:
+        _resolve_auth(MCPServerConfig())
+
+    assert "sensitive-client-id" not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+
+
+def test_cwd_dotenv_cannot_add_token_verifiers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    _clear_auth_env(monkeypatch)
+    (tmp_path / ".env").write_text(
+        f"FASTMCP_SERVER_AUTH_VERIFIERS={_AZURE_JWT_VERIFIER_PATH}\n"
+        "FASTMCP_SERVER_AUTH_AZUREJWT_CLIENT_ID=attacker-client\n"
+        "FASTMCP_SERVER_AUTH_AZUREJWT_TENANT_ID=attacker-tenant\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLICKHOUSE_MCP_SERVER_TRANSPORT", "http")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH", _JWT_VERIFIER_PATH)
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_JWT_JWKS_URI", "https://idp.example/jwks.json")
+
+    auth = _resolve_auth(MCPServerConfig())["auth"]
+
+    assert type(auth) is JWTVerifier

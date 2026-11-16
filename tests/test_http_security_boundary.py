@@ -50,6 +50,7 @@ def _clear_http_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "CLICKHOUSE_MCP_BIND_HOST",
         "CLICKHOUSE_MCP_BIND_PORT",
         "FASTMCP_SERVER_AUTH",
+        "FASTMCP_SERVER_AUTH_VERIFIERS",
         "FASTMCP_HTTP_HOST_ORIGIN_PROTECTION",
         "FASTMCP_HTTP_ALLOWED_HOSTS",
         "FASTMCP_HTTP_ALLOWED_ORIGINS",
@@ -507,6 +508,54 @@ def test_http_app_restores_auth_between_static_and_oauth_construction(
         )
 
     assert response.status_code == 200
+
+
+def test_additional_verifier_tokens_are_accepted_alongside_the_primary_provider(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_http_env(monkeypatch)
+    providers = {
+        "example.PrimaryVerifier": StaticTokenVerifier(
+            tokens={"primary-token": {"client_id": "primary-client", "scopes": ["mcp.read"]}},
+            required_scopes=["mcp.read"],
+        ),
+        "example.PortalVerifier": StaticTokenVerifier(
+            tokens={
+                "portal-token": {"client_id": "portal-client", "scopes": ["mcp.read"]},
+                "unscoped-token": {"client_id": "portal-client", "scopes": []},
+            },
+            required_scopes=["mcp.read"],
+        ),
+    }
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH", "example.PrimaryVerifier")
+    monkeypatch.setenv("FASTMCP_SERVER_AUTH_VERIFIERS", "example.PortalVerifier")
+    monkeypatch.setenv("CLICKHOUSE_MCP_ALLOWED_HOSTS", "testserver")
+    monkeypatch.setattr(
+        auth_module,
+        "_load_fastmcp_auth_provider",
+        lambda provider_path, **_kwargs: providers[provider_path],
+    )
+    app = ClickHouseFastMCP("test").http_app(transport="http")
+
+    def initialize(client, token=None):
+        headers = dict(_MCP_HEADERS)
+        if token is not None:
+            headers["authorization"] = f"Bearer {token}"
+        return client.post("/mcp", json=_INITIALIZE_REQUEST, headers=headers).status_code
+
+    with TestClient(app) as client:
+        statuses = {
+            token: initialize(client, token)
+            for token in (None, "primary-token", "portal-token", "unknown-token", "unscoped-token")
+        }
+
+    assert statuses == {
+        None: 401,
+        "primary-token": 200,
+        "portal-token": 200,
+        "unknown-token": 401,
+        "unscoped-token": 401,
+    }
 
 
 def test_oauth_cannot_reuse_temporary_static_provider(monkeypatch: pytest.MonkeyPatch):

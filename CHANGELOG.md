@@ -8,6 +8,8 @@ All notable changes to this project will be documented in this file.
 
 - Python 3.15 support, with locked dependencies and CI coverage. The `chdb` extra skips installing chDB on Python 3.15. chDB remains supported on Python 3.10 through 3.14.
 - A server-instruction hint to read `AGENTS.ROOT` through `run_query` when `list_databases` reveals an `AGENTS` database, before writing analytical SQL. This adds discovery guidance only; no automatic metadata queries or tool-result changes.
+- `FASTMCP_SERVER_AUTH_VERIFIERS` accepts tokens from additional FastMCP token verifiers alongside the `FASTMCP_SERVER_AUTH` provider, combined through FastMCP's `MultiAuth`. One HTTP endpoint can now serve, for example, an OAuth proxy for interactive clients and a JWT verifier for backend-issued tokens. The variable is rejected with the static token or auth-disabled modes and is not read from the working-directory `.env` fallback.
+- `fastmcp.server.auth.providers.azure.AzureJWTVerifier` can be configured from `FASTMCP_SERVER_AUTH_AZUREJWT_*` environment variables.
 
 ### Changed
 
