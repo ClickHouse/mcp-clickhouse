@@ -48,7 +48,10 @@ _SQL_COMMENTS_AND_QUOTED_TEXT = re.compile(
 # parenthesis is the rounding function, as is replace() after OR. Bare DELETE
 # and UPDATE cover both the lightweight and ALTER mutation forms. REPLACE
 # TABLE/PARTITION and OR REPLACE overwrite existing data. Bare CLEAR is
-# reversible, so only CLEAR COLUMN/INDEX/PROJECTION is flagged.
+# reversible, so only CLEAR COLUMN/INDEX/PROJECTION is flagged. OPTIMIZE ...
+# DEDUPLICATE removes duplicate rows. MODIFY TTL or MATERIALIZE TTL can delete
+# expired rows, and MODIFY/ALTER COLUMN with TTL can reset expired column values.
+# A TTL in CREATE TABLE or ADD COLUMN stays allowed.
 _DESTRUCTIVE_KEYWORDS = re.compile(
     r"""
       \bDROP\b
@@ -58,6 +61,8 @@ _DESTRUCTIVE_KEYWORDS = re.compile(
     | \bREPLACE\s+(?:TABLE|PARTITION)\b
     | \bOR\s+REPLACE\b(?!\s*\()
     | \bCLEAR\s+(?:COLUMN|INDEX|PROJECTION)\b
+    | \bDEDUPLICATE\b
+    | \b(?:MODIFY|MATERIALIZE)\s+TTL\b
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -68,6 +73,9 @@ _DESTRUCTIVE_KEYWORDS = re.compile(
 # Plain DETACH is reversible via ATTACH and stays allowed.
 _DETACH_KEYWORD = re.compile(r"\bDETACH\b", re.IGNORECASE)
 _PERMANENTLY_KEYWORD = re.compile(r"\bPERMANENTLY\b", re.IGNORECASE)
+# MODIFY/ALTER COLUMN and TTL are also matched independently.
+_ALTER_COLUMN_KEYWORD = re.compile(r"\b(?:MODIFY|ALTER)\s+COLUMN\b", re.IGNORECASE)
+_TTL_KEYWORD = re.compile(r"\bTTL\b", re.IGNORECASE)
 # Only mask the parameter name. Types and surrounding SQL remain visible.
 _SQL_PARAMETER_NAME = re.compile(r"\{\s*[A-Za-z_$][A-Za-z0-9_$]*\s*:")
 _SQL_PARAMETER_PREFIX = re.compile(r"\{[\w$]+:")
@@ -124,12 +132,15 @@ def _validate_query_for_destructive_ops(query: str) -> None:
 
     statement = _strip_comments_and_quoted_text(query)
     statement = _SQL_PARAMETER_NAME.sub(" ", statement)
-    if _DESTRUCTIVE_KEYWORDS.search(statement) or (
-        _DETACH_KEYWORD.search(statement) and _PERMANENTLY_KEYWORD.search(statement)
+    if (
+        _DESTRUCTIVE_KEYWORDS.search(statement)
+        or (_DETACH_KEYWORD.search(statement) and _PERMANENTLY_KEYWORD.search(statement))
+        or (_ALTER_COLUMN_KEYWORD.search(statement) and _TTL_KEYWORD.search(statement))
     ):
         raise ToolError(
             "Destructive operations are not allowed (DROP, TRUNCATE, DELETE, UPDATE, "
             "REPLACE TABLE/PARTITION, CREATE OR REPLACE, CLEAR COLUMN/INDEX/PROJECTION, "
+            "OPTIMIZE DEDUPLICATE, MODIFY/MATERIALIZE TTL, MODIFY/ALTER COLUMN with TTL, "
             "DETACH PERMANENTLY). Set CLICKHOUSE_ALLOW_DROP=true to enable them. "
             "This gate is a best-effort accident guard, not a security boundary. "
             "Restrict the ClickHouse user's grants for real enforcement."
