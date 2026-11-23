@@ -1,7 +1,7 @@
 """JSON encoding for MCP tool results."""
 
 import json
-from typing import Any, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 import simplejson
 
@@ -80,3 +80,48 @@ if getattr(simplejson.encoder, "c_make_encoder", None) is not None:
     _serialize_tool_result = _serialize_tool_result_with_simplejson
 else:
     _serialize_tool_result = _serialize_tool_result_with_stdlib
+
+
+def _serialize_limited_query_result(
+    columns: Sequence[str], rows: Iterable[Any], max_bytes: int
+) -> str:
+    """Encode complete rows within a JSON byte budget, stopping at the first overflow.
+
+    Complete results keep the existing shape. A truncated result reserves space for
+    its marker, dropping previously accepted rows if necessary. Only the encoded
+    prefix is retained; the caller owns and closes the database stream.
+    """
+    prefix = '{"columns": ' + _serialize_tool_result(columns) + ', "rows": ['
+    suffix = "]}"
+    prefix_size = len(prefix.encode("utf-8"))
+    if prefix_size + len(suffix) > max_bytes:
+        raise ValueError(
+            "Query result columns exceed CLICKHOUSE_MCP_MAX_RESULT_BYTES; "
+            "select fewer columns or increase the limit"
+        )
+
+    truncated_suffix = "], " + _serialize_tool_result(
+        {"truncated": True, "max_result_bytes": max_bytes}
+    )[1:]
+    truncated_size = len(truncated_suffix.encode("utf-8"))
+    encoded_rows = []
+    row_sizes = []
+    content_size = 0
+    for row in rows:
+        encoded = _serialize_tool_result(row)
+        row_size = len(encoded.encode("utf-8"))
+        additional = row_size + (2 if encoded_rows else 0)
+        if prefix_size + content_size + additional + len(suffix) > max_bytes:
+            while encoded_rows and prefix_size + content_size + truncated_size > max_bytes:
+                encoded_rows.pop()
+                content_size -= row_sizes.pop() + (2 if encoded_rows else 0)
+            if prefix_size + content_size + truncated_size > max_bytes:
+                raise ValueError(
+                    "CLICKHOUSE_MCP_MAX_RESULT_BYTES is too small for columns and "
+                    "the truncation marker; select fewer columns or increase the limit"
+                )
+            return prefix + ", ".join(encoded_rows) + truncated_suffix
+        encoded_rows.append(encoded)
+        row_sizes.append(row_size)
+        content_size += additional
+    return prefix + ", ".join(encoded_rows) + suffix
