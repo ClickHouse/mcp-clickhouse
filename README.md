@@ -33,6 +33,7 @@ integers and booleans keep their JSON types.
   * Optional input: `params` (object): Named values for ClickHouse `{name:Type}` placeholders. See [Query parameters](#query-parameters).
   * Queries run in read-only mode by default (`CLICKHOUSE_ALLOW_WRITE_ACCESS=false`), but writes can be enabled explicitly if needed.
   * `DESCRIBE (<query>)` and `EXPLAIN ESTIMATE <query>` run here too and are optional ways to inspect a query's result schema or its estimated reads. See [Checking a query before running it](#checking-a-query-before-running-it).
+  * Set `CLICKHOUSE_MCP_MAX_RESULT_BYTES` to bound the returned JSON data. A truncated response contains only complete rows and explicitly sets `truncated: true`; filter or aggregate in SQL before drawing conclusions from it.
 
 * `list_databases`
   * List all databases on your ClickHouse cluster.
@@ -49,6 +50,27 @@ integers and booleans keep their JSON types.
     * `tables`: Array of table objects for the current page.
     * `next_page_token`: Pass this single-use value back before it expires to fetch the next page, or `null` when there are no more tables.
     * `total_tables`: Total count of tables that match the supplied filters.
+
+#### Query result byte limits
+
+`CLICKHOUSE_MCP_MAX_RESULT_BYTES=1048576` limits the JSON data string returned by
+ClickHouse-backed `run_query` to 1 MiB. The default `0` keeps unlimited results
+and the existing query path. Positive limits use streaming with the original SQL,
+bound parameters, read-only settings, and query cancellation.
+
+The byte budget covers the UTF-8 JSON data string: column names, escaped values,
+exact-integer strings, and truncation metadata. Complete results retain the
+`columns`/`rows` shape. On overflow, the response contains a prefix of complete
+rows plus `"truncated": true` and `"max_result_bytes": <configured limit>`.
+A single oversized row can produce an empty prefix. A budget below the size of
+the column schema and required metadata produces a tool error.
+
+The stream closes on completion, truncation, or error. The driver can decode a
+full block, including an oversized row, before the limit is reached. ClickHouse
+may continue work after the HTTP response closes. ClickHouse limits and the MCP
+query timeout govern server resources and execution time. Valid settings are `0`
+or integers of at least `27` bytes, the size of an empty query result. Invalid
+values are rejected before the query acquires a database client.
 
 #### Agents Schema discovery
 
@@ -921,6 +943,10 @@ These variables control the MCP process itself, including transport, authenticat
   * Default: `"10"`
   * Increase if your workload requires many concurrent tool calls
   * Metadata tools use a separate pool with `min(4, CLICKHOUSE_MCP_MAX_WORKERS)` threads so schema discovery cannot delay queries
+* `CLICKHOUSE_MCP_MAX_RESULT_BYTES`: UTF-8 byte budget for the JSON data string returned by `run_query`
+  * Default: `"0"` (unlimited)
+  * Set a positive integer to stream a bounded prefix of complete rows, with explicit truncation metadata
+  * Example: `"1048576"` sets a 1 MiB budget; see [Query result byte limits](#query-result-byte-limits)
 * `CLICKHOUSE_MCP_AUTH_TOKEN`: Static bearer token for HTTP/SSE transports
   * Default: None
   * One of `CLICKHOUSE_MCP_AUTH_TOKEN`, `FASTMCP_SERVER_AUTH`, or `CLICKHOUSE_MCP_AUTH_DISABLED=true` is **required** for HTTP/SSE transports

@@ -13,7 +13,10 @@ from fastmcp.exceptions import ToolError
 from mcp_clickhouse import clients
 from mcp_clickhouse.executors import _Executors
 from mcp_clickhouse.mcp_env import get_config, get_mcp_config
-from mcp_clickhouse.serialization import _serialize_tool_result
+from mcp_clickhouse.serialization import (
+    _serialize_limited_query_result,
+    _serialize_tool_result,
+)
 
 logger = logging.getLogger("mcp-clickhouse")
 
@@ -214,6 +217,7 @@ class _Queries:
                     "are allowed. Python percent "
                     "formatting and $name$ raw binary parameters are not supported."
                 )
+            max_result_bytes = get_mcp_config().max_result_bytes
             entry = self.clients._acquire_clickhouse_client(client_config)
             client = entry.client
             with self.active_queries_lock:
@@ -228,6 +232,21 @@ class _Queries:
             with self.active_queries_lock:
                 if state.cancelled:
                     raise ToolError("Query cancelled before execution")
+            if max_result_bytes:
+                with client.query_row_block_stream(
+                    query, parameters=params, settings=query_settings
+                ) as stream:
+                    result = _serialize_limited_query_result(
+                        stream.source.column_names,
+                        (row for block in stream for row in block),
+                        max_result_bytes,
+                    )
+                    logger.info(
+                        "Query %s returned %d JSON bytes with a result limit",
+                        query_id,
+                        len(result.encode("utf-8")),
+                    )
+                    return result
             res = client.query(query, parameters=params, settings=query_settings)
             logger.info(f"Query {query_id} returned {len(res.result_rows)} rows")
             return _serialize_tool_result({"columns": res.column_names, "rows": res.result_rows})

@@ -142,6 +142,8 @@ if os.getenv("CLICKHOUSE_ENABLED", "true").lower() == "true":
             name="run_query",
             description=(
                 "Execute SQL queries in ClickHouse. Queries run in read-only mode by default. "
+                "A configured result byte limit may return only a prefix of complete rows, "
+                "marked truncated=true. Use SQL filtering or aggregation for a complete answer. "
                 "Bind optional params by name with {name:Type} placeholders, such as "
                 "{name:String} or {vector:Array(Float32)}. Values may be JSON scalars, nulls, "
                 "or arrays. Pass exact large integers as decimal strings. JSON lists and "

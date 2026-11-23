@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Optional `CLICKHOUSE_MCP_MAX_RESULT_BYTES` bounds the UTF-8 JSON data returned by `run_query`. Positive limits use streaming and return complete rows with an explicit truncation marker on overflow; `0` keeps the existing unlimited behavior.
 - Python 3.15 support, with locked dependencies and CI coverage. The `chdb` extra skips installing chDB on Python 3.15. chDB remains supported on Python 3.10 through 3.14.
 - A server-instruction hint to read `AGENTS.ROOT` through `run_query` when `list_databases` reveals an `AGENTS` database, before writing analytical SQL. This adds discovery guidance only; no automatic metadata queries or tool-result changes.
 - `FASTMCP_SERVER_AUTH_VERIFIERS` accepts tokens from additional FastMCP token verifiers alongside the `FASTMCP_SERVER_AUTH` provider, combined through FastMCP's `MultiAuth`. One HTTP endpoint can now serve, for example, an OAuth proxy for interactive clients and a JWT verifier for backend-issued tokens. The variable is rejected with the static token or auth-disabled modes and is not read from the working-directory `.env` fallback.

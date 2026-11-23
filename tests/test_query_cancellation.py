@@ -291,7 +291,7 @@ class TestRunQueryTimeout:
             patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
             patch(
                 "mcp_clickhouse.queries.get_mcp_config",
-                return_value=SimpleNamespace(query_timeout=0.02),
+                return_value=SimpleNamespace(max_result_bytes=0, query_timeout=0.02),
             ),
             patch(
                 "mcp_clickhouse.mcp_server._queries.clients._acquire_clickhouse_client",
@@ -332,8 +332,9 @@ class TestRunQueryTimeout:
             release_validation.wait(timeout=0.5)
 
         def timeout_config():
-            assert validation_started.wait(timeout=1)
-            return SimpleNamespace(query_timeout=0.02)
+            if threading.current_thread() is threading.main_thread():
+                assert validation_started.wait(timeout=1)
+            return SimpleNamespace(max_result_bytes=0, query_timeout=0.02)
 
         with (
             patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
@@ -388,7 +389,7 @@ class TestRunQueryTimeout:
             patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
             patch(
                 "mcp_clickhouse.queries.get_mcp_config",
-                return_value=SimpleNamespace(query_timeout=0.02),
+                return_value=SimpleNamespace(max_result_bytes=0, query_timeout=0.02),
             ),
             patch(
                 "mcp_clickhouse.mcp_server._queries.clients._acquire_clickhouse_client",
@@ -429,7 +430,7 @@ class TestRunQueryTimeout:
             patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
             patch(
                 "mcp_clickhouse.queries.get_mcp_config",
-                return_value=SimpleNamespace(query_timeout=0.02),
+                return_value=SimpleNamespace(max_result_bytes=0, query_timeout=0.02),
             ),
             pytest.raises(ToolError, match="timed out"),
         ):
@@ -447,7 +448,7 @@ class TestRunQueryTimeout:
             patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
             patch(
                 "mcp_clickhouse.queries.get_mcp_config",
-                return_value=SimpleNamespace(query_timeout=0.01),
+                return_value=SimpleNamespace(max_result_bytes=0, query_timeout=0.01),
             ),
             patch("mcp_clickhouse.mcp_server._queries._cancel_query_async") as cancel_query,
         ):
@@ -468,7 +469,7 @@ class TestRunQueryTimeout:
             patch("mcp_clickhouse.clients._resolve_client_config", return_value={}),
             patch(
                 "mcp_clickhouse.queries.get_mcp_config",
-                return_value=SimpleNamespace(query_timeout=30),
+                return_value=SimpleNamespace(max_result_bytes=0, query_timeout=30),
             ),
             patch("mcp_clickhouse.mcp_server._queries._cancel_query_async") as cancel_query,
         ):
@@ -526,7 +527,7 @@ class TestRunQueryTimeout:
             ),
             patch(
                 "mcp_clickhouse.queries.get_mcp_config",
-                return_value=SimpleNamespace(query_timeout=0.01),
+                return_value=SimpleNamespace(max_result_bytes=0, query_timeout=0.01),
             ),
             patch("mcp_clickhouse.mcp_server._queries._cancel_query", side_effect=slow_cancel),
             patch("mcp_clickhouse.queries._QUERY_CANCELLATION_WAIT_SECONDS", 0.08),

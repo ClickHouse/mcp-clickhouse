@@ -535,6 +535,7 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_BIND_PORT: Bind port for HTTP/SSE (default: 8000)
         CLICKHOUSE_MCP_QUERY_TIMEOUT: SELECT tool timeout in seconds (default: 30)
         CLICKHOUSE_MCP_MAX_WORKERS: Maximum thread pool workers for query execution (default: 10)
+        CLICKHOUSE_MCP_MAX_RESULT_BYTES: run_query JSON byte limit (default: 0, unlimited)
         CLICKHOUSE_MCP_ALLOWED_HOSTS: Comma separated Host header values accepted on
             HTTP/SSE (default: derived from a concrete bind host and port)
         CLICKHOUSE_MCP_TRUSTED_PROXIES: Comma separated proxy IP addresses or CIDR
@@ -576,6 +577,21 @@ class MCPServerConfig:
         Default: 10
         """
         return int(os.getenv("CLICKHOUSE_MCP_MAX_WORKERS", "10"))
+
+    @property
+    def max_result_bytes(self) -> int:
+        """Maximum UTF-8 bytes in run_query's JSON data, or 0 for unlimited."""
+        name = "CLICKHOUSE_MCP_MAX_RESULT_BYTES"
+        try:
+            value = int(os.getenv(name, "0"))
+        except ValueError:
+            raise ValueError(f"{name} must be a non-negative integer") from None
+        if value < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
+        # Smallest complete query result: {"columns": [], "rows": []}.
+        if 0 < value < 27:
+            raise ValueError(f"{name} must be 0 or at least 27 bytes")
+        return value
 
     @property
     def allowed_hosts(self) -> List[str]:
