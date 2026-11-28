@@ -30,3 +30,17 @@ async def test_run_query_exposes_optional_params():
     assert {variant["type"] for variant in params_schema["anyOf"]} == {"object", "null"}
     assert "{name:Type}" in tool.description
     assert "Array(Float32)" in tool.description
+
+
+@pytest.mark.asyncio
+async def test_run_query_description_warns_about_format_and_settings():
+    """The description tells clients about two clauses that always fail through run_query."""
+    async with Client(mcp) as client:
+        tools = await client.list_tools()
+
+    description = next(tool for tool in tools if tool.name == "run_query").description
+
+    assert "Do not end a query with a FORMAT clause" in description
+    assert "FORMAT Native" in description
+    assert "top-level SETTINGS clause" in description
+    assert "code 164" in description

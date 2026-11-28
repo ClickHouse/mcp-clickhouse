@@ -32,6 +32,7 @@ integers and booleans keep their JSON types.
   * Input: `query` (string): The SQL query to execute.
   * Optional input: `params` (object): Named values for ClickHouse `{name:Type}` placeholders. See [Query parameters](#query-parameters).
   * Queries run in read-only mode by default (`CLICKHOUSE_ALLOW_WRITE_ACCESS=false`), but writes can be enabled explicitly if needed.
+  * Do not end a query with a `FORMAT` clause: the server sets the output format, so a trailing `FORMAT` fails with a syntax error that points at `FORMAT Native`. In the default read-only mode a top-level `SETTINGS` clause also fails with code 164 (`Cannot modify '<setting>' setting in readonly mode`), so leave it out.
   * `DESCRIBE (<query>)` and `EXPLAIN ESTIMATE <query>` run here too and are optional ways to inspect a query's result schema or its estimated reads. See [Checking a query before running it](#checking-a-query-before-running-it).
 
 * `list_databases`
