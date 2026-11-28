@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- The `run_query` description and the README now say not to end a query with a `FORMAT` clause (the server sets the output format, so it fails with a syntax error that points at `FORMAT Native`) and that a top-level `SETTINGS` clause fails with code 164 in the default read-only mode. Documentation only; query behavior is unchanged. ([#273](https://github.com/ClickHouse/mcp-clickhouse/issues/273))
 - Locked development and container environments now use clickhouse-connect 1.11.0, Pydantic 2.14.1, and cffi 2.1.1.
 - The missing-chDB warning on Python 3.15 explains that the extra skips installation and points to Python 3.10 through 3.14.
 - The minimum FastMCP version is now 4.1.2. It fixes GHSA-7xgj-8392-5q4r and GHSA-vqqp-x5qm-5qp4, and `FASTMCP_SERVER_AUTH_VERIFIERS` needs its `MultiAuth` API.

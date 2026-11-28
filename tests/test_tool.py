@@ -454,6 +454,21 @@ class TestClickhouseReadOnlyMode(unittest.TestCase):
         self.assertIn("columns", result)
         self.assertIn("rows", result)
 
+    def test_trailing_format_clause_fails(self):
+        """A trailing FORMAT clause collides with the format the server appends."""
+        with self.assertRaises(ToolError) as context:
+            run_query(f"SELECT id FROM {self.test_db}.{self.test_table} FORMAT JSON")
+
+        self.assertIn("FORMAT Native", str(context.exception))
+
+    def test_top_level_settings_clause_fails_in_readonly_mode(self):
+        """A top-level SETTINGS clause is rejected with code 164 in read-only mode."""
+        with self.assertRaises(ToolError) as context:
+            run_query(f"SELECT count() FROM {self.test_db}.{self.test_table} SETTINGS max_threads = 1")
+
+        self.assertIn("code: 164", str(context.exception))
+        self.assertIn("readonly mode", str(context.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
